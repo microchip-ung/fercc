@@ -25,6 +25,13 @@ impl SerialTransport {
             .timeout(Duration::from_millis(50))
             .open()
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+        // Discard whatever the OS-level receive buffer is holding from
+        // before this process opened the port (e.g. a duplicate/delayed
+        // reply to a prior process's request, now stale) -- otherwise a
+        // fresh session's very first read can return leftover bytes from
+        // an unrelated exchange, and since msg_id restarts at 1 for every
+        // process, a stale reply can spuriously "match" a new request.
+        let _ = port.clear(serialport::ClearBuffer::Input);
         Ok(Self { port })
     }
 }

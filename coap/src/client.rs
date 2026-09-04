@@ -130,7 +130,17 @@ pub struct Client {
 
 impl Client {
     pub fn new(mup1: Mup1Client) -> Self {
-        Self { mup1, msg_id: 0, token: 0, block_size: DEFAULT_BLOCK_SIZE }
+        // Seeded from the wall clock + PID (not cryptographic, just
+        // "different enough across processes") rather than starting at a
+        // fixed 0, matching the reference's random per-request msg_id
+        // (`Et::Handler::Coap`, `rand(2**16)`): every `mup1cc` invocation
+        // is a short-lived fresh process, so a fixed starting msg_id
+        // would let a slow/retransmitted reply to one invocation's
+        // request spuriously match a *later* invocation's first request
+        // of the same value.
+        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
+            ^ (std::process::id() as u128);
+        Self { mup1, msg_id: seed as u16, token: (seed >> 16) as u8, block_size: DEFAULT_BLOCK_SIZE }
     }
 
     /// Must be a power of two between 16 and 1024 (RFC 7959 SZX 0-6).

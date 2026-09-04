@@ -388,9 +388,11 @@ dependencies = [
 name = "mup1cc"
 version = "0.1.0"
 dependencies = [
+ "ciborium",
  "clap",
  "coap",
  "mup1",
+ "serde",
  "serde_json",
  "serde_yaml_ng",
  "yang",
