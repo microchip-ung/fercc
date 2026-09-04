@@ -56,30 +56,6 @@ fn content_format_for(name: &str) -> Option<ContentFormat> {
     }
 }
 
-/// Fixture names known to fail today, with the reason -- CBOR map key
-/// order differs from the reference encoder's for a small tail of cases
-/// where an augmented/reordered field's declared position doesn't match
-/// its SID-assignment history (see the "impl: mup1cc-rs/yang: codec"
-/// commit message for the investigation). This does not affect wire
-/// correctness (RFC 8949 maps are unordered), only byte-exact fixture
-/// comparison; kept as an explicit skip-list so new regressions still
-/// fail loudly instead of hiding among expected ones.
-fn known_failure(name: &str) -> bool {
-    matches!(
-        name,
-        "ace-ipv4-tcp-ipatch-req"
-            | "ace-ipv4-udp-ipatch-req"
-            | "flush-mac_table-post-req"
-            | "psfp-meter-ipatch-req"
-            | "ptp-add-automotive-bridge-ipatch-req"
-            | "ptp-add-automotive-gm-ipatch-req"
-            | "ptp-change-mac-and-vlan-ipatch-req"
-            | "ptp-shared-media-master-ipatch-req"
-            | "ptp-shared-media-slave-ipatch-req"
-            | "yang-library-fetch-res"
-    )
-}
-
 #[test]
 fn fixture_corpus_round_trips() {
     let schema = schema();
@@ -123,15 +99,8 @@ fn fixture_corpus_round_trips() {
             Ok(())
         })();
 
-        match outcome {
-            Ok(()) => {
-                assert!(!known_failure(&name), "{name}: expected in known_failure list to now be fixed -- remove it from the list");
-            }
-            Err(e) => {
-                if !known_failure(&name) {
-                    failures.insert(name, e);
-                }
-            }
+        if let Err(e) = outcome {
+            failures.insert(name, e);
         }
     }
 

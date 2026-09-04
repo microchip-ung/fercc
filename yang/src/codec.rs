@@ -530,9 +530,23 @@ fn pick_union_member_for_json(schema: &Schema, ty: &TypeDef, value: &Json) -> Op
         match (resolved_builtin(schema, m).0, value) {
             (Builtin::Boolean, Json::Bool(_)) => return Some(m),
             (Builtin::Int8 | Builtin::Int16 | Builtin::Int32 | Builtin::Uint8 | Builtin::Uint16 | Builtin::Uint32, Json::Number(_)) => return Some(m),
-            (Builtin::String | Builtin::Binary | Builtin::InstanceIdentifier, Json::String(_)) => return Some(m),
             (Builtin::Empty, Json::Array(a)) if a.len() == 1 && a[0].is_null() => return Some(m),
             _ => {}
+        }
+    }
+    // String preferred over Binary/InstanceIdentifier when a plain JSON
+    // string could structurally match any of them (an empty string in
+    // particular is ambiguous -- base64-decodes trivially to empty bytes
+    // -- so pick the more general/common member first, in separate
+    // passes, rather than whichever happens to be declared first).
+    if let Some(&m) = members.iter().find(|&&m| resolved_builtin(schema, m).0 == Builtin::String) {
+        if matches!(value, Json::String(_)) {
+            return Some(m);
+        }
+    }
+    for &m in &members {
+        if matches!(resolved_builtin(schema, m).0, Builtin::Binary | Builtin::InstanceIdentifier) && matches!(value, Json::String(_)) {
+            return Some(m);
         }
     }
     members.first().copied()
@@ -814,39 +828,23 @@ fn decode_leaf_value(schema: &Schema, node: &Node, value: &Cbor) -> R<Json> {
 /// delta-SID.
 fn encode_body(schema: &Schema, scope: NodeId, obj: &serde_json::Map<String, Json>, cf: ContentFormat) -> R<Cbor> {
     let base = effective_delta_base(schema, scope);
-    // Real encoder output orders map entries by schema declaration order
-    // (not ascending delta-SID -- an augmented field can sit before an
-    // earlier-declared one with a lower SID -- and not JSON input order)
-    // -- *except* that for a list entry, the key leaves come first, in
-    // the exact order the `key` statement declared them (matching
-    // `resolve_iid`'s key-array order), ahead of every non-key field
-    // regardless of declaration position. Matched against the child's
-    // full `name` (already qualified "module:local" for a node augmented
-    // in from a different module, bare otherwise; RFC 7951 4.2's
-    // JSON-member-name rule).
-    let keys = &schema.node(scope).keys;
-    let ordered_children = schema.node(scope).children.iter().copied().filter(|c| !keys.iter().any(|k| schema.node(*c).local_name() == k));
+    // Matches `json2cbor_hash` (support/yang-enc/yang-enc.rb:176-191)
+    // exactly: map entries come out in the *input* JSON/YAML object's own
+    // key order, full stop -- not schema declaration order, not ascending
+    // delta-SID, and (unlike `resolve_iid`'s instance-identifier key
+    // array) list-entry fields are not reordered to key-statement order
+    // either. `serde_json::Map` is IndexMap-backed here (the
+    // "preserve_order" feature), so iterating `obj` directly already
+    // preserves that order. Matched against the child's full `name`
+    // (already qualified "module:local" for a node augmented in from a
+    // different module, bare otherwise; RFC 7951 4.2's JSON-member-name
+    // rule).
     let mut entries = Vec::new();
-    for key_name in keys {
-        let Some(child) = schema.find_child(scope, key_name) else { continue };
-        let name = schema.node(child).name.as_str();
-        let Some(val) = obj.get(name) else { continue };
-        let child_sid = schema.node(child).sid.ok_or_else(|| err(format!("{name:?} has no SID")))?;
+    for (key, val) in obj {
+        let child = schema.find_child(scope, key).ok_or_else(|| err(format!("unknown child {key:?} of {}", schema.node(scope).name)))?;
+        let child_sid = schema.node(child).sid.ok_or_else(|| err(format!("{key:?} has no SID")))?;
         let cbor_val = encode_node_value(schema, child, val, cf)?;
         entries.push((Cbor::from(child_sid - base), cbor_val));
-    }
-    for child in ordered_children {
-        let name = schema.node(child).name.as_str();
-        let Some(val) = obj.get(name) else { continue };
-        let child_sid = schema.node(child).sid.ok_or_else(|| err(format!("{name:?} has no SID")))?;
-        let cbor_val = encode_node_value(schema, child, val, cf)?;
-        entries.push((Cbor::from(child_sid - base), cbor_val));
-    }
-    let known: std::collections::HashSet<&str> = schema.node(scope).children.iter().map(|&c| schema.node(c).name.as_str()).collect();
-    for key in obj.keys() {
-        if !known.contains(key.as_str()) {
-            return Err(err(format!("unknown child {key:?} of {}", schema.node(scope).name)));
-        }
     }
     Ok(Cbor::Map(entries))
 }

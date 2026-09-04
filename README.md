@@ -12,9 +12,10 @@ reference.
 Status as of this writing: **core CLI parity implemented and verified
 against real hardware** (`/dev/ttyACM0`), including a byte-for-byte
 comparison of `mup1cc -m get -w` output against the real Ruby tool run
-against the same board (see git log for the diff session). DTLS,
-`--log-*`, and a handful of smaller gaps are intentionally out of scope
-for this pass -- see "Known gaps" below.
+against the same board (see git log for the diff session), and **all 387
+of the codec conformance fixtures pass byte-exact** (`cargo test`).
+DTLS, `--log-*`, and a handful of smaller gaps are intentionally out of
+scope for this pass -- see "Known gaps" below.
 
 ## Building
 
@@ -84,15 +85,6 @@ Flags mirror `support/scripts/mup1cc`'s `OptionParser` block -- see
   port has no equivalent of. This is unrelated to device-emitted MUP1
   trace frames, which are handled unconditionally regardless of `-s`
   and have been verified against real hardware.
-- **CBOR map key ordering**: real encoder output orders container/list
-  fields by schema declaration order (with list-entry key leaves first,
-  in `key`-statement order), *not* ascending SID -- see the "impl:
-  mup1cc-rs/yang: Implement the SID-CBOR codec" commit for the
-  investigation. 377/387 fixtures match byte-for-byte; the remaining 10
-  are a non-semantic ordering tail where a field's current declaration
-  position doesn't match its historical SID-assignment order, tracked as
-  a known-failure list in `yang/tests/fixtures.rs`. This does not affect
-  wire correctness (RFC 8949 maps are unordered).
 - **Validation**: this port does not replicate the Ruby reference's
   JSON-Schema generation-and-validation pass that runs before encoding
   a request. Structural errors (unknown child, wrong shape, bad
