@@ -216,14 +216,14 @@ fn cbor_scalar_passthrough_to_json(value: &Cbor) -> R<Json> {
 
 fn cbor_as_i128(value: &Cbor) -> Option<i128> {
     match value {
-        Cbor::Integer(i) => i128::try_from(*i).ok(),
+        Cbor::Integer(i) => Some(i128::from(*i)),
         _ => None,
     }
 }
 
 // -- decimal64 ---------------------------------------------------------
 
-fn encode_decimal64(ty: &TypeDef, value: &Json, in_union: bool) -> R<Cbor> {
+fn encode_decimal64(ty: &TypeDef, value: &Json, _in_union: bool) -> R<Cbor> {
     let fraction_digits = ty.fraction_digits.ok_or_else(|| err("decimal64 type missing fraction-digits"))? as usize;
     let s = value.as_str().ok_or_else(|| err(format!("expected a decimal64 string, got {value}")))?;
     let (sign, rest) = match s.strip_prefix('-') {
@@ -238,12 +238,9 @@ fn encode_decimal64(ty: &TypeDef, value: &Json, in_union: bool) -> R<Cbor> {
     let padded_frac = format!("{frac_part:0<fraction_digits$}");
     let mantissa: i128 = format!("{int_part}{padded_frac}").parse().map_err(|_| err(format!("invalid decimal64 {s:?}")))?;
     let mantissa = sign * mantissa;
-    let tag = Cbor::Tag(4, Box::new(Cbor::Array(vec![Cbor::from(-(fraction_digits as i64)), Cbor::from(mantissa as i64)])));
-    if in_union {
-        Ok(tag)
-    } else {
-        Ok(tag)
-    }
+    // decimal64 is always tag(4)-wrapped per RFC 9254 6.3, union or not
+    // (unlike enum/bits/identityref, which only tag-wrap inside a union).
+    Ok(Cbor::Tag(4, Box::new(Cbor::Array(vec![Cbor::from(-(fraction_digits as i64)), Cbor::from(mantissa as i64)]))))
 }
 
 fn decode_decimal64(_ty: &TypeDef, value: &Cbor, _in_union: bool) -> R<Json> {
@@ -353,12 +350,10 @@ fn bits_bytes_to_spans(bytes: &[u8]) -> Vec<Cbor> {
             i += 1;
             continue;
         }
-        if !out.is_empty() || pending_gap > 0 {
-            if pending_gap > 0 {
-                out.push(Cbor::from(pending_gap));
-            }
+        if pending_gap > 0 {
+            out.push(Cbor::from(pending_gap));
+            pending_gap = 0;
         }
-        pending_gap = 0;
         let start = i;
         while i < bytes.len() && bytes[i] != 0 {
             i += 1;
@@ -792,11 +787,12 @@ const IMPLICIT_INPUT_OUTPUT_BASE: &[&str] = &["rpc", "action"];
 
 fn effective_delta_base(schema: &Schema, node: NodeId) -> i64 {
     let n = schema.node(node);
-    if (n.kw == "input" || n.kw == "output") && n.parent.is_some() {
-        let parent = n.parent.unwrap();
-        if IMPLICIT_INPUT_OUTPUT_BASE.contains(&schema.node(parent).kw.as_str()) {
-            if let Some(sid) = schema.node(parent).sid {
-                return sid;
+    if n.kw == "input" || n.kw == "output" {
+        if let Some(parent) = n.parent {
+            if IMPLICIT_INPUT_OUTPUT_BASE.contains(&schema.node(parent).kw.as_str()) {
+                if let Some(sid) = schema.node(parent).sid {
+                    return sid;
+                }
             }
         }
     }
@@ -1106,7 +1102,7 @@ pub fn cbor_to_json(schema: &Schema, bytes: &[u8], cf: ContentFormat) -> R<Json>
 const B64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 fn base64_encode(data: &[u8]) -> String {
-    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
         let b0 = chunk[0];
         let b1 = *chunk.get(1).unwrap_or(&0);

@@ -123,7 +123,6 @@ pub struct RequestParams<'a> {
 
 fn opt_uint_encode(val: u32, out: &mut Vec<u8>) {
     if val == 0 {
-        return;
     } else if val <= 0xFF {
         out.push(val as u8);
     } else if val <= 0xFFFF {
@@ -215,7 +214,7 @@ pub fn encode_request(p: &RequestParams) -> Vec<u8> {
     // ver(2) type(2) tkl(4); type is always Confirmable, tkl is always 1
     // (this client always sends a single-byte token) -- matches
     // serialize_frame's hardcoded header byte.
-    w.buf.push((VERSION << 6) | (0u8 << 4) | 1u8);
+    w.buf.push((VERSION << 6) | 1u8);
     w.buf.push(p.method as u8);
     w.buf.extend_from_slice(&p.msg_id.to_be_bytes());
     w.buf.push(p.token);
@@ -389,7 +388,7 @@ mod tests {
             block2,
             payload: &[],
         });
-        assert_eq!(wire[0], (1 << 6) | (0 << 4) | 1);
+        assert_eq!(wire[0], (1 << 6) | 1);
         assert_eq!(wire[1], Method::Get as u8);
         assert_eq!(&wire[2..4], &[0x12, 0x34]);
         assert_eq!(wire[4], 7);

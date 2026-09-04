@@ -24,7 +24,7 @@ impl SerialTransport {
             .flow_control(serialport::FlowControl::None)
             .timeout(Duration::from_millis(50))
             .open()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+            .map_err(io::Error::other)?;
         // Discard whatever the OS-level receive buffer is holding from
         // before this process opened the port (e.g. a duplicate/delayed
         // reply to a prior process's request, now stale) -- otherwise a

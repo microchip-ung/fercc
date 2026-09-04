@@ -87,7 +87,7 @@ pub fn encode(checksum_type: ChecksumType, type_byte: u8, data: &[u8]) -> Vec<u8
 
     running.update(EOF);
     out.push(EOF);
-    if checksum_type == ChecksumType::Internet && data.len() % 2 == 0 {
+    if checksum_type == ChecksumType::Internet && data.len().is_multiple_of(2) {
         running.update(EOF);
         out.push(EOF);
     }
@@ -328,7 +328,7 @@ impl Decoder {
             if self.state == State::Data {
                 self.data_end = self.raw.len() - 1;
                 self.running.update(EOF);
-                if self.checksum_type == ChecksumType::Internet && self.data_len % 2 == 0 {
+                if self.checksum_type == ChecksumType::Internet && self.data_len.is_multiple_of(2) {
                     self.state = State::Eof;
                     return self.status(false, false);
                 }
