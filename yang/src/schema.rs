@@ -387,7 +387,7 @@ impl<'a> Builder<'a> {
         self.module_root.insert(name.to_string(), root);
 
         let ctx_name = name.to_string();
-        self.interpret_children(&ctx_name, &raw.subs, root)?;
+        self.interpret_children(&ctx_name, &ctx_name, &raw.subs, root)?;
 
         self.built.insert(name.to_string());
         self.building.remove(name);
@@ -418,24 +418,38 @@ impl<'a> Builder<'a> {
 
     /// Interpret a list of sibling statements (a module's top level, or a
     /// container/list/etc.'s substatements) under `parent`.
-    fn interpret_children(&mut self, module: &str, stmts: &[Stmt], parent: NodeId) -> R<()> {
+    ///
+    /// Two separate module contexts are threaded through the whole
+    /// interpret_* family, and they can diverge across nested `uses`:
+    /// `resolve` is "whose source text (and hence whose import-prefix
+    /// table) are we currently walking" -- it changes to a grouping's
+    /// defining module while splicing that grouping's body, so
+    /// type/typedef/identity/nested-grouping prefix lookups resolve
+    /// correctly (RFC 7950 7.13). `naming` is "which module's namespace
+    /// do newly created nodes belong to" for top-level qualification and
+    /// augment cross-module detection -- per RFC 7950 7.13 a grouping's
+    /// nodes belong to the *using* module's namespace even though its own
+    /// source text resolves against its *defining* module, so `naming`
+    /// stays constant across nested splices instead of following
+    /// `resolve` down into each grouping.
+    fn interpret_children(&mut self, resolve: &str, naming: &str, stmts: &[Stmt], parent: NodeId) -> R<()> {
         for s in stmts {
-            self.interpret_one(module, s, parent)?;
+            self.interpret_one(resolve, naming, s, parent)?;
         }
         Ok(())
     }
 
-    fn interpret_one(&mut self, module: &str, s: &Stmt, parent: NodeId) -> R<()> {
+    fn interpret_one(&mut self, resolve: &str, naming: &str, s: &Stmt, parent: NodeId) -> R<()> {
         if s.prefix.is_some() {
-            self.interpret_extension(module, s, parent)?;
+            self.interpret_extension(naming, s, parent)?;
             return Ok(());
         }
         if SCHEMA_NODE_KEYWORDS.contains(&s.keyword.as_str()) {
-            return self.interpret_schema_node(module, s, parent);
+            return self.interpret_schema_node(resolve, naming, s, parent);
         }
         match s.keyword.as_str() {
-            "uses" => self.interpret_uses(module, s, parent)?,
-            "augment" => self.interpret_augment(module, s, parent, None)?,
+            "uses" => self.interpret_uses(resolve, naming, s, parent)?,
+            "augment" => self.interpret_augment(resolve, naming, s, parent, None)?,
             // Everything else here (typedef/grouping/identity/import,
             // module metadata, or a substatement like config/description
             // seen as a sibling rather than consumed by its owning
@@ -447,15 +461,15 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
-    fn interpret_extension(&mut self, module: &str, s: &Stmt, _parent: NodeId) -> R<()> {
+    fn interpret_extension(&mut self, naming: &str, s: &Stmt, _parent: NodeId) -> R<()> {
         // Only the RFC 8040 `rc:yang-data` extension is handled (matches
         // yang-utils.rb): must contain exactly one container, promoted to
         // a top-level root node named "module:arg".
         if s.keyword == "yang-data" {
             if let Some(container) = s.sub("container") {
-                let name = format!("{module}:{}", s.arg_str());
-                let root = self.new_node("container", name, module.to_string(), None);
-                self.interpret_children(module, &container.subs, root)?;
+                let name = format!("{naming}:{}", s.arg_str());
+                let root = self.new_node("container", name, naming.to_string(), None);
+                self.interpret_children(naming, naming, &container.subs, root)?;
             }
         }
         Ok(())
@@ -465,7 +479,7 @@ impl<'a> Builder<'a> {
         format!("{module}:{local}")
     }
 
-    fn interpret_schema_node(&mut self, module: &str, s: &Stmt, parent: NodeId) -> R<()> {
+    fn interpret_schema_node(&mut self, resolve: &str, naming: &str, s: &Stmt, parent: NodeId) -> R<()> {
         let is_top = self.nodes[parent].kw == "module";
         // input/output are the only schema-node statements RFC 7950 gives
         // no argument to (there's always at most one of each per
@@ -474,9 +488,9 @@ impl<'a> Builder<'a> {
             "input" | "output" => s.keyword.as_str(),
             _ => s.arg_str(),
         };
-        let name = if is_top { self.qualify_top_level(module, local) } else { local.to_string() };
+        let name = if is_top { self.qualify_top_level(naming, local) } else { local.to_string() };
 
-        let node = self.new_node(&s.keyword, name, module.to_string(), Some(parent));
+        let node = self.new_node(&s.keyword, name, naming.to_string(), Some(parent));
 
         if let Some(cfg) = s.sub("config") {
             self.nodes[node].config = cfg.arg_str() == "true";
@@ -490,7 +504,7 @@ impl<'a> Builder<'a> {
         match s.keyword.as_str() {
             "leaf" | "leaf-list" => {
                 if let Some(t) = s.sub("type") {
-                    let ty = self.interpret_type(module, t)?;
+                    let ty = self.interpret_type(resolve, t)?;
                     self.nodes[node].type_id = Some(ty);
                 }
             }
@@ -501,19 +515,19 @@ impl<'a> Builder<'a> {
             }
             "rpc" | "action" => {
                 if s.sub("input").is_none() {
-                    self.new_node("input", "input".to_string(), module.to_string(), Some(node));
+                    self.new_node("input", "input".to_string(), naming.to_string(), Some(node));
                 }
                 if s.sub("output").is_none() {
-                    self.new_node("output", "output".to_string(), module.to_string(), Some(node));
+                    self.new_node("output", "output".to_string(), naming.to_string(), Some(node));
                 }
             }
             _ => {}
         }
 
         if s.keyword == "choice" {
-            self.interpret_choice_body(module, &s.subs, node)?;
+            self.interpret_choice_body(resolve, naming, &s.subs, node)?;
         } else {
-            self.interpret_children(module, &s.subs, node)?;
+            self.interpret_children(resolve, naming, &s.subs, node)?;
         }
         Ok(())
     }
@@ -522,57 +536,59 @@ impl<'a> Builder<'a> {
     /// anyxml child is wrapped in a synthetic, unnamed case sharing the
     /// child's own name (RFC 7950 7.9.2); an explicit `case` is used as
     /// declared.
-    fn interpret_choice_body(&mut self, module: &str, stmts: &[Stmt], choice_node: NodeId) -> R<()> {
+    fn interpret_choice_body(&mut self, resolve: &str, naming: &str, stmts: &[Stmt], choice_node: NodeId) -> R<()> {
         const IMPLICIT_CASE_KEYWORDS: &[&str] =
             &["container", "leaf", "leaf-list", "list", "choice", "anydata", "anyxml"];
         for s in stmts {
             if s.prefix.is_none() && IMPLICIT_CASE_KEYWORDS.contains(&s.keyword.as_str()) {
-                let case_id = self.new_node("case", s.arg_str().to_string(), module.to_string(), Some(choice_node));
-                self.interpret_one(module, s, case_id)?;
+                let case_id = self.new_node("case", s.arg_str().to_string(), naming.to_string(), Some(choice_node));
+                self.interpret_one(resolve, naming, s, case_id)?;
             } else {
-                self.interpret_one(module, s, choice_node)?;
+                self.interpret_one(resolve, naming, s, choice_node)?;
             }
         }
         Ok(())
     }
 
-    fn interpret_uses(&mut self, module: &str, s: &Stmt, parent: NodeId) -> R<()> {
-        let (def_module, local) = self.split_qualified(module, s.arg_str())?;
+    fn interpret_uses(&mut self, resolve: &str, naming: &str, s: &Stmt, parent: NodeId) -> R<()> {
+        let (def_module, local) = self.split_qualified(resolve, s.arg_str())?;
         let raw = *self
             .defs
             .groupings
             .get(&(def_module.clone(), local.to_string()))
-            .ok_or_else(|| err(format!("grouping {:?} not found (used from {module})", s.arg_str())))?;
+            .ok_or_else(|| err(format!("grouping {:?} not found (used from {resolve})", s.arg_str())))?;
 
-        // Splice the grouping's body directly into the use site. Node
-        // *naming* only diverges from the defining module for a `uses`
-        // placed directly at a module's own top level (rare in practice:
-        // is_top is false, hence no qualification applied at all, for
-        // every other case) -- but *type/typedef/identity prefix
-        // resolution* inside the grouping's own source text must always
-        // use the prefixes as declared in the module that *wrote* it, not
-        // the module invoking `uses`. So this recurses in the defining
-        // module's context throughout, matching how yang-utils.rb's
-        // per-module `self` context naturally works when a grouping
-        // written in one module is instantiated from another.
-        self.interpret_children(&def_module, &raw.subs, parent)?;
+        // Splice the grouping's body directly into the use site: its own
+        // source text resolves against *its* defining module
+        // (`def_module` becomes the new `resolve`), but the resulting
+        // nodes still belong to the same using-module namespace as
+        // before (`naming` passes through unchanged) -- see
+        // `interpret_children`'s doc comment.
+        self.interpret_children(&def_module, naming, &raw.subs, parent)?;
 
         // An augment nested inside this `uses` targets a path within the
-        // grouping's own body, which was just spliced in above.
+        // grouping's own body, which was just spliced in above. It's
+        // lexically part of the *using* module's text (RFC 7950 7.13
+        // treats the whole `uses` body as if copied there), so it
+        // resolves and is named in `resolve`/`naming` unchanged, not
+        // `def_module`.
         for aug in s.subs_of("augment") {
-            self.interpret_augment(module, aug, parent, Some(parent))?;
+            self.interpret_augment(resolve, naming, aug, parent, Some(parent))?;
         }
         Ok(())
     }
 
     /// `relative_root`: `Some(parent)` for an augment nested in `uses`
     /// (relative to the use site); `None` for a module-level augment
-    /// (absolute path from a module root).
-    fn interpret_augment(&mut self, module: &str, s: &Stmt, _use_site: NodeId, relative_root: Option<NodeId>) -> R<()> {
+    /// (absolute path from a module root). `resolve` locates the target
+    /// (its own import-prefix table, for the absolute-path case);
+    /// `naming` is compared against the target's owner to decide whether
+    /// newly-added children need cross-module qualification.
+    fn interpret_augment(&mut self, resolve: &str, naming: &str, s: &Stmt, _use_site: NodeId, relative_root: Option<NodeId>) -> R<()> {
         let path = s.arg_str();
         let target = match relative_root {
             Some(root) => self.resolve_relative_path(root, path)?,
-            None => self.resolve_absolute_schema_node_id(module, path)?,
+            None => self.resolve_absolute_schema_node_id(resolve, path)?,
         };
         let target_owner = self.nodes[target].owner_module.clone();
 
@@ -590,15 +606,15 @@ impl<'a> Builder<'a> {
                 continue;
             }
             let before = self.nodes[target].children.len();
-            self.interpret_one(module, child_stmt, target)?;
+            self.interpret_one(resolve, naming, child_stmt, target)?;
             // Namespace fixup (RFC 7950 4.2.8/7.17): a node augmented in
             // from a different module than the target's module is named
             // in the *augmenting* module's namespace.
-            if module != target_owner {
+            if naming != target_owner {
                 let new_children: Vec<NodeId> = self.nodes[target].children[before..].to_vec();
                 for new_child in new_children {
                     let local = self.nodes[new_child].local_name().to_string();
-                    self.nodes[new_child].name = self.qualify_top_level(module, &local);
+                    self.nodes[new_child].name = self.qualify_top_level(naming, &local);
                 }
             }
         }
