@@ -803,6 +803,17 @@ impl<'a> Builder<'a> {
     // -- leafref ---------------------------------------------------------
 
     fn resolve_leafrefs(&mut self) -> R<()> {
+        // Map each Leafref TypeId to the node that declared it -- needed
+        // to resolve a *relative* path ("../../module/identifier"),
+        // which starts from that leaf's own position in the tree, not
+        // from any fixed module root.
+        let mut owner: HashMap<TypeId, NodeId> = HashMap::new();
+        for (id, node) in self.nodes.iter().enumerate() {
+            if let Some(t) = node.type_id {
+                owner.insert(t, id);
+            }
+        }
+
         for i in 0..self.types.len() {
             if self.types[i].builtin == Builtin::Leafref && self.types[i].leafref_path.is_some() {
                 self.leafref_pending.push(i);
@@ -811,33 +822,35 @@ impl<'a> Builder<'a> {
         for ty_id in self.leafref_pending.clone() {
             let path = self.types[ty_id].leafref_path.clone().unwrap();
             let module = self.types[ty_id].source_module.clone().unwrap();
-            // Find any node using this type to know the starting point for
-            // relative "../.." resolution. Leafref path text has already
-            // been fully module-qualified where it crosses a boundary (a
-            // bare segment stays in the current module); walk from every
-            // module's own tree as a best-effort anchor isn't right in
-            // general, so instead we resolve leafref paths purely by
-            // absolute semantics when the path is absolute (starts with
-            // "/"), and skip relative-path leafrefs' target resolution
-            // (not needed for wire encoding -- see module docs: encoding
-            // a leafref value only needs to *delegate to the target
-            // leaf's type*, and callers that never see a `..`-relative
-            // leafref actually exercised in this catalog will simply keep
-            // `leafref_target = None`, in which case `Leafref` types fall
-            // back to string passthrough).
-            if let Some(target) = self.resolve_leafref_path(&module, &path) {
+            let target = if let Some(abs) = path.trim().strip_prefix('/') {
+                self.resolve_absolute_schema_node_id(&module, &format!("/{abs}")).ok()
+            } else {
+                owner.get(&ty_id).and_then(|&node| self.resolve_relative_leafref(node, &path))
+            };
+            if let Some(target) = target {
                 self.types[ty_id].leafref_target = Some(target);
             }
         }
         Ok(())
     }
 
-    fn resolve_leafref_path(&self, module: &str, path: &str) -> Option<NodeId> {
-        let path = path.trim();
-        if let Some(abs) = path.strip_prefix('/') {
-            return self.resolve_absolute_schema_node_id(module, &format!("/{abs}")).ok();
+    /// A relative leafref path (RFC 7950 9.9.2: `1*(".." "/") descendant-
+    /// path`) is anchored at the leaf's own *parent* -- each `..` climbs
+    /// one more level before the remaining segments descend by name.
+    fn resolve_relative_leafref(&self, node: NodeId, path: &str) -> Option<NodeId> {
+        // RFC 7950 9.9.2: the context node is the leafref leaf/leaf-list
+        // itself, and each ".." climbs one level *from* there -- not
+        // from its parent.
+        let mut cur = node;
+        for seg in path.trim().split('/').filter(|s| !s.is_empty()) {
+            if seg == ".." {
+                cur = self.nodes[cur].parent?;
+            } else {
+                let local = seg.rsplit_once(':').map(|(_, n)| n).unwrap_or(seg);
+                cur = self.find_by_local(cur, local)?;
+            }
         }
-        None
+        Some(cur)
     }
 
     // -- SID attachment ---------------------------------------------------

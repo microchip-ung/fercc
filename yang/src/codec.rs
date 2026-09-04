@@ -442,7 +442,7 @@ fn encode_identityref(schema: &Schema, ty: &TypeDef, value: &Json, in_union: boo
     }
 }
 
-fn decode_identityref(schema: &Schema, ty: &TypeDef, value: &Cbor, in_union: bool) -> R<Json> {
+fn decode_identityref(schema: &Schema, _ty: &TypeDef, value: &Cbor, in_union: bool) -> R<Json> {
     let sid = if in_union {
         match value {
             Cbor::Tag(45, inner) => cbor_as_i128(inner).ok_or_else(|| err("identityref tag content not an integer"))?,
@@ -452,16 +452,13 @@ fn decode_identityref(schema: &Schema, ty: &TypeDef, value: &Cbor, in_union: boo
         cbor_as_i128(value).ok_or_else(|| err(format!("expected an identity SID, got {value:?}")))?
     };
     let identity = schema.identities.iter().find(|i| i.sid == Some(sid as i64)).ok_or_else(|| err(format!("unknown identity SID {sid}")))?;
-    // Mirrors the encode side's bare-vs-qualified rule: only an identity
-    // defined in the identityref's own declaring module can be named
-    // bare; anything else needs its defining module as an explicit
-    // prefix so it round-trips (and so a plain `find` against the
-    // catalog's real (module,name) pairs succeeds on re-encode).
-    if Some(identity.module.as_str()) == ty.source_module.as_deref() {
-        Ok(Json::String(identity.name.clone()))
-    } else {
-        Ok(Json::String(format!("{}:{}", identity.module, identity.name)))
-    }
+    // Decode always qualifies with the defining module, confirmed against
+    // real device output (e.g. "ietf-routing:ipv4",
+    // "ietf-datastores:startup") even when that module matches the
+    // identityref's own declaring module -- unlike encode, which accepts
+    // (and the real Ruby tool's own request encoding uses) the bare form
+    // when they match.
+    Ok(Json::String(format!("{}:{}", identity.module, identity.name)))
 }
 
 // -- union member dispatch (encoding-focused heuristic; see module docs) -

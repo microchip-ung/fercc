@@ -87,8 +87,12 @@ pub fn write_output(value: &Json, output_file: Option<&str>, output_format_flag:
     match output_file {
         None => {
             let format = Format::from_flag(output_format_flag).unwrap_or(Format::Yaml);
+            // `render` (YAML in particular) already ends its string with
+            // a trailing newline; avoid println! doubling it up into a
+            // blank final line.
             let rendered = render(value, format)?;
-            println!("{rendered}");
+            print!("{}", rendered.trim_end_matches('\n'));
+            println!();
         }
         Some(path) => {
             let format = Format::from_flag(output_format_flag).or_else(|| Format::from_extension(path)).unwrap_or(Format::Yaml);
