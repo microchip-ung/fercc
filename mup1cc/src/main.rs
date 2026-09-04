@@ -185,59 +185,42 @@ fn coap_method_run(
 ) -> Result<Option<Json>, String> {
     let on_other = |f: mup1::Frame| print_other_frame(&f);
 
-    let (resp, output): (Response, Option<Json>) = match method {
+    // A response's body shape depends on whether the request actually
+    // succeeded, not just on which method was sent: an error response
+    // (4.xx/5.xx) is a whole-tree ("yang"/content-format 140) map
+    // regardless of method, while a success response is shaped per the
+    // method's own documented convention -- and real hardware has also
+    // been observed echoing extra content-format-142 confirmations on
+    // otherwise-bodiless successes (e.g. a successful iPATCH). So every
+    // branch below decodes adaptively via `decode_response_payload`
+    // rather than assuming its own success shape unconditionally.
+    let (resp, success_format): (Response, ContentFormat) = match method {
         "fetch" => {
             let items = input_data.and_then(Json::as_array).ok_or("fetch requires a YAML/JSON sequence as input")?;
-            let cbor_req = codec::json_seq_to_cbor(schema, items, ContentFormat::Fetch).map_err(|e| annotate(e.to_string(), continue_on_error))?;
-            let resp = coap.fetch(url, &cbor_req, on_other).map_err(|e| e.to_string())?;
-            let output = codec::cbor_seq_to_json(schema, &resp.payload, ContentFormat::Fetch).map_err(|e| e.to_string())?;
-            (resp, Some(Json::Array(output)))
+            let items = normalize_fetch_request_items(items);
+            let cbor_req = codec::json_seq_to_cbor(schema, &items, ContentFormat::Fetch).map_err(|e| annotate(e.to_string(), continue_on_error))?;
+            (coap.fetch(url, &cbor_req, on_other).map_err(|e| e.to_string())?, ContentFormat::Fetch)
         }
         "ipatch" => {
             let items = input_data.and_then(Json::as_array).ok_or("ipatch requires a YAML/JSON sequence as input")?;
             let cbor_req = codec::json_seq_to_cbor(schema, items, ContentFormat::Ipatch).map_err(|e| annotate(e.to_string(), continue_on_error))?;
-            let resp = coap.ipatch(url, &cbor_req, on_other).map_err(|e| e.to_string())?;
-            // A non-empty iPATCH response is documented as an error body
-            // shaped as a whole-tree ("yang"/content-format 140) map, but
-            // real hardware has also been observed echoing a successful
-            // iPATCH's touched-instance confirmation as a content-format
-            // 142 (instances) single-entry map -- decode according to
-            // whichever content-format the response actually reports,
-            // falling back to the raw bytes if that fails or the format
-            // is unrecognized (this catalog has no SIDs registered for
-            // the coreconf-error yang-data structure at all, so a genuine
-            // error body may not resolve regardless).
-            let output = decode_optional_response(schema, &resp);
-            (resp, output)
+            (coap.ipatch(url, &cbor_req, on_other).map_err(|e| e.to_string())?, ContentFormat::Ipatch)
         }
-        "get" => {
-            let resp = coap.get(url, on_other).map_err(|e| e.to_string())?;
-            let output = codec::cbor_to_json(schema, &resp.payload, ContentFormat::Get).map_err(|e| e.to_string())?;
-            (resp, Some(output))
-        }
+        "get" => (coap.get(url, on_other).map_err(|e| e.to_string())?, ContentFormat::Get),
         "put" => {
             let obj = input_data.ok_or("put requires a YAML/JSON object as input")?;
             let cbor_req = codec::json_to_cbor(schema, obj, ContentFormat::Put).map_err(|e| annotate(e.to_string(), continue_on_error))?;
-            let resp = coap.put(url, &cbor_req, on_other).map_err(|e| e.to_string())?;
-            (resp, None)
+            (coap.put(url, &cbor_req, on_other).map_err(|e| e.to_string())?, ContentFormat::Put)
         }
         "post" => {
             let items = input_data.and_then(Json::as_array).ok_or("post requires a YAML/JSON sequence as input")?;
             let cbor_req = codec::json_seq_to_cbor(schema, items, ContentFormat::Post).map_err(|e| annotate(e.to_string(), continue_on_error))?;
-            let resp = coap.post(url, &cbor_req, on_other).map_err(|e| e.to_string())?;
-            let output = if resp.payload.is_empty() {
-                None
-            } else {
-                Some(Json::Array(codec::cbor_seq_to_json(schema, &resp.payload, ContentFormat::Post).map_err(|e| e.to_string())?))
-            };
-            (resp, output)
+            (coap.post(url, &cbor_req, on_other).map_err(|e| e.to_string())?, ContentFormat::Post)
         }
-        "delete" => {
-            let resp = coap.delete(url, on_other).map_err(|e| e.to_string())?;
-            (resp, None)
-        }
+        "delete" => (coap.delete(url, on_other).map_err(|e| e.to_string())?, ContentFormat::Yang),
         other => return Err(format!("CoAP method {other} not implemented!")),
     };
+    let output = decode_response_payload(schema, &resp, success_format);
 
     if resp.code_class != 2 {
         println!("ERROR: response code {}.{:02}", resp.code_class, resp.code_detail);
@@ -251,19 +234,94 @@ fn coap_method_run(
 /// Decode a response payload whose shape is inferred from its own
 /// reported content-format rather than assumed from the request method --
 /// see the call site in `coap_method_run`'s `"ipatch"` arm for why.
-fn decode_optional_response(schema: &Schema, resp: &Response) -> Option<Json> {
+/// The codec accepts a single-key `{path: null}` map as an alternate
+/// spelling of a bare `path` string for a FETCH request entry (matching
+/// `validate_instance_entry!`'s tolerance of a nil-valued entry) -- but
+/// real hardware rejects `{iid: null}` outright on the wire (4.00 Bad
+/// Request, "Invalid CBOR payload"); only the bare-IID form is accepted
+/// for "just this path, no value". So normalize that spelling away
+/// before it ever reaches the codec, here at the point where we know
+/// this is genuinely an outgoing *request* -- the codec itself must not
+/// do this collapse unconditionally, since the exact same JSON shape can
+/// also be a *decoded response* entry being re-encoded (e.g. in the
+/// fixture round-trip tests), where the map form is correct as-is.
+fn normalize_fetch_request_items(items: &[Json]) -> Vec<Json> {
+    items
+        .iter()
+        .map(|item| match item.as_object() {
+            Some(map) if map.len() == 1 => {
+                let (path, val) = map.iter().next().unwrap();
+                if val.is_null() {
+                    Json::String(path.clone())
+                } else {
+                    item.clone()
+                }
+            }
+            _ => item.clone(),
+        })
+        .collect()
+}
+
+/// Decode a response payload by trusting its *own* reported
+/// content-format over the request method's documented convention.
+/// Per the firmware source (`appl/src/cc/lma_cc.c`'s main request
+/// dispatch): a successful PUT or iPATCH unconditionally clears the
+/// response payload ("Make sure no payload is returned on a successful
+/// PUT/IPATCH") -- there is no success shape for either to decode at
+/// all, ever, not even an echo of the touched instance. A successful
+/// POST is different: it legitimately sets content-format 142
+/// (instances) and returns the created instance. And a 4.00 Bad
+/// Request's body, when present, is `ietf-coreconf:error` (a
+/// whole-tree, content-format 140, map) -- built only when
+/// `resp_code == BAD_REQUEST` and an error tag was actually set; every
+/// other outcome leaves the content-format unspecified and the payload
+/// cleared. So: any payload arriving on a PUT/iPATCH success, or on any
+/// non-2.xx code other than exactly 4.00, is not something this device
+/// is ever supposed to send -- report it as raw bytes rather than
+/// forcing it through a decode it was never defined to match. (The
+/// Ruby reference doesn't draw either of these distinctions -- it
+/// decodes any non-empty iPATCH response payload as `'yang'`
+/// unconditionally, regardless of response code, `mup1cc:213-216` --
+/// this port intentionally does not replicate that.)
+fn decode_response_payload(schema: &Schema, resp: &Response, success_format: ContentFormat) -> Option<Json> {
     if resp.payload.is_empty() {
         return None;
     }
-    let decoded = match resp.content_format {
-        Some(140) => codec::cbor_to_json(schema, &resp.payload, ContentFormat::Yang).map(|v| vec![v]),
-        Some(142) => codec::cbor_seq_to_json(schema, &resp.payload, ContentFormat::Ipatch),
-        _ => codec::cbor_to_json(schema, &resp.payload, ContentFormat::Yang).map(|v| vec![v]),
+    let is_success = resp.code_class == 2;
+    let is_bad_request = resp.code_class == 4 && resp.code_detail == 0;
+    let always_bodiless_on_success = matches!(success_format, ContentFormat::Put | ContentFormat::Ipatch);
+    if (is_success && always_bodiless_on_success) || (!is_success && !is_bad_request) {
+        return Some(Json::String(format!(
+            "<{} bytes, response code {}.{:02} has no defined body shape>",
+            resp.payload.len(),
+            resp.code_class,
+            resp.code_detail
+        )));
+    }
+    let effective_format = match resp.content_format {
+        Some(140) => ContentFormat::Yang,
+        // 141/142 (identifiers/instances) are both the same sequence-of-
+        // single-entry-maps shape on a response; ContentFormat::Fetch's
+        // decode is the most permissive (also tolerates a bare IID item).
+        Some(141) | Some(142) => ContentFormat::Fetch,
+        _ => success_format,
+    };
+    let is_sequence = matches!(effective_format, ContentFormat::Fetch | ContentFormat::Ipatch | ContentFormat::Post);
+    let decoded = if is_sequence {
+        codec::cbor_seq_to_json(schema, &resp.payload, effective_format)
+    } else {
+        codec::cbor_to_json(schema, &resp.payload, effective_format).map(|v| vec![v])
     };
     match decoded {
         Ok(mut v) if v.len() == 1 => Some(v.remove(0)),
         Ok(v) => Some(Json::Array(v)),
-        Err(_) => Some(Json::String(format!("<undecodable response payload, {} bytes>", resp.payload.len()))),
+        // Never hard-fail the whole command on a decode error -- one
+        // unexpected/unresolvable field shouldn't crash an otherwise-
+        // meaningful response -- but the underlying reason is real
+        // diagnostic information (e.g. "unknown SID N" usually means
+        // the loaded YANG catalog doesn't match the device's firmware
+        // version), so report it rather than discarding it.
+        Err(e) => Some(Json::String(format!("<could not decode {}-byte response payload: {e}>", resp.payload.len()))),
     }
 }
 
