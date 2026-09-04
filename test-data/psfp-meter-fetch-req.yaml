@@ -1,0 +1,4 @@
+- "/ieee802-dot1q-bridge:bridges/bridge[name='b0']/component[name='c0']/\
+   ieee802-dot1q-psfp-bridge:flow-meters/\
+   flow-meter-instance-table[flow-meter-instance-id='1']"
+

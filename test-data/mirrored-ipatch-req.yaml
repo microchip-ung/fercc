@@ -1,0 +1,6 @@
+- ? "/ietf-interfaces:interfaces/interface[name='1']/\
+     mchp-velocitysp-port:eth-mirror/config/mirrored"
+  : ingress: true
+    egress: false
+    
+

@@ -1,0 +1,14 @@
+- ? "/ieee802-dot1q-bridge:bridges/bridge/component/\
+     ieee802-dot1q-psfp-bridge:flow-meters/flow-meter-instance-table"
+  : flow-meter-instance-id: 1
+    committed-information-rate: '1000000'
+    committed-burst-size: 0
+    excess-information-rate: '0'
+    excess-burst-size: 0
+    coupling-flag: zero
+    color-mode: color-blind
+    drop-on-yellow: false
+    mark-all-frames-red-enable: false
+    mark-all-frames-red: false
+    
+

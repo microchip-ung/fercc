@@ -1,0 +1,16 @@
+- ? "/ieee1588-ptp:ptp/instances/instance"
+  : instance-index: 0
+    default-ds:
+      external-port-config-enable: true
+    mchp-velocitysp-ptp:automotive:
+      profile: gm
+    ports:
+      port:
+      - port-index: 25
+        external-port-config-port-ds:
+          desired-state: master
+      - port-index: 26
+        external-port-config-port-ds:
+          desired-state: master
+    
+

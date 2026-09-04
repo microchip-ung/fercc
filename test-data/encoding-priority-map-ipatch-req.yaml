@@ -1,0 +1,8 @@
+- ? "/ietf-interfaces:interfaces/interface[name='1']/\
+     ieee802-dot1q-bridge:bridge-port/pcp-encoding-table/\
+     pcp-encoding-map[pcp='8P0D']/priority-map"
+  : priority: 7
+    dei: false
+    priority-code-point: 2
+    
+

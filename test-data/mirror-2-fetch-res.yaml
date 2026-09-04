@@ -1,0 +1,7 @@
+- ? "/ietf-interfaces:interfaces/interface/mchp-velocitysp-port:eth-mirror/\
+     config"
+  : monitor:
+      forwarding: false
+      vid: 100
+    
+

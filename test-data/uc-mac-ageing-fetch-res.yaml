@@ -1,0 +1,16 @@
+- ? "/ieee802-dot1q-bridge:bridges/bridge/component/filtering-database/\
+     filtering-entry"
+  : - database-id: 0
+      vids: '1'
+      address: 00-00-00-00-01-01
+      entry-type: dynamic
+      port-map:
+      - port-ref: 1
+    - database-id: 0
+      vids: '10'
+      address: 00-00-00-00-00-01
+      entry-type: static
+      port-map:
+      - port-ref: 2
+    
+

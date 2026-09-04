@@ -1,0 +1,20 @@
+- ? "/ieee802-dot1q-bridge:bridges/bridge/component/\
+     ieee802-dot1q-psfp-bridge:stream-gates/stream-gate-instance-table/\
+     admin-control-list/gate-control-entry"
+  : index: 1
+    time-interval-value: 100000
+    gate-state-value: open
+    ipv-spec: 'null'
+    interval-octet-max: 0
+    
+
+- ? "/ieee802-dot1q-bridge:bridges/bridge/component/\
+     ieee802-dot1q-psfp-bridge:stream-gates/stream-gate-instance-table/\
+     admin-control-list/gate-control-entry"
+  : index: 2
+    time-interval-value: 100000
+    gate-state-value: closed
+    ipv-spec: 'null'
+    interval-octet-max: 0
+    
+

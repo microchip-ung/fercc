@@ -1,0 +1,16 @@
+- ? "/ietf-interfaces:interfaces/interface/ietf-ip:ipv4/\
+     mchp-velocitysp-ip:statistics"
+  : rx-total: '1'
+    rx-octets: '46'
+    rx-hdr-errors: '0'
+    rx-addr-errors: '0'
+    rx-forwards: '0'
+    rx-no-routes: '0'
+    rx-unknown-protos: '0'
+    rx-delivers: '1'
+    tx-requests: '1'
+    tx-forwards: '0'
+    tx-total: '1'
+    tx-octets: '46'
+    
+

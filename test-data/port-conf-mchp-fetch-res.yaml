@@ -1,0 +1,15 @@
+- ? "/ietf-interfaces:interfaces/interface/mchp-velocitysp-port:eth-port/\
+     config"
+  : max-frame-length: 10240
+    duplex: full
+    speed: '0.1'
+    phy-clock-role: phy_clock_auto
+    plca:
+      admin-state: false
+      node-count: 8
+      node-id: 255
+      to-timer: 32
+      burst-max: 0
+      burst-timer: 128
+    
+

@@ -1,0 +1,24 @@
+- ? "/ieee802-dot1q-bridge:bridges/bridge/component/filtering-database/\
+     vlan-registration-entry"
+  : - database-id: 0
+      vids: '10'
+      entry-type: static
+      port-map:
+      - port-ref: 1
+        static-vlan-registration-entries:
+          vlan-transmitted: untagged
+      - port-ref: 3
+        static-vlan-registration-entries:
+          vlan-transmitted: tagged
+    - database-id: 0
+      vids: '20'
+      entry-type: static
+      port-map:
+      - port-ref: 2
+        static-vlan-registration-entries:
+          vlan-transmitted: untagged
+      - port-ref: 3
+        static-vlan-registration-entries:
+          vlan-transmitted: tagged
+    
+

@@ -1,0 +1,6 @@
+- ? "/ietf-interfaces:interfaces/interface[name='AGGR2']/\
+     mchp-velocitysp-aggr:aggregator/config"
+  : max-bundle: 1
+    failover-mode: revertive
+    
+

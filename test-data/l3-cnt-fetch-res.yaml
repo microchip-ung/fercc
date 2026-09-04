@@ -1,0 +1,32 @@
+- ? "/ietf-interfaces:interfaces/interface/ietf-ip:ipv4/\
+     mchp-velocitysp-ip:statistics"
+  : rx-total: '10'
+    rx-octets: '460'
+    rx-hdr-errors: '0'
+    rx-addr-errors: '0'
+    rx-forwards: '10'
+    rx-no-routes: '0'
+    rx-unknown-protos: '0'
+    rx-delivers: '0'
+    tx-requests: '0'
+    tx-forwards: '0'
+    tx-total: '0'
+    tx-octets: '0'
+    
+
+- ? "/ietf-interfaces:interfaces/interface/ietf-ip:ipv4/\
+     mchp-velocitysp-ip:statistics"
+  : rx-total: '0'
+    rx-octets: '0'
+    rx-hdr-errors: '0'
+    rx-addr-errors: '0'
+    rx-forwards: '0'
+    rx-no-routes: '0'
+    rx-unknown-protos: '0'
+    rx-delivers: '0'
+    tx-requests: '0'
+    tx-forwards: '10'
+    tx-total: '10'
+    tx-octets: '460'
+    
+

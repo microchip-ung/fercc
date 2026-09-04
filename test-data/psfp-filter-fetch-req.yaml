@@ -1,0 +1,4 @@
+- "/ieee802-dot1q-bridge:bridges/bridge[name='b0']/component[name='c0']/\
+   ieee802-dot1q-psfp-bridge:stream-filters/\
+   stream-filter-instance-table[stream-filter-instance-id='1']"
+

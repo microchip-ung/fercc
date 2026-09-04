@@ -1,0 +1,5 @@
+- "/ietf-interfaces:interfaces/interface[name='1']/\
+   ieee802-dot1q-bridge:bridge-port/\
+   ieee802-dot1q-preemption-bridge:frame-preemption-parameters/\
+   frame-preemption-status-table"
+

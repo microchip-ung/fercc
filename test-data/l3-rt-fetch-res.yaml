@@ -1,0 +1,38 @@
+- ? "/ietf-routing:routing/ribs/rib/routes/route"
+  : - next-hop:
+        outgoing-interface: L3V2
+        ietf-ipv4-unicast-routing:next-hop-address: 2.0.0.2
+      source-protocol: ietf-routing:static
+      active:
+      -
+      ietf-ipv4-unicast-routing:destination-prefix: 0.0.0.0/0
+    - next-hop:
+        outgoing-interface: L3V1
+        ietf-ipv4-unicast-routing:next-hop-address: 0.0.0.0
+      source-protocol: ietf-routing:direct
+      active:
+      -
+      ietf-ipv4-unicast-routing:destination-prefix: 1.0.0.0/8
+    - next-hop:
+        outgoing-interface: L3V2
+        ietf-ipv4-unicast-routing:next-hop-address: 0.0.0.0
+      source-protocol: ietf-routing:direct
+      active:
+      -
+      ietf-ipv4-unicast-routing:destination-prefix: 2.0.0.0/8
+    - next-hop:
+        outgoing-interface: L3V2
+        ietf-ipv4-unicast-routing:next-hop-address: 2.0.0.2
+      source-protocol: ietf-routing:static
+      active:
+      -
+      ietf-ipv4-unicast-routing:destination-prefix: 3.3.0.0/16
+    - next-hop:
+        outgoing-interface: L3V2
+        ietf-ipv4-unicast-routing:next-hop-address: 2.0.0.2
+      source-protocol: ietf-routing:static
+      active:
+      -
+      ietf-ipv4-unicast-routing:destination-prefix: 4.4.0.0/16
+    
+

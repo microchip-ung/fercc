@@ -1,0 +1,7 @@
+- ? "/ieee802-dot1q-bridge:bridges/bridge/component/bridge-vlan/vid-to-fid"
+  : - vid: 100
+      fid: 10
+    - vid: 200
+      fid: 10
+    
+

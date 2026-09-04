@@ -1,0 +1,5 @@
+- ? "/ietf-interfaces:interfaces/interface"
+  : name: L3V1
+    type: iana-if-type:l3ipvlan
+    
+

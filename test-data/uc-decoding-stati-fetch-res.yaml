@@ -1,0 +1,28 @@
+- ? "/ietf-interfaces:interfaces/interface/mchp-velocitysp-port:eth-port/\
+     statistics/traffic-class"
+  : - traffic-class: 0
+      rx-packets: '0'
+      tx-packets: '0'
+    - traffic-class: 1
+      rx-packets: '0'
+      tx-packets: '0'
+    - traffic-class: 2
+      rx-packets: '0'
+      tx-packets: '0'
+    - traffic-class: 3
+      rx-packets: '0'
+      tx-packets: '0'
+    - traffic-class: 4
+      rx-packets: '0'
+      tx-packets: '0'
+    - traffic-class: 5
+      rx-packets: '0'
+      tx-packets: '0'
+    - traffic-class: 6
+      rx-packets: '0'
+      tx-packets: '0'
+    - traffic-class: 7
+      rx-packets: '0'
+      tx-packets: '0'
+    
+

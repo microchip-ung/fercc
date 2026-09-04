@@ -1,0 +1,8 @@
+- ? "/ietf-interfaces:interfaces/interface[name='1']/\
+     mchp-velocitysp-port:eth-qos/config/\
+     traffic-class-schedulers-bandwidth"
+  : - 10
+    - 40
+    - 50
+    
+

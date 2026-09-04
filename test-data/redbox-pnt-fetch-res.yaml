@@ -1,0 +1,7 @@
+- ? "/mchp-velocitysp-redbox:redbox/redbox-list/proxy-node-table"
+  : - addr: 00-00-00-00-00-0C
+      type: san
+      rx-c: 1
+      rx-wrong-lan-c: 0
+    
+

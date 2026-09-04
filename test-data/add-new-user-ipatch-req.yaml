@@ -1,0 +1,6 @@
+- ? "/ietf-system:system/authentication/user"
+  : name: ccreader
+    mchp-velocitysp-system:coap-authorized-key:
+    - name: ccreader
+      key-data: XYa1F+fUzIM1xVfqHzeWFxE/NVYiTAFA1GdZ4LYfgzo6mzedPGaRsFADNs7cvdRp7EsxBZxlHS1LkAK8k22TTA==
+

@@ -1,0 +1,5 @@
+- ? "/ietf-interfaces:interfaces/interface[name='2']/\
+     ieee802-dot1q-bridge:bridge-port/pvid"
+  : 20
+    
+

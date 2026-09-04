@@ -1,0 +1,12 @@
+- ? "/ieee802-dot1q-bridge:bridges/bridge[name='b0']/component[name='c0']/\
+     ieee802-dot1q-psfp-bridge:flow-meters/flow-meter-instance-table"
+  : flow-meter-instance-id: 1
+    color-mode: color-blind
+    coupling-flag: zero
+    drop-on-yellow: false
+    committed-information-rate: '1000000'
+    committed-burst-size: 0
+    excess-information-rate: '0'
+    excess-burst-size: 0
+    
+

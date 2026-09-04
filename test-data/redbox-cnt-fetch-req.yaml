@@ -1,0 +1,9 @@
+- "/mchp-velocitysp-redbox:redbox/redbox-list[id='0']/\
+   port-counters[port='port-a']"
+
+- "/mchp-velocitysp-redbox:redbox/redbox-list[id='0']/\
+   port-counters[port='port-b']"
+
+- "/mchp-velocitysp-redbox:redbox/redbox-list[id='0']/\
+   port-counters[port='port-c']"
+

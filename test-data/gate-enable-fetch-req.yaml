@@ -1,0 +1,4 @@
+- "/ietf-interfaces:interfaces/interface[name='1']/\
+   ieee802-dot1q-bridge:bridge-port/\
+   ieee802-dot1q-sched-bridge:gate-parameter-table/gate-enabled"
+

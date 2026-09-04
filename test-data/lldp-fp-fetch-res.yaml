@@ -1,0 +1,13 @@
+- ? "/ietf-interfaces:interfaces/interface/ieee802-dot1q-bridge:bridge-port/\
+     ieee802-dot1q-preemption-bridge:frame-preemption-parameters/\
+     frame-preemption-status-table"
+  : priority0: preemptable
+    priority1: express
+    priority2: express
+    priority3: express
+    priority4: express
+    priority5: express
+    priority6: express
+    priority7: express
+    
+

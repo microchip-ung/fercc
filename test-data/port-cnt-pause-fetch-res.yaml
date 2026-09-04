@@ -1,0 +1,6 @@
+- ? "/ietf-interfaces:interfaces/interface/ieee802-ethernet-interface:ethernet/\
+     flow-control/pause/statistics"
+  : in-frames-pause: '0'
+    out-frames-pause: '0'
+    
+

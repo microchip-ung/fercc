@@ -1,0 +1,149 @@
+- ? "/ietf-constrained-yang-library:yang-library"
+  : module-set:
+    - index: 0
+      module:
+      - identifier: '39200'
+        revision: ICUGMA==
+        deviation: []
+      - identifier: '31149'
+        revision: ICUDMQ==
+        deviation: []
+      - identifier: '31050'
+        revision: IBgDEw==
+        deviation:
+        - '31149'
+      - identifier: '39000'
+        revision: ICUGMA==
+        deviation: []
+      - identifier: '19999'
+        revision: ICQEEg==
+        deviation: []
+      - identifier: '12999'
+        revision: ICQEEg==
+        deviation: []
+      - identifier: '18999'
+        revision: ICQEEg==
+        deviation: []
+      - identifier: '2999'
+        revision: ICQEEg==
+        deviation: []
+      - identifier: '29399'
+        revision: ICQEEg==
+        deviation: []
+      - identifier: '7999'
+        revision: ICQEEg==
+        deviation: []
+      - identifier: '24999'
+        revision: ICUGMA==
+        deviation: []
+      - identifier: '11999'
+        revision: ICQEEg==
+        deviation: []
+      - identifier: '15999'
+        revision: ICQEEg==
+        deviation: []
+      - identifier: '29300'
+        revision: IBkDKA==
+        deviation:
+        - '29399'
+      - identifier: '24000'
+        revision: ICESCA==
+        deviation:
+        - '24999'
+      - identifier: '21000'
+        revision: ICUGJw==
+        deviation: []
+      - identifier: '20000'
+        revision: ICUGMA==
+        deviation: []
+      - identifier: '15000'
+        revision: ICIIMA==
+        deviation:
+        - '15999'
+      - identifier: '19000'
+        revision: IBQIBg==
+        deviation:
+        - '19999'
+      - identifier: '11000'
+        revision: ICIDFQ==
+        deviation:
+        - '11999'
+      - identifier: '7000'
+        revision: ICMEFw==
+        deviation:
+        - '7999'
+      - identifier: '2000'
+        revision: IBgCIA==
+        deviation:
+        - '2999'
+      import-only-module:
+      - identifier: '31000'
+        revision: ''
+      - identifier: '38400'
+        revision: ''
+      - identifier: '38000'
+        revision: ''
+      - identifier: '30000'
+        revision: ''
+      - identifier: '29200'
+        revision: ''
+      - identifier: '29000'
+        revision: ''
+      - identifier: '29100'
+        revision: ''
+      - identifier: '27000'
+        revision: ''
+      - identifier: '26000'
+        revision: ''
+      - identifier: '25000'
+        revision: ''
+      - identifier: '24899'
+        revision: ''
+      - identifier: '23100'
+        revision: ''
+      - identifier: '23000'
+        revision: ''
+      - identifier: '22000'
+        revision: ''
+      - identifier: '16000'
+        revision: ''
+      - identifier: '18000'
+        revision: ''
+      - identifier: '17000'
+        revision: ''
+      - identifier: '14000'
+        revision: ''
+      - identifier: '13000'
+        revision: ''
+      - identifier: '10000'
+        revision: ''
+      - identifier: '8000'
+        revision: ''
+      - identifier: '6000'
+        revision: ''
+      - identifier: '5000'
+        revision: ''
+      - identifier: '4000'
+        revision: ''
+      - identifier: '3000'
+        revision: ''
+      - identifier: '9000'
+        revision: ''
+      - identifier: '1000'
+        revision: ''
+      - identifier: '950'
+        revision: ''
+    schema:
+    - index: 0
+      module-set:
+      - 0
+    datastore:
+    - identifier: ietf-datastores:startup
+      schema: 0
+    - identifier: ietf-datastores:running
+      schema: 0
+    - identifier: ietf-datastores:operational
+      schema: 0
+    checksum: UVG64HZ3sVAfnPUmN/Kjjw==
+    
+

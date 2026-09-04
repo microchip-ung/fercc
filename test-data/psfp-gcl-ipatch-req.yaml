@@ -1,0 +1,20 @@
+- ? "/ieee802-dot1q-bridge:bridges/bridge[name='b0']/component[name='c0']/\
+     ieee802-dot1q-psfp-bridge:stream-gates/\
+     stream-gate-instance-table[stream-gate-instance-id='1']/\
+     admin-control-list/gate-control-entry"
+  : index: 1
+    time-interval-value: 100000
+    gate-state-value: open
+    ipv-spec: 'null'
+    
+
+- ? "/ieee802-dot1q-bridge:bridges/bridge[name='b0']/component[name='c0']/\
+     ieee802-dot1q-psfp-bridge:stream-gates/\
+     stream-gate-instance-table[stream-gate-instance-id='1']/\
+     admin-control-list/gate-control-entry"
+  : index: 2
+    time-interval-value: 100000
+    gate-state-value: closed
+    ipv-spec: 'null'
+    
+

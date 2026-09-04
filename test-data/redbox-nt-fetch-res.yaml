@@ -1,0 +1,15 @@
+- ? "/mchp-velocitysp-redbox:redbox/redbox-list/node-table"
+  : - addr: 00-00-00-00-00-0A
+      type: dan
+      rx-a: 1
+      rx-wrong-lan-a: 0
+      rx-b: 0
+      rx-wrong-lan-b: 0
+    - addr: 00-00-00-00-00-0B
+      type: dan
+      rx-a: 0
+      rx-wrong-lan-a: 0
+      rx-b: 1
+      rx-wrong-lan-b: 0
+    
+

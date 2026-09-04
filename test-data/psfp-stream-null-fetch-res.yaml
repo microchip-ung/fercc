@@ -1,0 +1,12 @@
+- ? "/ieee802-dot1cb-stream-identification:stream-identity"
+  : index: 1
+    handle: 2
+    out-facing:
+      input-port:
+      - '1'
+    null-stream-identification:
+      destination-mac: 01-02-03-04-05-06
+      tagged: all
+      vlan: 0
+    
+

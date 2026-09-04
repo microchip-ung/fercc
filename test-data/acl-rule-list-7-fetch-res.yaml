@@ -1,0 +1,26 @@
+- ? "/mchp-velocitysp-acl:acl/acl-rules/rule-list"
+  : id: 8
+    ingress-port-list:
+    - '3'
+    dmac: 00-00-00-00-00-00
+    dmac-mask: 00-00-00-00-00-00
+    smac: 00-00-00-00-00-00
+    smac-mask: 00-00-00-00-00-00
+    tagged: zero
+    vid: 0
+    vid-mask: 0
+    pcp: 0
+    pcp-mask: 0
+    dei: any
+    frame-any:
+      any:
+      -
+    forwarding: filter
+    egress-port-list:
+    - '1'
+    - '2'
+    policer-enable: false
+    policer-index: 0
+    rx-count: 0
+    
+

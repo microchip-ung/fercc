@@ -1,0 +1,13 @@
+- ? "/mchp-velocitysp-redbox:redbox/redbox-list/config"
+  : mode: hsr-san
+    port-a: 1
+    port-b: 2
+    net-id: 0
+    lan-id: lan-a
+    nt-age-time: 60
+    pnt-age-time: 60
+    dd-age-time: 40
+    sv-forward-rx-port-c: false
+    sv-forward-tx-port-c: false
+    
+

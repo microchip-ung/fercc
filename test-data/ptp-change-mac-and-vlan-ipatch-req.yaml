@@ -1,0 +1,13 @@
+- ? "/ieee1588-ptp:ptp/instances/instance"
+  : instance-index: 0
+    mchp-velocitysp-ptp:l2:
+      mac-address: 00-11-22-33-44-55
+      mac-address-enable: true
+      vlan: 100
+      vlan-enable: true
+    ports:
+      port:
+      - port-index: 25
+      - port-index: 26
+    
+

@@ -1,0 +1,13 @@
+- ? "/ieee1588-ptp:ptp/instances/instance"
+  : instance-index: 0
+    default-ds:
+      external-port-config-enable: true
+    ports:
+      port:
+      - port-index: 25
+        external-port-config-port-ds:
+          desired-state: master
+        port-ds:
+          ieee802-dot1as-hd:pdelay-req-send-disabled: true
+    
+

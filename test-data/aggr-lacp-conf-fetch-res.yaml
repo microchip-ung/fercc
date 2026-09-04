@@ -1,0 +1,8 @@
+- ? "/ietf-interfaces:interfaces/interface/mchp-velocitysp-aggr:aggr-port/\
+     config"
+  : group: 1
+    mode: lacp-active
+    lacp-timeout: fast
+    port-priority: 32768
+    
+

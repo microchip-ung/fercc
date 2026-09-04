@@ -1,0 +1,10 @@
+- ? "/ieee1588-ptp:ptp/instances/instance"
+  : instance-index: 0
+    ports:
+      port:
+      - port-index: 25
+        timestamp-correction-port-ds:
+          egress-latency: '65536'
+          ingress-latency: '65536'
+    
+

@@ -1,0 +1,6 @@
+- ? "/ietf-interfaces:interfaces/interface/ieee802-dot1q-bridge:bridge-port/\
+     pcp-decoding-table/pcp-decoding-map"
+  : - pcp: 8P0D
+      priority-map: []
+    
+

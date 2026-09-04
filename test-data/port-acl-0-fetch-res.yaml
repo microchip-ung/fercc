@@ -1,0 +1,10 @@
+- ? "/ietf-interfaces:interfaces/interface/mchp-velocitysp-acl:acl-port"
+  : forwarding: filter
+    egress-port-list:
+    - '2'
+    - '3'
+    policer-enable: false
+    policer-index: 0
+    rx-count: 0
+    
+

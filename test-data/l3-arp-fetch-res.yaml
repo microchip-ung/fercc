@@ -1,0 +1,10 @@
+- ? "/ietf-interfaces:interfaces/interface/ietf-ip:ipv4/neighbor"
+  : - ip: 1.0.0.2
+      link-layer-address: 00-00-00-00-00-12
+    
+
+- ? "/ietf-interfaces:interfaces/interface/ietf-ip:ipv4/neighbor"
+  : - ip: 2.0.0.2
+      link-layer-address: 00-00-00-00-00-22
+    
+

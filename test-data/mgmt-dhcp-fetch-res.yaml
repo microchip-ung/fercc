@@ -1,0 +1,6 @@
+- ? "/ietf-interfaces:interfaces/interface/mchp-velocitysp-dhcp:dhcp/client/\
+     status"
+  : state: SELECTING
+    server-ip: 0.0.0.0
+    
+

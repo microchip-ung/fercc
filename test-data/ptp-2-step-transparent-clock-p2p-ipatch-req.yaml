@@ -1,0 +1,10 @@
+- ? "/ieee1588-ptp:ptp/instances/instance"
+  : instance-index: 0
+    default-ds:
+      instance-type: p2p-tc
+    ports:
+      port:
+      - port-index: 25
+      - port-index: 26
+    
+

@@ -1,0 +1,3 @@
+- "/ieee802-dot1ab-lldp:lldp/\
+   port[name='1'][dest-mac-address='01-80-C2-00-00-0E']/admin-status"
+

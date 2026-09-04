@@ -1,0 +1,4 @@
+- ? "/ietf-interfaces:interfaces/interface[name='1']/\
+     mchp-velocitysp-port:eth-port/statistics/clear-statistics"
+  : 
+

@@ -1,0 +1,12 @@
+- ? "/mchp-velocitysp-acl:acl/acl-rules/rule-list"
+  : id: 4
+    ingress-port-list:
+    - '3'
+    frame-ipv4:
+      sip: 1.2.3.4/16
+    forwarding: filter
+    egress-port-list:
+    - '1'
+    - '2'
+    
+

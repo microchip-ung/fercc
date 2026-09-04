@@ -1,0 +1,12 @@
+- ? "/ieee1588-ptp:ptp/instances/instance"
+  : instance-index: 0
+    ports:
+      port:
+      - port-index: 25
+    mchp-velocitysp-ptp:servos:
+      servo:
+      - servo-index: 0
+        servo-type: pi
+        ltc-index: 0
+    
+

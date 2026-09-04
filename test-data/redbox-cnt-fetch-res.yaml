@@ -1,0 +1,45 @@
+- ? "/mchp-velocitysp-redbox:redbox/redbox-list/port-counters"
+  : port: port-a
+    rx-local: '0'
+    rx-untagged: '0'
+    rx-tagged: '1'
+    rx-wrong-lan: '0'
+    rx-own: '0'
+    tx-local: '0'
+    tx-untagged: '0'
+    tx-tagged: '2'
+    tx-dupl-zero: '1'
+    tx-dupl-one: '0'
+    tx-dupl-multi: '0'
+    
+
+- ? "/mchp-velocitysp-redbox:redbox/redbox-list/port-counters"
+  : port: port-b
+    rx-local: '0'
+    rx-untagged: '0'
+    rx-tagged: '1'
+    rx-wrong-lan: '0'
+    rx-own: '0'
+    tx-local: '0'
+    tx-untagged: '0'
+    tx-tagged: '2'
+    tx-dupl-zero: '2'
+    tx-dupl-one: '0'
+    tx-dupl-multi: '0'
+    
+
+- ? "/mchp-velocitysp-redbox:redbox/redbox-list/port-counters"
+  : port: port-c
+    rx-local: '0'
+    rx-untagged: '1'
+    rx-tagged: '0'
+    rx-wrong-lan: '0'
+    rx-own: '0'
+    tx-local: '0'
+    tx-untagged: '2'
+    tx-tagged: '0'
+    tx-dupl-zero: '2'
+    tx-dupl-one: '0'
+    tx-dupl-multi: '0'
+    
+

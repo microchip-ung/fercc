@@ -1,0 +1,6 @@
+- ? "/ietf-interfaces:interfaces/interface[name='1']/\
+     mchp-velocitysp-acl:acl-port"
+  : forwarding: filter
+    egress-port-list: []
+    
+

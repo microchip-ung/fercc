@@ -1,0 +1,17 @@
+- ? "/ietf-interfaces:interfaces/interface/mchp-velocitysp-aggr:aggr-port/\
+     status"
+  : actor-system-priority: 32768
+    actor-system-mac: 00-11-22-33-44-00
+    actor-key: 1
+    actor-port-priority: 32768
+    actor-port: 0
+    actor-state: lacp-activity lacp-timeout aggregation synchronization collecting distributing
+    partner-system-priority: 32768
+    partner-system-mac: 44-55-66-77-88-99
+    partner-key: 1
+    partner-port-priority: 32768
+    partner-port: 3
+    partner-state: lacp-activity lacp-timeout aggregation synchronization collecting distributing
+    aggr-name: AGGR2
+    
+

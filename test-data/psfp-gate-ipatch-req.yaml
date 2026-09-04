@@ -1,0 +1,11 @@
+- ? "/ieee802-dot1q-bridge:bridges/bridge[name='b0']/component[name='c0']/\
+     ieee802-dot1q-psfp-bridge:stream-gates/stream-gate-instance-table"
+  : stream-gate-instance-id: 1
+    gate-enable: true
+    admin-gate-states: open
+    admin-cycle-time:
+      numerator: 1
+      denominator: 5000
+    admin-base-time: {}
+    
+
