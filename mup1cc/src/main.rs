@@ -108,10 +108,18 @@ fn load_downloaded_schema(coap: &mut CoapClient, verbose: bool) -> Result<Schema
         eprintln!("YANG Lib checksum in DUT: {checksum}");
     }
     let cache_dir = cache_base_dir()?.join(&checksum);
-    let schema_dir = cache_dir.join("yang_schema");
+    // NOT "yang_schema": the real Ruby tool uses exactly that name, as a
+    // *file* holding its Marshal-dumped parsed schema, directly under
+    // this same per-checksum cache directory (`PersistentYangSchema`,
+    // support/yang-enc/yang-schema.rb). This cache root is shared with
+    // that tool (same ~/.velocitydrive-yang-cache/<checksum>/
+    // convention) even though what's cached here is different -- the
+    // raw catalog files, never a parsed schema (see rust-mup1cc.txt) --
+    // so this port's own subdirectory must not collide with that name.
+    let catalog_dir = cache_dir.join("catalog");
     std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
-    yang::catalog::download_and_extract(&checksum, &schema_dir, verbose).map_err(|e| e.to_string())?;
-    let files = yang::catalog::load_from_dir(&schema_dir).map_err(|e| e.to_string())?;
+    yang::catalog::download_and_extract(&checksum, &catalog_dir, verbose).map_err(|e| e.to_string())?;
+    let files = yang::catalog::load_from_dir(&catalog_dir).map_err(|e| e.to_string())?;
     yang::schema::build(&files.yang, &files.sid).map_err(|e| e.to_string())
 }
 
