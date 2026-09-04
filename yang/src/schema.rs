@@ -107,7 +107,7 @@ pub struct TypeDef {
 }
 
 impl TypeDef {
-    fn new(builtin: Builtin) -> Self {
+    pub(crate) fn new(builtin: Builtin) -> Self {
         Self {
             builtin,
             fraction_digits: None,

@@ -1022,6 +1022,14 @@ pub fn json_seq_to_cbor(schema: &Schema, items: &[Json], cf: ContentFormat) -> R
                     let encoded_val = if val.is_null() { Cbor::Null } else { encode_node_value(schema, target, val, cf)? };
                     Cbor::Map(vec![(iid, encoded_val)])
                 }
+                // Wrong key *count* (0 or >1) gets the specific
+                // "exactly one key/value pair" message, not the generic
+                // shape-mismatch one below -- matches Ipatch/Post's
+                // `validate_instance_entry` for the same case.
+                Json::Object(_) => {
+                    validate_single_key(cf, item)?;
+                    unreachable!("validate_single_key only returns Ok for a single-key map, already handled above")
+                }
                 other => return Err(validate_entry_err(cf, other)),
             },
             ContentFormat::Ipatch | ContentFormat::Post => {
@@ -1146,6 +1154,7 @@ fn base64_decode(s: &str) -> R<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::schema::Bit;
 
     #[test]
     fn base64_round_trips() {
@@ -1160,5 +1169,122 @@ mod tests {
         assert_eq!(format_ruby_float(257.0), "257.0");
         assert_eq!(format_ruby_float(0.0), "0.0");
         assert_eq!(format_ruby_float(25.7), "25.7");
+    }
+
+    // Ported from support/yang-enc/spec/instance_entry_spec.rb: exact
+    // error-message wording for a malformed fetch/ipatch/post entry.
+    // These are validation-only checks (fail before any schema/SID
+    // lookup), so an empty schema is enough -- and they cover the error
+    // paths the success-oriented devclient fixture corpus never
+    // exercises (see yang/tests/fixtures.rs).
+
+    fn empty_schema() -> Schema {
+        crate::schema::build(&[], &[]).expect("empty schema builds")
+    }
+
+    #[test]
+    fn rejects_a_non_map_array_entry() {
+        let schema = empty_schema();
+        let err = json_seq_to_cbor(&schema, &[Json::Array(vec![Json::String("/some/path".into())])], ContentFormat::Ipatch).unwrap_err();
+        assert!(err.0.contains("IPATCH"), "{}", err.0);
+        assert!(err.0.contains("got array"), "{}", err.0);
+    }
+
+    #[test]
+    fn rejects_a_scalar_entry() {
+        let schema = empty_schema();
+        let err = json_seq_to_cbor(&schema, &[Json::String("/some/path".into())], ContentFormat::Post).unwrap_err();
+        assert!(err.0.contains("POST"), "{}", err.0);
+        assert!(err.0.contains("got String"), "{}", err.0);
+    }
+
+    #[test]
+    fn rejects_a_null_entry() {
+        let schema = empty_schema();
+        let err = json_seq_to_cbor(&schema, &[Json::Null], ContentFormat::Ipatch).unwrap_err();
+        assert!(err.0.contains("got null"), "{}", err.0);
+    }
+
+    #[test]
+    fn rejects_an_entry_with_two_keys_listing_them() {
+        let schema = empty_schema();
+        let mut map = serde_json::Map::new();
+        map.insert("/a".to_string(), Json::from(1));
+        map.insert("/b".to_string(), Json::from(2));
+        let err = json_seq_to_cbor(&schema, &[Json::Object(map)], ContentFormat::Ipatch).unwrap_err();
+        assert!(err.0.contains("exactly one key/value pair"), "{}", err.0);
+        assert!(err.0.contains("got 2"), "{}", err.0);
+        assert!(err.0.contains("/a") && err.0.contains("/b"), "{}", err.0);
+    }
+
+    #[test]
+    fn rejects_an_empty_map() {
+        let schema = empty_schema();
+        let err = json_seq_to_cbor(&schema, &[Json::Object(serde_json::Map::new())], ContentFormat::Fetch).unwrap_err();
+        assert!(err.0.contains("got 0"), "{}", err.0);
+    }
+
+    // Ported from yang-enc_spec.rb's `type2cbor`/`type2json` bits
+    // examples: exact RFC 9254 6.7 sparse/dense byte patterns, pinned
+    // independently of any real catalog's bit layout.
+
+    fn alarm_state_type() -> TypeDef {
+        let mut ty = TypeDef::new(Builtin::Bits);
+        ty.bits = vec![
+            Bit { name: "unknown".into(), position: 0 },
+            Bit { name: "under-repair".into(), position: 1 },
+            Bit { name: "critical".into(), position: 2 },
+            Bit { name: "major".into(), position: 3 },
+            Bit { name: "minor".into(), position: 4 },
+            Bit { name: "warning".into(), position: 8 },
+            Bit { name: "indeterminate".into(), position: 128 },
+        ];
+        ty
+    }
+
+    #[test]
+    fn bits_sparse_encoding_matches_ruby_spec_exact_bytes() {
+        let ty = alarm_state_type();
+        assert_eq!(
+            encode_bits(&ty, &Json::String("warning critical indeterminate".into()), false).unwrap(),
+            Cbor::Array(vec![Cbor::Bytes(vec![0x04, 0x01]), Cbor::from(14), Cbor::Bytes(vec![0x01])])
+        );
+        assert_eq!(encode_bits(&ty, &Json::String("indeterminate".into()), false).unwrap(), Cbor::Array(vec![Cbor::from(16), Cbor::Bytes(vec![0x01])]));
+        assert_eq!(encode_bits(&ty, &Json::String("".into()), false).unwrap(), Cbor::Array(vec![]));
+    }
+
+    #[test]
+    fn bits_dense_encoding_is_a_plain_bytestring() {
+        let ty = alarm_state_type();
+        assert_eq!(encode_bits(&ty, &Json::String("critical under-repair".into()), false).unwrap(), Cbor::Bytes(vec![0x06]));
+    }
+
+    #[test]
+    fn bits_decode_is_the_exact_inverse() {
+        let ty = alarm_state_type();
+        assert_eq!(decode_bits(&ty, &Cbor::Array(vec![Cbor::Bytes(vec![0x04, 0x01]), Cbor::from(14), Cbor::Bytes(vec![0x01])]), false).unwrap(), Json::String("critical warning indeterminate".into()));
+        assert_eq!(decode_bits(&ty, &Cbor::Bytes(vec![0x06]), false).unwrap(), Json::String("under-repair critical".into()));
+        assert_eq!(decode_bits(&ty, &Cbor::Array(vec![]), false).unwrap(), Json::String("".into()));
+    }
+
+    // Ported from yang-enc_spec.rb's decimal64 examples: fraction-digits
+    // is always the exponent verbatim, and decode always round-trips
+    // through a float (so a whole number still gets a trailing ".0").
+
+    #[test]
+    fn decimal64_exponent_is_always_fraction_digits() {
+        let mut ty = TypeDef::new(Builtin::Decimal64);
+        ty.fraction_digits = Some(2);
+        assert_eq!(encode_decimal64(&ty, &Json::String("2.57".into()), false).unwrap(), Cbor::Tag(4, Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(257)]))));
+        assert_eq!(encode_decimal64(&ty, &Json::String("25.7".into()), false).unwrap(), Cbor::Tag(4, Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(2570)]))));
+        assert_eq!(encode_decimal64(&ty, &Json::String("257".into()), false).unwrap(), Cbor::Tag(4, Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(25700)]))));
+    }
+
+    #[test]
+    fn decimal64_decode_always_shows_a_decimal_point() {
+        let ty = TypeDef::new(Builtin::Decimal64);
+        assert_eq!(decode_decimal64(&ty, &Cbor::Tag(4, Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(257)]))), false).unwrap(), Json::String("2.57".into()));
+        assert_eq!(decode_decimal64(&ty, &Cbor::Tag(4, Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(25700)]))), false).unwrap(), Json::String("257.0".into()));
+        assert_eq!(decode_decimal64(&ty, &Cbor::Tag(4, Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(0)]))), false).unwrap(), Json::String("0.0".into()));
     }
 }
