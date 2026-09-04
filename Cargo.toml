@@ -11,7 +11,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
 ciborium = "0.2"
-crc32fast = "1"
 serialport = { version = "4", default-features = false }
 ureq = "3"
 flate2 = "1"
