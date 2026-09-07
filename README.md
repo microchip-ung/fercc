@@ -93,6 +93,11 @@ Flags mirror `support/scripts/mup1cc`'s `OptionParser` block -- see
   `--continue`'s error-vs-warning distinction is correspondingly
   shallow (logged, not threaded through to change encoding behavior on
   partial failure).
+- **Input/output format selection (`-i`/`-o`/`-I`/`-O`)**: the
+  flag/extension/default priority chain is unit-tested for both JSON
+  and YAML, in both directions. Reading from STDIN specifically (as
+  opposed to `-i FILE`) is not covered by any test; JSON output has
+  been spot-checked against real hardware, JSON input has not.
 - **Topology-file device default (`.mscc-libeasy-topology.yaml`)**: not
   verified at all -- no unit test, and every hardware run so far has
   passed `-d` explicitly rather than relying on this lookup.
