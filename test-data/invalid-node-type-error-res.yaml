@@ -1,0 +1,12 @@
+# Real ietf-coreconf:error response captured from a live board: a POST
+# creating a new "/ietf-interfaces:interfaces/interface" entry (name
+# "kage", type "iana-if-type:l3ipvlan") was rejected with this exact
+# body. The cause is not established here -- only that this
+# request/response pair is real. Same error-tag/error-app-tag pair as
+# unknown-instance-path-error-res.yaml, but a different message and a
+# populated (non-empty) error-data-node.
+ietf-coreconf:error:
+  error-data-node: /ietf-interfaces:interfaces/interface
+  error-tag: ietf-coreconf:operation-failed
+  error-app-tag: ietf-coreconf:malformed-message
+  error-message: Invalid node type

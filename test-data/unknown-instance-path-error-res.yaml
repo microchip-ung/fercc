@@ -1,0 +1,10 @@
+# Real ietf-coreconf:error response captured from a live board, provoked by
+# an iPATCH whose instance path doesn't resolve to any real SID (see
+# yang/tests/fixtures.rs's coreconf_error_responses_decode_correctly -- this
+# is a decode-only negative case: a genuine device error body, never
+# something this client would construct itself).
+ietf-coreconf:error:
+  error-data-node: ""
+  error-tag: ietf-coreconf:operation-failed
+  error-app-tag: ietf-coreconf:malformed-message
+  error-message: "lma_cc_parse_iid()"

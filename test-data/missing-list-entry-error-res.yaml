@@ -1,0 +1,9 @@
+# Real ietf-coreconf:error response captured from a live board: an iPATCH
+# to a structurally valid instance path (a real list, real leaf) whose key
+# value ("does-not-exist") doesn't match any actual list entry. Distinct
+# shape from unknown-instance-path-error-res.yaml: generic error-tag (no
+# error-app-tag at all), and a populated error-data-node instance-identifier.
+ietf-coreconf:error:
+  error-data-node: /ietf-routing:routing/ribs/rib/name
+  error-tag: ietf-coreconf:error
+  error-message: Could not copy string

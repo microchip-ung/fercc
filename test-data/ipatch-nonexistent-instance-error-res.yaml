@@ -1,0 +1,12 @@
+# Real ietf-coreconf:error response captured from a live board: an iPATCH
+# to "/ietf-interfaces:interfaces/interface" with {name: kage, type:
+# iana-if-type:l3ipvlan} was rejected with this exact body. Distinct from
+# invalid-node-type-error-res.yaml (same request data, but sent as an
+# iPATCH here rather than a POST) -- iPATCH targets an existing instance,
+# and no interface named "kage" exists, so the device rejects it with the
+# generic error-tag (no error-app-tag) rather than the POST case's
+# "Invalid node type".
+ietf-coreconf:error:
+  error-data-node: /ietf-interfaces:interfaces/interface
+  error-tag: ietf-coreconf:error
+  error-message: Error in container or list

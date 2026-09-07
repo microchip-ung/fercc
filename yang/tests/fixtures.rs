@@ -107,3 +107,63 @@ fn fixture_corpus_round_trips() {
     assert!(cases > 300, "expected >300 fixture cases discovered, found {cases} -- test-data/ missing?");
     assert!(failures.is_empty(), "{} unexpected fixture failures:\n{failures:#?}", failures.len());
 }
+
+/// Negative cases: real device *error* responses (content-format 140,
+/// whole-tree `ietf-coreconf:error`), as opposed to every case above, which
+/// is a well-formed request or its successful response. These are
+/// decode-only -- unlike a fetch/ipatch/post entry, a client never
+/// constructs one of these itself, it only ever receives one -- so each
+/// `*-error-res.cbor`/`.yaml` pair is checked one direction: decoding the
+/// captured bytes must produce exactly the expected JSON/YAML shape.
+///
+/// Each fixture is real hardware data, captured from a live board via a
+/// deliberately malformed/rejected request. They cover different
+/// response shapes: which of `error-tag`/`error-app-tag`/
+/// `error-data-node`/`error-message` are present, and whether
+/// `error-data-node` is empty or a populated instance-identifier.
+#[test]
+fn coreconf_error_responses_decode_correctly() {
+    let schema = schema();
+    let dir = test_data_dir();
+
+    let mut entries: Vec<_> = fs::read_dir(&dir).expect("read test-data dir").filter_map(|e| e.ok()).collect();
+    entries.sort_by_key(|e| e.path());
+
+    let mut cases = 0;
+    let mut failures: HashMap<String, String> = HashMap::new();
+
+    for entry in entries {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+            continue;
+        }
+        let name = path.file_stem().unwrap().to_str().unwrap().to_string();
+        if !name.ends_with("-error-res") {
+            continue;
+        }
+        let cbor_path = dir.join(format!("{name}.cbor"));
+        if !cbor_path.exists() {
+            continue;
+        }
+        cases += 1;
+
+        let outcome = (|| -> Result<(), String> {
+            let yaml_text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+            let expected: Json = serde_yaml_ng::from_str(&yaml_text).map_err(|e| format!("yaml parse: {e}"))?;
+            let cbor_bytes = fs::read(&cbor_path).map_err(|e| e.to_string())?;
+
+            let decoded = codec::cbor_to_json(schema, &cbor_bytes, ContentFormat::Yang).map_err(|e| format!("decode: {e}"))?;
+            if decoded != expected {
+                return Err(format!("decode mismatch: got {decoded:#?}, expected {expected:#?}"));
+            }
+            Ok(())
+        })();
+
+        if let Err(e) = outcome {
+            failures.insert(name, e);
+        }
+    }
+
+    assert!(cases == 4, "expected exactly 4 *-error-res fixtures, found {cases} -- test-data/ missing, or the corpus changed without updating this count?");
+    assert!(failures.is_empty(), "{} unexpected coreconf-error fixture failures:\n{failures:#?}", failures.len());
+}
