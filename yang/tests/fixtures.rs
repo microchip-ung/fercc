@@ -3,12 +3,12 @@
 
 //! Conformance tests against a curated subset of the real YAML/CBOR
 //! fixture pairs originally copied wholesale from
-//! sw-velocitydrive-devclient's test-data/ (see mup1cc-rs/rust-mup1cc.txt
-//! and the top-level commit history for provenance), plus the bundled
-//! YANG catalog tarball they were generated against. Each case is checked
-//! both directions: encoding the YAML fixture must produce the reference
-//! .cbor bytes exactly, and decoding the reference .cbor then re-encoding
-//! it must round-trip byte-identically.
+//! sw-velocitydrive-devclient's test-data/ (see the commit history for
+//! provenance), plus the bundled YANG catalog tarball they were
+//! generated against. Each case is checked both directions: encoding
+//! the YAML fixture must produce the reference .cbor bytes exactly, and
+//! decoding the reference .cbor then re-encoding it must round-trip
+//! byte-identically.
 //!
 //! The corpus was originally all ~387 pairs from that source, uncurated.
 //! Measuring per-fixture code coverage (line, branch, function, and

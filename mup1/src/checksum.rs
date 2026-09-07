@@ -9,7 +9,7 @@
 //! reference for both checksum types used on the wire.
 
 /// Which of the two MUP1 checksum algorithms a connection uses. Fixed per
-/// connection (set via `--checksum-type` on the real `mup1cc`), never
+/// connection (set via `--checksum-type` on `mup1cc`), never
 /// autodetected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChecksumType {

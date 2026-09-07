@@ -1,17 +1,16 @@
-# mup1cc-rs
+# rcc
 
-A Rust port of `support/scripts/mup1cc`: a MUP1/CoAP/CORECONF client for
-VelocityDRIVE-SP devices. See `rust-mup1cc.txt` for the original task
-brief.
+A Rust CLI clone of `mup1cc`: a MUP1/CoAP/CORECONF client for
+VelocityDRIVE-SP devices.
 
-`support/scripts/mup1cc` ([also on GitHub](https://github.com/microchip-ung/velocitydrivesp-support/blob/main/support/scripts/mup1cc))
+`mup1cc` ([also on GitHub](https://github.com/microchip-ung/velocitydrivesp-support/blob/main/support/scripts/mup1cc))
 is the reference implementation. Any behavioral discrepancy between this
 port and that tool is most likely a bug in this port, not in the
 reference.
 
 Status as of this writing: **core CLI parity implemented and verified
 against real hardware** (`/dev/ttyACM0`), including a byte-for-byte
-comparison of `mup1cc -m get -w` output against the real Ruby tool run
+comparison of `rcc -m get -w` output against the real Ruby tool run
 against the same board (see git log for the diff session), and **the
 codec conformance fixture corpus passes byte-exact** (`cargo test`).
 DTLS, `--log-*`, and a handful of smaller gaps are intentionally out of
@@ -34,12 +33,12 @@ given explicitly.
 ## Running
 
 ```
-cargo run -p mup1cc -- -d /dev/ttyACM0 -m get -w
-echo '- "/ietf-system:system/contact"' | cargo run -p mup1cc -- -d /dev/ttyACM0 -m fetch -w
+cargo run -p rcc -- -d /dev/ttyACM0 -m get -w
+echo '- "/ietf-system:system/contact"' | cargo run -p rcc -- -d /dev/ttyACM0 -m fetch -w
 ```
 
-Flags mirror `support/scripts/mup1cc`'s `OptionParser` block -- see
-`mup1cc/src/opts.rs` or `mup1cc --help`.
+Flags mirror `mup1cc`'s `OptionParser` block -- see `rcc/src/opts.rs` or
+`rcc --help`.
 
 ## Workspace layout
 
@@ -64,8 +63,8 @@ Flags mirror `support/scripts/mup1cc`'s `OptionParser` block -- see
     checksum-download catalog acquisition, porting
     `support/yang-enc/yang-schema.rb` minus its on-disk parsed-schema
     cache (re-parsing fresh every invocation is the explicit point of
-    doing this in Rust -- see `rust-mup1cc.txt`).
-- `mup1cc/` -- the CLI binary tying it all together.
+    doing this in Rust).
+- `rcc/` -- the CLI binary tying it all together.
 - `test-data/` -- a curated set of YAML/CBOR fixture pairs plus a bundled
   YANG catalog tarball. Originally ~387 pairs copied wholesale from
   `~/sw-velocitydrive-devclient`'s `test-data/` (a prior TypeScript port

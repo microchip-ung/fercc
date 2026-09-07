@@ -1,15 +1,14 @@
 // Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
 // SPDX-License-Identifier: MIT
 
-//! CLI option surface, matching `support/scripts/mup1cc`'s `OptionParser`
-//! block flag-for-flag (minus `--log-append`/`--log-msg`/`--log-run`/
-//! `--log-steps`, out of scope for this port -- see
-//! `mup1cc-rs/rust-mup1cc.txt`).
+//! CLI option surface, matching `mup1cc`'s `OptionParser` block
+//! flag-for-flag (minus `--log-append`/`--log-msg`/`--log-run`/
+//! `--log-steps`, out of scope for this port).
 
 use clap::Parser;
 
 #[derive(Parser, Debug)]
-#[command(name = "mup1cc", about = "MUP1/CoAP/CORECONF client for VelocityDRIVE-SP devices")]
+#[command(name = "rcc", about = "MUP1/CoAP/CORECONF client for VelocityDRIVE-SP devices")]
 pub struct Opts {
     /// IP based terminal device to connect to. Ex: termhub://10.0.0.2:4000
     /// or /dev/ttyUSB0. If an Easytest setup is reserved then this

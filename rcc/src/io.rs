@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
 // SPDX-License-Identifier: MIT
 
-//! Input/output format handling, matching `support/scripts/mup1cc`'s
+//! Input/output format handling, matching `mup1cc`'s
 //! `input_data_read`/`output_data_process` (mup1cc:155-277): YAML by
 //! default, with a flag > file-extension > default priority chain.
 
@@ -115,7 +115,7 @@ mod tests {
     use super::*;
 
     fn temp_file(name: &str, contents: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!("mup1cc-io-test-{}-{name}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("rcc-io-test-{}-{name}", std::process::id()));
         std::fs::write(&path, contents).unwrap();
         path
     }

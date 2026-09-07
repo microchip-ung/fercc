@@ -260,8 +260,8 @@ pub struct Builder<'a> {
 }
 
 /// Parse `.yang` sources and build the full schema, including flattening
-/// and SID attachment from `.sid` sources. Fresh every call -- no caching,
-/// by design (see `mup1cc-rs/rust-mup1cc.txt`).
+/// and SID attachment from `.sid` sources. Fresh every call -- no
+/// caching, by design.
 pub fn build(yang_sources: &[String], sid_sources: &[String]) -> R<Schema> {
     let parsed: Vec<Stmt> = yang_sources
         .iter()

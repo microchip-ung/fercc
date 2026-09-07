@@ -3,11 +3,10 @@
 
 //! YANG catalog acquisition: either this repo's checked-out sources
 //! (`--workspace`, matching `support/yang-enc/yang-schema.rb`'s
-//! `PersistentYangSchema`, minus its on-disk parsed-schema cache -- see
-//! `mup1cc-rs/rust-mup1cc.txt`: re-parsing from scratch every invocation
-//! is the point), or a checksum-addressed tarball downloaded from one of
-//! the two mirrors mup1cc.rb uses (matching `get_yang_schema`/
-//! `download_remote_catalog`).
+//! `PersistentYangSchema`, minus its on-disk parsed-schema cache --
+//! re-parsing from scratch every invocation is the point), or a
+//! checksum-addressed tarball downloaded from one of the two mirrors
+//! mup1cc uses (matching `get_yang_schema`/`download_remote_catalog`).
 //!
 //! Either path lands on the same `CatalogFiles` (raw .yang/.sid source
 //! text), fed straight into `schema::build` -- only the *download* of the
@@ -43,7 +42,7 @@ fn err(msg: impl Into<String>) -> CatalogError {
     CatalogError(msg.into())
 }
 
-/// Remote catalog mirrors, tried in order (`support/scripts/mup1cc:91-95`).
+/// Remote catalog mirrors, tried in order (`mup1cc:91-95`).
 pub const REMOTE_CATALOGS: &[&str] = &[
     "http://mscc-ent-open-source.s3-website-eu-west-1.amazonaws.com/public_root/velocitydrivesp/yang-by-sha",
     "https://artifacts.microchip.com/artifactory/UNGE-generic-local/lmstax/yang-by-sha",

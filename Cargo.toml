@@ -3,7 +3,7 @@
 
 [workspace]
 resolver = "2"
-members = ["mup1", "coap", "yang", "mup1cc"]
+members = ["mup1", "coap", "yang", "rcc"]
 
 [workspace.package]
 edition = "2021"

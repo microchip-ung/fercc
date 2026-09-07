@@ -1,10 +1,9 @@
 // Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
 // SPDX-License-Identifier: MIT
 
-//! `mup1cc`: a Rust CLI clone of `support/scripts/mup1cc`. See
-//! `mup1cc-rs/rust-mup1cc.txt` and the `mup1cc-rs` commit history for the
-//! porting notes; `--log-*` and DTLS (`-k`) are intentionally out of
-//! scope for this port.
+//! `rcc`: a Rust CLI clone of `mup1cc`. See this repo's commit history
+//! for the porting notes; `--log-*` and DTLS (`-k`) are intentionally
+//! out of scope for this port.
 
 mod io;
 mod opts;
@@ -111,14 +110,14 @@ fn load_downloaded_schema(coap: &mut CoapClient, verbose: bool) -> Result<Schema
         eprintln!("YANG Lib checksum in DUT: {checksum}");
     }
     let cache_dir = cache_base_dir()?.join(&checksum);
-    // NOT "yang_schema": the real Ruby tool uses exactly that name, as a
-    // *file* holding its Marshal-dumped parsed schema, directly under
-    // this same per-checksum cache directory (`PersistentYangSchema`,
+    // NOT "yang_schema": mup1cc uses exactly that name, as a *file*
+    // holding its Marshal-dumped parsed schema, directly under this
+    // same per-checksum cache directory (`PersistentYangSchema`,
     // support/yang-enc/yang-schema.rb). This cache root is shared with
     // that tool (same ~/.velocitydrive-yang-cache/<checksum>/
     // convention) even though what's cached here is different -- the
-    // raw catalog files, never a parsed schema (see rust-mup1cc.txt) --
-    // so this port's own subdirectory must not collide with that name.
+    // raw catalog files, never a parsed schema -- so this port's own
+    // subdirectory must not collide with that name.
     let catalog_dir = cache_dir.join("catalog");
     std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
     yang::catalog::download_and_extract(&checksum, &catalog_dir, verbose).map_err(|e| e.to_string())?;
@@ -164,7 +163,7 @@ fn url_with_query_params(base: &str, query: &[String], method: &str) -> Result<S
     Ok(format!("{base}?{}", query.join("&")))
 }
 
-/// Mirrors `Mup1Con#rx` (support/scripts/mup1cc:24-34): print whatever
+/// Mirrors `Mup1Con#rx` (mup1cc:24-34): print whatever
 /// non-CoAP traffic (console text, device trace, boot announce) arrives
 /// while a request is in flight.
 fn print_other_frame(f: &mup1::Frame) {
