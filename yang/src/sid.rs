@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
 //! `.sid` file parsing (RFC 9595 JSON format).
 //!
 //! ```json

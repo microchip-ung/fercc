@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
 //! Semantic interpretation of parsed YANG statement trees into a schema
 //! tree with attached SIDs: grouping/uses instantiation, augment, typedef
 //! resolution, identity graph, leafref resolution.

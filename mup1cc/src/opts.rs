@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
 //! CLI option surface, matching `support/scripts/mup1cc`'s `OptionParser`
 //! block flag-for-flag (minus `--log-append`/`--log-msg`/`--log-run`/
 //! `--log-steps`, out of scope for this port -- see

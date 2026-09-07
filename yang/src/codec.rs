@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
 //! The SID-CBOR wire codec (RFC 9254 / RFC 9595), ported from
 //! `support/yang-enc/yang-enc.rb`'s `type2cbor`/`type2json`/`json2cbor`/
 //! `cbor2json`/`json_seq2cbor`/`cbor_seq2json`, cross-checked against

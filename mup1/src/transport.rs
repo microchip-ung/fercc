@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
 //! Byte-stream transports carrying MUP1 framing: a real serial device, or a
 //! `termhub://`/`telnet://host:port` TCP bridge (mirrors
 //! `support/libeasy/handler/dut.rb`'s `-d` URI-scheme dispatch, and matches

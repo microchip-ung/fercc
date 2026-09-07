@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
 //! A from-scratch RFC 7950 YANG tokenizer + statement-tree parser.
 //!
 //! The Ruby reference (`support/yang-enc/yang-schema.rb`) has no YANG-text

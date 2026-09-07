@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
 fn main() {
     let repo_root = yang::catalog::find_repo_root(std::env::current_dir().unwrap().as_path())
         .expect("could not find repo root (support/scripts/gen-cc-nodes.yaml not found in any ancestor)");

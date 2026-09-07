@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
 //! Topology-file device default, matching `support/scripts/mup1cc`'s
 //! `TOPO`/`get_device` (mup1cc:64-150): look for
 //! `.mscc-libeasy-topology.yaml` in the current directory, then

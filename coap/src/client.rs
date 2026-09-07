@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
 //! Synchronous CoAP request/response driver with RFC 7959 blockwise
 //! transfer, layered on a [`mup1::Mup1Client`].
 //!

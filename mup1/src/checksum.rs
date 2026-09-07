@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
 //! MUP1 frame checksums.
 //!
 //! Ported from `client-lib/src/lm_mup1.c` + `utils/src/lm_utils_crc32.c`

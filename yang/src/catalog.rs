@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
 //! YANG catalog acquisition: either this repo's checked-out sources
 //! (`--workspace`, matching `support/yang-enc/yang-schema.rb`'s
 //! `PersistentYangSchema`, minus its on-disk parsed-schema cache -- see

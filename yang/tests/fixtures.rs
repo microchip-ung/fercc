@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
 //! Conformance tests against a curated subset of the real YAML/CBOR
 //! fixture pairs originally copied wholesale from
 //! sw-velocitydrive-devclient's test-data/ (see mup1cc-rs/rust-mup1cc.txt

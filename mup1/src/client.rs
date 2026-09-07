@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
 //! Ties [`frame::Decoder`] to a [`transport::Transport`]: send frames,
 //! poll for received ones. Mirrors what `Et::Handler::Mup1` +
 //! `Et::Handler::Base`'s poll loop do together in the Ruby reference, minus

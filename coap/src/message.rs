@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
 //! CoAP (RFC 7252) message encode/decode, plus the CORECONF-specific
 //! method codes (FETCH/iPATCH) and content-formats used for YANG-SID CBOR.
 //!

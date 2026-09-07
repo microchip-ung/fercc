@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
 //! `mup1cc`: a Rust CLI clone of `support/scripts/mup1cc`. See
 //! `mup1cc-rs/rust-mup1cc.txt` and the `mup1cc-rs` commit history for the
 //! porting notes; `--log-*` and DTLS (`-k`) are intentionally out of

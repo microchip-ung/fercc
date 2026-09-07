@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
 use std::time::{Duration, Instant};
 
 use mup1::{frame_type, ChecksumType, Mup1Client};

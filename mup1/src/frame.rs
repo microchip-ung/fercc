@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
 //! MUP1 frame encode/decode.
 //!
 //! Ported from the state machine in `client-lib/src/lm_mup1.c`

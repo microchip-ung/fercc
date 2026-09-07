@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
 //! Input/output format handling, matching `support/scripts/mup1cc`'s
 //! `input_data_read`/`output_data_process` (mup1cc:155-277): YAML by
 //! default, with a flag > file-extension > default priority chain.

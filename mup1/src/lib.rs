@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
 //! MUP1 (Microchip UART Protocol 1) framing.
 //!
 //! See `checksum` for the two checksum algorithms and `frame` for the

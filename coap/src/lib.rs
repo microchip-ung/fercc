@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
 //! CoAP (RFC 7252) client with RFC 7959 blockwise transfer, plus the
 //! CORECONF (draft-ietf-core-comi) method/content-format conventions used
 //! by `mup1cc`, layered over a [`mup1::Mup1Client`].

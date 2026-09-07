@@ -1,3 +1,6 @@
+# Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+# SPDX-License-Identifier: MIT
+
 [workspace]
 resolver = "2"
 members = ["mup1", "coap", "yang", "mup1cc"]
