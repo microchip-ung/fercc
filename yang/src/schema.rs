@@ -252,6 +252,7 @@ pub struct Builder<'a> {
     identities: Vec<Identity>,
     identity_by_module_name: HashMap<(String, String), IdentityId>,
     module_root: HashMap<String, NodeId>,
+    yang_data_roots: HashMap<String, NodeId>,
     leafref_pending: Vec<TypeId>,
 }
 
@@ -304,6 +305,7 @@ pub fn build(yang_sources: &[String], sid_sources: &[String]) -> R<Schema> {
         identities: Vec::new(),
         identity_by_module_name: HashMap::new(),
         module_root: HashMap::new(),
+        yang_data_roots: HashMap::new(),
         leafref_pending: Vec::new(),
     };
 
@@ -464,12 +466,27 @@ impl<'a> Builder<'a> {
     fn interpret_extension(&mut self, naming: &str, s: &Stmt, _parent: NodeId) -> R<()> {
         // Only the RFC 8040 `rc:yang-data` extension is handled (matches
         // yang-utils.rb): must contain exactly one container, promoted to
-        // a top-level root node named "module:arg".
+        // a top-level root node named "module:<container's own name>" --
+        // NOT the yang-data statement's own argument, which is merely a
+        // label (e.g. `rc:yang-data coreconf-error { container error {...`
+        // promotes to "ietf-coreconf:error", matching the .sid file, not
+        // "ietf-coreconf:coreconf-error"). Matches yang-utils.rb:255-256
+        // (`container_stmt.arg.prepend(self.name, ':')`).
         if s.keyword == "yang-data" {
             if let Some(container) = s.sub("container") {
-                let name = format!("{naming}:{}", s.arg_str());
-                let root = self.new_node("container", name, naming.to_string(), None);
+                let name = format!("{naming}:{}", container.arg_str());
+                let root = self.new_node("container", name.clone(), naming.to_string(), None);
                 self.interpret_children(naming, naming, &container.subs, root)?;
+                // `rc:yang-data` roots aren't children of their module's
+                // node (they're "not part of the datastore" -- see
+                // finish()'s comment -- so must stay out of module_root's
+                // children, which finish() flattens into the real
+                // datastore tree) but their own `.sid` file entries (e.g.
+                // "/ietf-coreconf:error") still need to resolve to them,
+                // since real error responses are addressed by exactly
+                // these SIDs on the wire. Register separately so
+                // resolve_sid_data_identifier can still find them.
+                self.yang_data_roots.insert(name, root);
             }
         }
         Ok(())
@@ -639,16 +656,22 @@ impl<'a> Builder<'a> {
     fn resolve_sid_data_identifier(&self, path: &str) -> R<NodeId> {
         let mut segs = path.split('/').filter(|s| !s.is_empty());
         let first = segs.next().ok_or_else(|| err(format!("empty SID data identifier {path:?}")))?;
-        let (dst_module, first_local) = first
-            .split_once(':')
-            .ok_or_else(|| err(format!("first segment {first:?} of SID data identifier {path:?} has no module prefix")))?;
-        let dst_root = *self
-            .module_root
-            .get(dst_module)
-            .ok_or_else(|| err(format!("unknown module {dst_module:?} in SID data identifier {path:?}")))?;
-        let mut cur = self
-            .find_by_local(dst_root, first_local)
-            .ok_or_else(|| err(format!("target segment {first_local:?} not found in module {dst_module:?} ({path:?})")))?;
+        // An `rc:yang-data` root (e.g. "/ietf-coreconf:error") is matched
+        // by its full qualified name directly -- it has no module-root
+        // parent to descend from (see interpret_extension).
+        let mut cur = if let Some(&root) = self.yang_data_roots.get(first) {
+            root
+        } else {
+            let (dst_module, first_local) = first
+                .split_once(':')
+                .ok_or_else(|| err(format!("first segment {first:?} of SID data identifier {path:?} has no module prefix")))?;
+            let dst_root = *self
+                .module_root
+                .get(dst_module)
+                .ok_or_else(|| err(format!("unknown module {dst_module:?} in SID data identifier {path:?}")))?;
+            self.find_by_local(dst_root, first_local)
+                .ok_or_else(|| err(format!("target segment {first_local:?} not found in module {dst_module:?} ({path:?})")))?
+        };
         for seg in segs {
             let local = seg.rsplit_once(':').map(|(_, n)| n).unwrap_or(seg);
             cur = self.find_by_local(cur, local).ok_or_else(|| err(format!("target segment {seg:?} not found ({path:?})")))?;
@@ -907,6 +930,16 @@ impl<'a> Builder<'a> {
 
         let mut sid_index = HashMap::new();
         self.index_sids(root, &mut sid_index);
+        // `rc:yang-data` roots (e.g. `ietf-coreconf:error`) are
+        // deliberately not children of `root` -- a whole-tree GET/PUT
+        // must not enumerate them as if they were real datastore paths --
+        // but their SIDs are still real wire values (a device error
+        // response is addressed by exactly these SIDs), so index each
+        // one's subtree separately rather than via the `root` walk.
+        let yang_data_roots: Vec<NodeId> = self.yang_data_roots.values().copied().collect();
+        for yd_root in yang_data_roots {
+            self.index_sids(yd_root, &mut sid_index);
+        }
 
         Ok(Schema {
             nodes: self.nodes,
