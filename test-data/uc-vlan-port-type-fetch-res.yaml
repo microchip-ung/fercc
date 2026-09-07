@@ -1,5 +1,0 @@
-- ? "/ietf-interfaces:interfaces/interface/ieee802-dot1q-bridge:bridge-port/\
-     port-type"
-  : ieee802-dot1q-bridge:c-vlan-bridge-port
-    
-

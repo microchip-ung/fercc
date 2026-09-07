@@ -1,8 +1,0 @@
-- ? "/ieee802-dot1q-bridge:bridges/bridge[name='b0']/component[name='c0']/\
-     filtering-database/mchp-velocitysp-bridge:unknown-mac-flooding"
-  : ipv6-mc-disable:
-    - '4'
-    - '5'
-    - '6'
-    
-

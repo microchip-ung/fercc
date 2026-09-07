@@ -1,10 +1,22 @@
-//! Conformance tests against the ~387 real YAML/CBOR fixture pairs copied
-//! from sw-velocitydrive-devclient's test-data/ (see
-//! mup1cc-rs/rust-mup1cc.txt and the top-level commit history for
-//! provenance), plus the bundled YANG catalog tarball they were generated
-//! against. Each case is checked both directions: encoding the YAML
-//! fixture must produce the reference .cbor bytes exactly, and decoding
-//! the reference .cbor then re-encoding it must round-trip byte-identically.
+//! Conformance tests against a curated subset of the real YAML/CBOR
+//! fixture pairs originally copied wholesale from
+//! sw-velocitydrive-devclient's test-data/ (see mup1cc-rs/rust-mup1cc.txt
+//! and the top-level commit history for provenance), plus the bundled
+//! YANG catalog tarball they were generated against. Each case is checked
+//! both directions: encoding the YAML fixture must produce the reference
+//! .cbor bytes exactly, and decoding the reference .cbor then re-encoding
+//! it must round-trip byte-identically.
+//!
+//! The corpus was originally all ~387 pairs from that source, uncurated.
+//! Measuring per-fixture code coverage (line, branch, function, and
+//! region, via `cargo llvm-cov`) found that 12 of them already cover
+//! everything the full 387 do -- confirmed by swapping the candidate
+//! subset in, dropping the rest, and re-measuring the whole workspace's
+//! coverage against the original baseline (all four metrics matched
+//! exactly). The other ~375 are removed; see git history for exactly
+//! which ones and the measurement method, if the corpus ever needs
+//! auditing again (e.g. after a codec/schema change actually does need
+//! broader fixture coverage).
 
 use std::collections::HashMap;
 use std::fs;
@@ -104,7 +116,7 @@ fn fixture_corpus_round_trips() {
         }
     }
 
-    assert!(cases > 300, "expected >300 fixture cases discovered, found {cases} -- test-data/ missing?");
+    assert!(cases == 12, "expected exactly 12 curated fixture cases, found {cases} -- test-data/ missing, or the corpus changed without updating this count?");
     assert!(failures.is_empty(), "{} unexpected fixture failures:\n{failures:#?}", failures.len());
 }
 

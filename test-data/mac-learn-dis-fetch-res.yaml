@@ -1,5 +1,0 @@
-- ? "/ietf-interfaces:interfaces/interface/ieee802-dot1q-bridge:bridge-port/\
-     mchp-velocitysp-bridge:fdb-learning-disable"
-  : true
-    
-

@@ -1,5 +1,0 @@
-- ? "/ietf-interfaces:interfaces/interface"
-  : name: AGGR2
-    type: iana-if-type:ieee8023adLag
-    
-

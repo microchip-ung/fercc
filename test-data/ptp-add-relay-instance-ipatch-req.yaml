@@ -1,8 +1,0 @@
-- ? "/ieee1588-ptp:ptp/instances/instance"
-  : instance-index: 0
-    ports:
-      port:
-      - port-index: 25
-      - port-index: 26
-    
-

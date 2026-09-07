@@ -1,8 +1,0 @@
-- ? "/ietf-interfaces:interfaces/interface[name='1']/\
-     mchp-velocitysp-port:eth-qos/config/traffic-class-shapers"
-  : traffic-class: 3
-    credit-based:
-      idle-slope: 100000
-      mode: line
-    
-

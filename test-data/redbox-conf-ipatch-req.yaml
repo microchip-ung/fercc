@@ -1,8 +1,0 @@
-- ? "/mchp-velocitysp-redbox:redbox/redbox-list"
-  : id: 0
-    config:
-      mode: hsr-san
-      port-a: 1
-      port-b: 2
-    
-

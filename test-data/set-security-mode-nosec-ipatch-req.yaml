@@ -1,6 +1,0 @@
-- ? "/mchp-velocitysp-system:coap-server/config"
-  : security-mode: no-sec
-    mup1-dtls-enable: false
-    ip-dtls-enable: false
-
-

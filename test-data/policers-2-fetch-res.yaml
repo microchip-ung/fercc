@@ -1,9 +1,0 @@
-- ? "/ietf-interfaces:interfaces/interface/mchp-velocitysp-port:eth-qos/config/\
-     port-policers"
-  : - index: 1
-      frame-selector: unknown-unicast
-      frame-rate:
-        rate: 1000
-        burst-size: 2000
-    
-

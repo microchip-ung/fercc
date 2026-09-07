@@ -12,8 +12,8 @@ reference.
 Status as of this writing: **core CLI parity implemented and verified
 against real hardware** (`/dev/ttyACM0`), including a byte-for-byte
 comparison of `mup1cc -m get -w` output against the real Ruby tool run
-against the same board (see git log for the diff session), and **all 387
-of the codec conformance fixtures pass byte-exact** (`cargo test`).
+against the same board (see git log for the diff session), and **the
+codec conformance fixture corpus passes byte-exact** (`cargo test`).
 DTLS, `--log-*`, and a handful of smaller gaps are intentionally out of
 scope for this pass -- see "Known gaps" below.
 
@@ -22,8 +22,8 @@ scope for this pass -- see "Known gaps" below.
 ```
 cargo build --workspace            # debug
 cargo build --workspace --release  # optimized
-cargo test --workspace             # unit tests + the 387-fixture codec
-                                    # conformance suite (yang/tests/fixtures.rs)
+cargo test --workspace             # unit tests + the codec conformance
+                                    # fixture suite (yang/tests/fixtures.rs)
 ```
 
 Requires a stable Rust toolchain (developed against 1.98.1; no nightly
@@ -66,11 +66,15 @@ Flags mirror `support/scripts/mup1cc`'s `OptionParser` block -- see
     cache (re-parsing fresh every invocation is the explicit point of
     doing this in Rust -- see `rust-mup1cc.txt`).
 - `mup1cc/` -- the CLI binary tying it all together.
-- `test-data/` -- ~387 YAML/CBOR fixture pairs plus a bundled YANG
-  catalog tarball, copied from `~/sw-velocitydrive-devclient`'s
-  `test-data/` (a prior TypeScript port of this same stack). This is the
-  primary codec conformance corpus (`yang/tests/fixtures.rs`), alongside
-  `support/yang-enc/spec/tests/` in the main Ruby codebase.
+- `test-data/` -- a curated set of YAML/CBOR fixture pairs plus a bundled
+  YANG catalog tarball. Originally ~387 pairs copied wholesale from
+  `~/sw-velocitydrive-devclient`'s `test-data/` (a prior TypeScript port
+  of this same stack); trimmed by measured code coverage (line, branch,
+  function, region) to the 12 that already cover everything the full set
+  did, plus 4 real hardware-captured negative cases -- see
+  `yang/tests/fixtures.rs`'s doc comments for the method. This is the
+  primary codec conformance corpus, alongside `support/yang-enc/spec/tests/`
+  in the main Ruby codebase.
 
 ## Known gaps
 

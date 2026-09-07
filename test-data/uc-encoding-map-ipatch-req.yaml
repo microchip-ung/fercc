@@ -1,5 +1,0 @@
-- ? "/ietf-interfaces:interfaces/interface[name='2']/\
-     ieee802-dot1q-bridge:bridge-port/pcp-encoding-table/pcp-encoding-map"
-  : pcp: 8P0D
-    
-

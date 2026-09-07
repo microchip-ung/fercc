@@ -1,5 +1,0 @@
-- ? "/ietf-interfaces:interfaces/interface[name='1']/\
-     mchp-velocitysp-port:eth-port/config/max-frame-length"
-  : 1518
-    
-

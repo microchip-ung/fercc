@@ -1,9 +1,0 @@
-- ? "/ietf-interfaces:interfaces/interface[name='1']/\
-     ieee802-ethernet-interface:ethernet/auto-negotiation/enable"
-  : false
-    
-- ? "/ietf-interfaces:interfaces/interface[name='1']/\
-     mchp-velocitysp-port:eth-port/config/speed"
-  : '0.1'
-    
-

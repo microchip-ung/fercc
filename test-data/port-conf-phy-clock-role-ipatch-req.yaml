@@ -1,5 +1,0 @@
-- ? "/ietf-interfaces:interfaces/interface[name='1']/\
-     mchp-velocitysp-port:eth-port/config/phy-clock-role"
-  : phy_clock_follower
-    
-

@@ -1,7 +1,0 @@
-- ? "/ietf-interfaces:interfaces/interface[name='1']/\
-     ieee802-dot1q-bridge:bridge-port/\
-     ieee802-dot1q-sched-bridge:gate-parameter-table/\
-     queue-max-sdu-table[traffic-class='0']/queue-max-sdu"
-  : 128
-    
-

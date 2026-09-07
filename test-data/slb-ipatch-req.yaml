@@ -1,9 +1,0 @@
-- ? "/ietf-interfaces:interfaces/interface[name='1']/\
-     mchp-velocitysp-port:eth-qos/config/traffic-class-shapers"
-  : traffic-class: 7
-    single-leaky-bucket:
-      committed-information-rate: 50000
-      committed-burst-size: 2000
-      mode: data
-    
-

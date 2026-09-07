@@ -1,8 +1,0 @@
-- ? "/ieee1588-ptp:ptp/mchp-velocitysp-ptp:ltcs/ltc"
-  : ltc-index: 1
-    ptp-pins:
-      ptp-pin:
-      - index: 4
-        function: 1pps-out
-    
-

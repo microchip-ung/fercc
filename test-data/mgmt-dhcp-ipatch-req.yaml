@@ -1,5 +1,0 @@
-- ? "/ietf-interfaces:interfaces/interface[name='L3V1']/\
-     mchp-velocitysp-dhcp:dhcp/client/config/enabled"
-  : true
-    
-

@@ -1,9 +1,0 @@
-- ? "/ietf-interfaces:interfaces/interface/ieee802-ethernet-interface:ethernet/\
-     statistics/frame"
-  : in-total-frames: '3'
-    in-error-fcs-frames: '0'
-    in-error-undersize-frames: '0'
-    in-error-oversize-frames: '0'
-    out-frames: '0'
-    
-

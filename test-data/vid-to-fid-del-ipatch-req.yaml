@@ -1,4 +1,0 @@
-- ? "/ieee802-dot1q-bridge:bridges/bridge[name='b0']/component[name='c0']/\
-     bridge-vlan/vid-to-fid[vid='200']"
-  : 
-
