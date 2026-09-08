@@ -115,7 +115,7 @@ mod tests {
     use super::*;
 
     fn temp_file(name: &str, contents: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!("rcc-io-test-{}-{name}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("fercc-io-test-{}-{name}", std::process::id()));
         std::fs::write(&path, contents).unwrap();
         path
     }

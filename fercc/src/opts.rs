@@ -8,7 +8,7 @@
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser, Debug)]
-#[command(name = "rcc", about = "MUP1/CoAP/CORECONF client for VelocityDRIVE-SP devices")]
+#[command(name = "fercc", about = "MUP1/CoAP/CORECONF client for VelocityDRIVE-SP devices")]
 pub struct Opts {
     /// `conv`/`schema`, folding in `yang-enc`'s CLI (mirrors
     /// `support/yang-enc/yang-enc.rb`). Omitted entirely: the flat
@@ -92,7 +92,7 @@ pub struct Opts {
     /// the YANG catalog comes from the DUT's own checksum rather than
     /// -w/--workspace) with this command instead. Called as `<command>
     /// <checksum>`; it must write the catalog's .tar.gz bytes to
-    /// stdout and exit 0 -- rcc extracts them itself, so the command
+    /// stdout and exit 0 -- fercc extracts them itself, so the command
     /// doesn't need to leave any files behind. Whatever network
     /// security handling (TLS, proxies, certificates, alternate
     /// mirrors) this needs is entirely up to the command itself.
@@ -136,7 +136,7 @@ fn workspace_flag(workspace: bool, no_workspace: bool) -> Option<bool> {
     }
 }
 
-/// Folds `support/yang-enc/yang-enc.rb`'s CLI into `rcc` as subcommands,
+/// Folds `support/yang-enc/yang-enc.rb`'s CLI into `fercc` as subcommands,
 /// matching that standalone tool's offline nature exactly: no `-d`, no
 /// checksum-download fallback, no `-w`/`--no-workspace` (there is no
 /// alternative to choose between) -- just the workspace catalog by

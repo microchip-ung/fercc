@@ -1,13 +1,13 @@
 // Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
 // SPDX-License-Identifier: MIT
 
-//! `rcc`: a Rust CLI clone of `mup1cc`. See this repo's commit history
+//! `fercc`: a Rust CLI clone of `mup1cc`. See this repo's commit history
 //! for the porting notes; `--log-*` and DTLS (`-k`) are intentionally
 //! out of scope for this port.
 //!
 //! Structured as a library (this file) plus a thin `main.rs` so the
 //! actual logic -- including `conv`'s format-conversion core, `convert`
-//! below -- is unit-testable directly (`rcc/tests/`), without spawning
+//! below -- is unit-testable directly (`fercc/tests/`), without spawning
 //! the built binary as a subprocess.
 
 mod home;
@@ -242,10 +242,10 @@ pub enum ConvOutput {
     Bytes(Vec<u8>),
 }
 
-/// The core of `rcc conv`/`yang-enc conv`, decoupled from actual file/
+/// The core of `fercc conv`/`yang-enc conv`, decoupled from actual file/
 /// STDIN/STDOUT I/O -- mirrors `main`'s `'conv'` dispatch (yang-enc.rb:
 /// 145-168). Direct, subprocess-free unit testing lives in
-/// `rcc/tests/conv_validation.rs`.
+/// `fercc/tests/conv_validation.rs`.
 pub fn convert(schema: &Schema, input_format: &str, output_format: &str, cf: ContentFormat, continue_on_error: bool, input: ConvInput) -> Result<ConvOutput, String> {
     let is_sequence = matches!(cf, ContentFormat::Fetch | ContentFormat::Ipatch | ContentFormat::Post);
     let text = || match input {

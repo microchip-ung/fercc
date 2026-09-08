@@ -213,7 +213,7 @@ mod tests {
 
     #[cfg(unix)]
     fn unique_path(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("rcc-catalog-test-{}-{name}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("fercc-catalog-test-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         let _ = fs::remove_file(&path);
         path

@@ -5,7 +5,7 @@
 //! directly unit-testable without spawning this binary as a subprocess.
 
 fn main() {
-    if let Err(e) = rcc::run() {
+    if let Err(e) = fercc::run() {
         eprintln!("ERROR: {e}");
         std::process::exit(1);
     }

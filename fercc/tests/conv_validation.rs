@@ -1,10 +1,10 @@
 // Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
 // SPDX-License-Identifier: MIT
 
-//! Validates `rcc::convert` (the core of `rcc conv`) across every
+//! Validates `fercc::convert` (the core of `fercc conv`) across every
 //! YAML/JSON/CBOR direction, against the real fixture corpus in
 //! `test-data/` (the same 12 round-trip + 4 error-res fixtures
-//! `yang/tests/fixtures.rs` uses). Calls `rcc::convert` directly --
+//! `yang/tests/fixtures.rs` uses). Calls `fercc::convert` directly --
 //! deliberately not a subprocess test: spawning the built binary to
 //! validate its own conversion logic would mean the logic isn't
 //! actually unit-testable, just observable from outside.
@@ -29,7 +29,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use rcc::{content_format_of, convert, ConvInput, ConvOutput};
+use fercc::{content_format_of, convert, ConvInput, ConvOutput};
 use yang::codec::ContentFormat;
 use yang::schema::Schema;
 
@@ -85,7 +85,7 @@ fn convert_bytes_to_text(schema: &Schema, input_format: &str, output_format: &st
 
 /// The 12 round-trip fixtures `yang/tests/fixtures.rs` uses, with their
 /// content format inferred the same way (`content_format_for`'s suffix
-/// rule), spelled out here as the exact `-c` value `rcc conv` takes.
+/// rule), spelled out here as the exact `-c` value `fercc conv` takes.
 const ROUND_TRIP_FIXTURES: &[(&str, &str)] = &[
     ("1pps-disable-ipatch-req", "ipatch"),
     ("ace-any-drop-ipatch-req", "ipatch"),

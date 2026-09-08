@@ -5,7 +5,7 @@
 //! `support/yang-enc/yang-enc.rb`'s `to_json_schema`/`type2schema`. This
 //! is the schema the Ruby reference feeds to `json_schemer` to validate a
 //! request/response before encoding/decoding -- generating it is also
-//! this port's `rcc schema` subcommand (`yang-enc schema`'s equivalent).
+//! this port's `fercc schema` subcommand (`yang-enc schema`'s equivalent).
 //!
 //! Checked byte-for-byte (modulo two narrow, allow-listed gaps) against
 //! a real `yang-enc schema` run on the same catalog --
@@ -356,7 +356,7 @@ fn type2schema(schema: &Schema, type_id: TypeId) -> Json {
         // the bases themselves are excluded here, deliberately
         // diverging from `all_identity_bases`'s own RFC-correct
         // semantics, to match what the real reference tool actually
-        // emits (confirmed by diffing this port's `rcc schema` output
+        // emits (confirmed by diffing this port's `fercc schema` output
         // against a real `yang-enc schema` run on the same catalog --
         // see `yang/tests/json_schema_conformance.rs`).
         Builtin::Identityref => {

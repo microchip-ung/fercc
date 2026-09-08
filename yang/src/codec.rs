@@ -1331,7 +1331,7 @@ fn cbor_seq_from_bytes(bytes: &[u8]) -> R<Vec<Cbor>> {
     Ok(items)
 }
 
-/// `rcc conv`'s `['cbor', 'cbor']` case (yang-enc.rb:164-167): decode a
+/// `fercc conv`'s `['cbor', 'cbor']` case (yang-enc.rb:164-167): decode a
 /// CBOR-sequence byte string generically (no schema, no content-format
 /// -- each top-level item as whatever CBOR value it is) and re-encode
 /// each item individually. A normalize pass, not a byte-identical
