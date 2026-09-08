@@ -67,8 +67,15 @@ struct Lexer {
 }
 
 impl Lexer {
+    /// Normalizes CRLF/lone-CR to LF up front, so every downstream
+    /// consumer (bare tokens, quoted-string content, comments) sees
+    /// LF-only input -- a source file's own line-ending convention
+    /// otherwise leaks into quoted-string *content* verbatim (e.g. a
+    /// `\r` embedded in the middle of a `description`'s text), which a
+    /// real `pyang`-based toolchain doesn't produce.
     fn new(src: &str) -> Self {
-        Self { chars: src.chars().collect(), pos: 0, line: 1, col: 0 }
+        let normalized = src.replace("\r\n", "\n").replace('\r', "\n");
+        Self { chars: normalized.chars().collect(), pos: 0, line: 1, col: 0 }
     }
 
     fn peek(&self) -> Option<char> {
@@ -277,7 +284,11 @@ fn strip_indentation(raw: &str, quote_col: usize) -> String {
     let mut out = String::from(lines.next().unwrap());
     for line in lines {
         out.push('\n');
-        out.push_str(strip_leading_ws(line, quote_col));
+        // RFC 7950 6.1.3: strip up to and including the opening quote's
+        // *own* column -- `quote_col` (0-indexed, the quote character's
+        // position) is therefore one column short of the count to
+        // strip.
+        out.push_str(strip_leading_ws(line, quote_col + 1));
     }
     out
 }
