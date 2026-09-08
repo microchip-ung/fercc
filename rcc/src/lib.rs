@@ -10,6 +10,7 @@
 //! below -- is unit-testable directly (`rcc/tests/`), without spawning
 //! the built binary as a subprocess.
 
+mod home;
 pub mod io;
 pub mod opts;
 pub mod topology;
@@ -140,8 +141,8 @@ fn load_downloaded_schema(coap: &mut CoapClient, verbose: bool) -> Result<Schema
 }
 
 fn cache_base_dir() -> Result<PathBuf, String> {
-    let home = std::env::var("HOME").map_err(|_| "the HOME environment variable isn't set, so there's nowhere to put the downloaded-catalog cache".to_string())?;
-    Ok(PathBuf::from(home).join(".velocitydrive-yang-cache"))
+    let home = home::home_dir().ok_or("couldn't determine your home directory, so there's nowhere to put the downloaded-catalog cache")?;
+    Ok(home.join(".velocitydrive-yang-cache"))
 }
 
 // ===========================================================================
