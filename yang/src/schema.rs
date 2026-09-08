@@ -107,6 +107,20 @@ pub struct TypeDef {
     pub leafref_path: Option<String>,
     pub leafref_target: Option<NodeId>,
     pub union_members: Vec<TypeId>,
+    /// `range` restrictions (int8/16/32/64, uint8/16/32/64) or `length`
+    /// restrictions (string, binary) -- one underlying field for both,
+    /// mirroring `Type#ranges`/`Type#length` in yang-utils.rb (`length` is
+    /// literally `alias :length :ranges` there). Starts at the builtin's
+    /// own natural bounds (`default_ranges`) and is narrowed by each
+    /// `range`/`length` statement encountered while resolving a type,
+    /// innermost (builtin or typedef base) first. Empty for every other
+    /// builtin -- nothing in this port ever restricts or reads a range
+    /// for them.
+    pub ranges: Vec<(i128, i128)>,
+    /// `pattern` restrictions (string only), accumulated top-down through
+    /// the typedef chain (RFC 7950: multiple pattern statements, whether
+    /// inherited or local, are all ANDed together).
+    pub patterns: Vec<String>,
 }
 
 impl TypeDef {
@@ -121,8 +135,58 @@ impl TypeDef {
             leafref_path: None,
             leafref_target: None,
             union_members: Vec::new(),
+            ranges: Vec::new(),
+            patterns: Vec::new(),
         }
     }
+}
+
+/// The natural bounds a builtin type starts with before any `range`/
+/// `length` statement narrows them, mirroring `Type#initialize`
+/// (yang-utils.rb:654-661). Every other builtin starts with no ranges at
+/// all -- there is nothing to narrow and nothing downstream reads them.
+fn default_ranges(builtin: Builtin) -> Vec<(i128, i128)> {
+    match builtin {
+        Builtin::Int8 => vec![(-128, 127)],
+        Builtin::Int16 => vec![(-32768, 32767)],
+        Builtin::Int32 => vec![(-2147483648, 2147483647)],
+        Builtin::Int64 => vec![(-9223372036854775808, 9223372036854775807)],
+        Builtin::Uint8 => vec![(0, 255)],
+        Builtin::Uint16 => vec![(0, 65535)],
+        Builtin::Uint32 => vec![(0, 4294967295)],
+        Builtin::Uint64 | Builtin::Binary | Builtin::String => vec![(0, 18446744073709551615)],
+        _ => Vec::new(),
+    }
+}
+
+/// Parse a `range`/`length` argument (`range-part *("|" range-part)`,
+/// each part `bound [".." bound]`, a bound being a decimal integer or the
+/// keywords `min`/`max`) and narrow `prev` accordingly, mirroring
+/// `Type#add_range`/`Type#interpret_range_bound` (yang-utils.rb:702-723).
+/// `min`/`max` resolve against `prev`'s own extremes, not the builtin's
+/// absolute bounds, so restrictions compose correctly across a typedef
+/// chain. Malformed bounds fall back to `prev`'s minimum rather than
+/// panicking -- this port has no user-facing "malformed YANG" diagnostic
+/// path for schema data, and every catalog this ships against is already
+/// known-good.
+fn restrict_range(prev: &[(i128, i128)], spec: &str) -> Vec<(i128, i128)> {
+    let prev_min = prev.iter().map(|r| r.0).min().unwrap_or(0);
+    let prev_max = prev.iter().map(|r| r.1).max().unwrap_or(0);
+    let resolve = |tok: &str| -> i128 {
+        match tok {
+            "min" => prev_min,
+            "max" => prev_max,
+            _ => tok.parse().unwrap_or(prev_min),
+        }
+    };
+    spec.split('|')
+        .map(|part| {
+            let mut bounds = part.split("..").map(str::trim);
+            let min_tok = bounds.next().unwrap_or("");
+            let max_tok = bounds.next().unwrap_or(min_tok);
+            (resolve(min_tok), resolve(max_tok))
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -151,6 +215,11 @@ pub struct Node {
     pub keys: Vec<String>,
     pub sid: Option<i64>,
     pub owner_module: String,
+    /// This node's own `description` substatement text, if any --
+    /// tracked only for [`crate::json_schema`]'s benefit (matches
+    /// `get_description`, yang-utils.rb:549-555: the first `description`
+    /// substatement's text, verbatim, no further processing).
+    pub description: Option<String>,
 }
 
 impl Node {
@@ -342,6 +411,7 @@ impl<'a> Builder<'a> {
             keys: Vec::new(),
             sid: None,
             owner_module,
+            description: None,
         });
         if let Some(p) = parent {
             self.nodes[p].children.push(id);
@@ -519,6 +589,9 @@ impl<'a> Builder<'a> {
         }
         if let Some(m) = s.sub("mandatory") {
             self.nodes[node].mandatory = m.arg_str() == "true";
+        }
+        if let Some(d) = s.sub("description") {
+            self.nodes[node].description = Some(d.arg_str().to_string());
         }
 
         match s.keyword.as_str() {
@@ -711,24 +784,51 @@ impl<'a> Builder<'a> {
 
     fn interpret_type(&mut self, module: &str, t: &Stmt) -> R<TypeId> {
         let name = t.arg_str();
-        if let Some(builtin) = Builtin::from_name(name) {
-            return self.interpret_builtin_type(module, builtin, t);
+        let mut ty = if let Some(builtin) = Builtin::from_name(name) {
+            self.interpret_builtin_type(module, builtin, t)?
+        } else {
+            // typedef: interpret its base type, then derive from it -- a
+            // clone, not the same TypeId, since this same typedef can be
+            // used (and independently further restricted) at more than
+            // one site. Mirrors `inner.derive(typedef['name'])`
+            // (yang-utils.rb:324): the base's already-resolved
+            // ranges/patterns carry forward as the starting point for
+            // this level's own restrictions below.
+            let (def_module, local) = self.split_qualified(module, name)?;
+            let raw = *self
+                .defs
+                .typedefs
+                .get(&(def_module.clone(), local.to_string()))
+                .ok_or_else(|| err(format!("typedef {name:?} not found (used from {module})")))?;
+            let base = raw.sub("type").ok_or_else(|| err(format!("typedef {name:?} has no type")))?;
+            let base_id = self.interpret_type(&def_module, base)?;
+            self.types[base_id].clone()
+        };
+
+        // Apply this type statement's own range/length/pattern
+        // restrictions on top of whatever it started with (builtin
+        // defaults, or a typedef's already-narrowed ranges/patterns) --
+        // mirrors yang-utils.rb's `interpret_type` applying `pattern`/
+        // `range`/`length` unconditionally after resolving `t`,
+        // regardless of whether `t` was a builtin or typedef reference.
+        if !ty.ranges.is_empty() {
+            if let Some(range) = t.sub("range") {
+                ty.ranges = restrict_range(&ty.ranges, range.arg_str());
+            }
+            if let Some(length) = t.sub("length") {
+                ty.ranges = restrict_range(&ty.ranges, length.arg_str());
+            }
         }
-        // typedef: interpret its base type, carrying restrictions forward
-        // as a fresh TypeDef (a full "derive" isn't needed since we don't
-        // track range/length/pattern -- see module docs).
-        let (def_module, local) = self.split_qualified(module, name)?;
-        let raw = *self
-            .defs
-            .typedefs
-            .get(&(def_module.clone(), local.to_string()))
-            .ok_or_else(|| err(format!("typedef {name:?} not found (used from {module})")))?;
-        let base = raw.sub("type").ok_or_else(|| err(format!("typedef {name:?} has no type")))?;
-        self.interpret_type(&def_module, base)
+        for p in t.subs_of("pattern") {
+            ty.patterns.push(p.arg_str().to_string());
+        }
+
+        Ok(self.new_type(ty))
     }
 
-    fn interpret_builtin_type(&mut self, module: &str, builtin: Builtin, t: &Stmt) -> R<TypeId> {
+    fn interpret_builtin_type(&mut self, module: &str, builtin: Builtin, t: &Stmt) -> R<TypeDef> {
         let mut ty = TypeDef::new(builtin);
+        ty.ranges = default_ranges(builtin);
 
         match builtin {
             Builtin::Decimal64 => {
@@ -774,7 +874,7 @@ impl<'a> Builder<'a> {
             _ => {}
         }
 
-        Ok(self.new_type(ty))
+        Ok(ty)
     }
 
     // -- deviation -------------------------------------------------------
@@ -986,6 +1086,7 @@ impl<'a> Builder<'a> {
             keys: src.keys.clone(),
             sid: src.sid,
             owner_module: src.owner_module.clone(),
+            description: src.description.clone(),
         });
         if let Some(p) = new_parent {
             self.nodes[p].children.push(new_id);
