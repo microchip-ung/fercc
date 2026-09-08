@@ -15,3 +15,4 @@ ciborium.workspace = true
 ureq.workspace = true
 flate2.workspace = true
 tar.workspace = true
+regex.workspace = true

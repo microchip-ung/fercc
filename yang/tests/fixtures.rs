@@ -101,13 +101,13 @@ fn fixture_corpus_round_trips() {
 
             let value: Json = serde_yaml_ng::from_str(&yaml_text).map_err(|e| format!("yaml parse: {e}"))?;
             let items = value.as_array().ok_or("top-level yaml is not a sequence")?;
-            let got_cbor = codec::json_seq_to_cbor(schema, items, cf).map_err(|e| format!("encode: {e}"))?;
+            let got_cbor = codec::json_seq_to_cbor(schema, items, cf, false).map_err(|e| format!("encode: {e}"))?;
             if got_cbor != expected_cbor {
                 return Err("encode mismatch".to_string());
             }
 
             let decoded = codec::cbor_seq_to_json(schema, &expected_cbor, cf).map_err(|e| format!("decode: {e}"))?;
-            let re_encoded = codec::json_seq_to_cbor(schema, &decoded, cf).map_err(|e| format!("re-encode: {e}"))?;
+            let re_encoded = codec::json_seq_to_cbor(schema, &decoded, cf, false).map_err(|e| format!("re-encode: {e}"))?;
             if re_encoded != expected_cbor {
                 return Err("roundtrip mismatch".to_string());
             }

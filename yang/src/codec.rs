@@ -95,74 +95,233 @@ fn json_number_to_i128(value: &Json) -> Option<i128> {
     value.as_i64().map(|v| v as i128).or_else(|| value.as_u64().map(|v| v as i128))
 }
 
+/// A builtin's own YANG-source spelling ("uint8", not `Builtin::Uint8`),
+/// for error messages -- naming a *type* someone would recognize from
+/// the YANG model, not this port's internal enum.
+fn builtin_yang_name(b: Builtin) -> &'static str {
+    match b {
+        Builtin::Binary => "binary",
+        Builtin::Bits => "bits",
+        Builtin::Boolean => "boolean",
+        Builtin::Decimal64 => "decimal64",
+        Builtin::Empty => "empty",
+        Builtin::Enumeration => "enumeration",
+        Builtin::Identityref => "identityref",
+        Builtin::InstanceIdentifier => "instance-identifier",
+        Builtin::Int8 => "int8",
+        Builtin::Int16 => "int16",
+        Builtin::Int32 => "int32",
+        Builtin::Int64 => "int64",
+        Builtin::Uint8 => "uint8",
+        Builtin::Uint16 => "uint16",
+        Builtin::Uint32 => "uint32",
+        Builtin::Uint64 => "uint64",
+        Builtin::Leafref => "leafref",
+        Builtin::String => "string",
+        Builtin::Union => "union",
+    }
+}
+
+/// The plain-YANG-name list of a union's member types, resolving past
+/// any `leafref` member to what it actually targets -- "leafref" on its
+/// own would tell a reader nothing about what value is actually wanted.
+fn union_member_kinds(schema: &Schema, ty: &TypeDef) -> String {
+    ty.union_members.iter().map(|&m| builtin_yang_name(resolved_builtin(schema, m).0)).collect::<Vec<_>>().join(", ")
+}
+
+/// Mirrors `print_error`'s two halves at once (yang-enc.rb:1234-1240):
+/// on success, pass the value through; on failure, either propagate the
+/// error (matches Ruby's `raise`) or warn to stderr and substitute
+/// `fallback()` (matches Ruby's `STDERR.puts` followed by whatever the
+/// call site does next -- skip a field, treat a shape mismatch as
+/// empty, or return the raw un-encoded value from `type2cbor`'s own
+/// rescue). `--continue`/`-c` is the only thing that ever makes
+/// `continue_on_error` true.
+fn lenient<T>(result: R<T>, continue_on_error: bool, fallback: impl FnOnce() -> T) -> R<T> {
+    match result {
+        Ok(v) => Ok(v),
+        Err(e) if continue_on_error => {
+            eprintln!("WARNING: {e} (continuing, --continue given)");
+            Ok(fallback())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// A range/length bound as `i64`, narrowing `TypeDef::ranges`' `i128`
+/// storage at the boundary. Every bound a real catalog actually
+/// restricts fits `i64` exactly; the *default*, unrestricted bound
+/// (`u64::MAX`, for string/binary length) doesn't, but clamping it here
+/// is harmless -- it's not a real constraint to begin with (see
+/// `schema.rs`'s `default_ranges`), so any value that could genuinely
+/// arise still passes trivially.
+fn range_bound_i64(v: i128) -> i64 {
+    i64::try_from(v).unwrap_or(if v > 0 { i64::MAX } else { i64::MIN })
+}
+
+/// True if `ranges` is empty (nothing to restrict) or `value` falls in
+/// at least one of its `(min, max)` pairs.
+fn in_ranges(value: i64, ranges: &[(i128, i128)]) -> bool {
+    ranges.is_empty() || ranges.iter().any(|&(min, max)| value >= range_bound_i64(min) && value <= range_bound_i64(max))
+}
+
+/// A plain-English description of a range/length restriction, for error
+/// messages someone doesn't need to know YANG to act on -- "must be
+/// between 0 and 255", not a type name or a raw range struct.
+fn range_description(ranges: &[(i128, i128)]) -> String {
+    let parts: Vec<String> = ranges
+        .iter()
+        .map(|&(min, max)| {
+            let (min, max) = (range_bound_i64(min), range_bound_i64(max));
+            if min == max { format!("exactly {min}") } else { format!("between {min} and {max}") }
+        })
+        .collect();
+    parts.join(", or ")
+}
+
+fn matches_all_patterns(s: &str, patterns: &[String]) -> R<bool> {
+    for p in patterns {
+        let re = regex::Regex::new(p).map_err(|e| err(format!("invalid pattern {p:?} in schema: {e}")))?;
+        if !re.is_match(s) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Encode a JSON value as CBOR for `type_id`. `in_union` tracks whether
 /// this is (possibly nested) a member of a `union` -- enum/bits/
 /// identityref/decimal64 wrap in a distinguishing CBOR tag only when
 /// reached through a union (RFC 9254 6.3/6.6/6.7/6.10.1); otherwise they
 /// use their plain (unwrapped) form since there's no ambiguity to
 /// resolve.
-pub fn type_to_cbor(schema: &Schema, type_id: TypeId, value: &Json, in_union: bool) -> R<Cbor> {
+///
+/// This is also this port's *validator*: range/length/pattern checks
+/// live right here, next to the type-shape checks they're a natural
+/// extension of, rather than in a separately-generated JSON Schema
+/// fed to a generic validator library (considered and deliberately not
+/// done -- see this session's notes: it would need a real dependency
+/// for what `TypeDef::ranges`/`patterns` already hold directly on the
+/// node being encoded, and it can't help disagreeing with the encoder's
+/// own identityref acceptance rule, since `type2schema`'s `enum`
+/// deliberately excludes the base identity to match Ruby while the
+/// encoder's own `all_identity_bases` correctly includes it per RFC
+/// 7950 "derived from or equal to"). Any failure here -- shape,
+/// range, length, pattern, or an unknown enum/bit/identity name (already
+/// hard-checked by `encode_enum`/`encode_bits`/`encode_identityref`) --
+/// gets the exact same `--continue` treatment via `lenient`, matching
+/// `type2cbor`'s single `begin`/`rescue` wrapping its entire body
+/// (yang-enc.rb:275-387).
+pub fn type_to_cbor(schema: &Schema, type_id: TypeId, value: &Json, in_union: bool, continue_on_error: bool) -> R<Cbor> {
+    lenient(type_to_cbor_checked(schema, type_id, value, in_union), continue_on_error, || json_to_cbor_generic(value))
+}
+
+fn type_to_cbor_checked(schema: &Schema, type_id: TypeId, value: &Json, in_union: bool) -> R<Cbor> {
     let ty = schema.ty(type_id);
     match ty.builtin {
         Builtin::Int8 | Builtin::Int16 | Builtin::Int32 | Builtin::Uint8 | Builtin::Uint16 | Builtin::Uint32 => {
-            let n = json_number_to_i128(value).ok_or_else(|| err(format!("expected an integer, got {value}")))?;
-            Ok(Cbor::from(n as i64))
+            let n = json_number_to_i128(value).ok_or_else(|| err(format!("expected a whole number here, got {value}")))? as i64;
+            if !in_ranges(n, &ty.ranges) {
+                return Err(err(format!("{n} is not allowed here -- the value must be {}", range_description(&ty.ranges))));
+            }
+            Ok(Cbor::from(n))
         }
         Builtin::Int64 => {
-            let s = value.as_str().ok_or_else(|| err(format!("expected an int64 string, got {value}")))?;
-            let n: i64 = s.parse().map_err(|_| err(format!("invalid int64 {s:?}")))?;
+            // RFC 7951 6.1: 64-bit integers are written as quoted text,
+            // not a bare JSON number, so full precision survives any
+            // JSON/JS-based tooling that only handles doubles safely.
+            let s = value.as_str().ok_or_else(|| err(format!("expected a large whole number written as quoted text (e.g. \"12345678901\"), got {value}")))?;
+            let n: i64 = s.parse().map_err(|_| err(format!("{s:?} is not a valid whole number")))?;
             Ok(Cbor::from(n))
         }
         Builtin::Uint64 => {
-            let s = value.as_str().ok_or_else(|| err(format!("expected a uint64 string, got {value}")))?;
-            let n: u64 = s.parse().map_err(|_| err(format!("invalid uint64 {s:?}")))?;
+            let s = value.as_str().ok_or_else(|| err(format!("expected a large whole number written as quoted text (e.g. \"12345678901\"), got {value}")))?;
+            let n: u64 = s.parse().map_err(|_| err(format!("{s:?} is not a valid non-negative whole number")))?;
             Ok(Cbor::from(n))
         }
-        Builtin::Boolean => Ok(Cbor::Bool(value.as_bool().ok_or_else(|| err(format!("expected a boolean, got {value}")))?)),
-        Builtin::String => Ok(Cbor::Text(value.as_str().ok_or_else(|| err(format!("expected a string, got {value}")))?.to_string())),
-        Builtin::Binary => {
-            let s = value.as_str().ok_or_else(|| err(format!("expected a base64 string, got {value}")))?;
-            Ok(Cbor::Bytes(base64_decode(s)?))
+        Builtin::Boolean => Ok(Cbor::Bool(value.as_bool().ok_or_else(|| err(format!("expected true or false, got {value}")))?)),
+        Builtin::String => {
+            let s = value.as_str().ok_or_else(|| err(format!("expected text here, got {value}")))?;
+            let len = s.chars().count() as i64;
+            if !in_ranges(len, &ty.ranges) {
+                return Err(err(format!("{s:?} is {len} character(s) long, but must be {}", range_description(&ty.ranges))));
+            }
+            if !matches_all_patterns(s, &ty.patterns)? {
+                return Err(err(format!("{s:?} is not in the expected format -- it must match: {}", ty.patterns.join(" and "))));
+            }
+            Ok(Cbor::Text(s.to_string()))
         }
-        Builtin::Empty => Ok(Cbor::Null),
+        Builtin::Binary => {
+            let s = value.as_str().ok_or_else(|| err(format!("expected base64-encoded text (for binary data), got {value}")))?;
+            let bytes = base64_decode(s)?;
+            let len = bytes.len() as i64;
+            if !in_ranges(len, &ty.ranges) {
+                return Err(err(format!("this value is {len} byte(s) long once decoded, but must be {}", range_description(&ty.ranges))));
+            }
+            Ok(Cbor::Bytes(bytes))
+        }
+        // RFC 7951 6.9: an `empty` leaf's JSON value is always a single-
+        // element array containing `null` -- `to_json_schema`'s own
+        // `{type:'array', items:{type:'null'}, minItems:1, maxItems:1}`
+        // enforces exactly this shape (the union-dispatch heuristic
+        // already checks it too, for picking a union member -- see
+        // `pick_union_member_for_json`'s `Builtin::Empty` arm -- this is
+        // that same check, now applied when `empty` isn't inside a
+        // union either).
+        Builtin::Empty => match value {
+            Json::Array(a) if a.len() == 1 && a[0].is_null() => Ok(Cbor::Null),
+            other => Err(err(format!(
+                "this field has no value of its own -- it's just present or absent, so it must be written as [null] (a one-item list containing null), got {other}"
+            ))),
+        },
         Builtin::Decimal64 => encode_decimal64(ty, value, in_union),
         Builtin::Enumeration => encode_enum(ty, value, in_union),
         Builtin::Bits => encode_bits(ty, value, in_union),
         Builtin::Identityref => encode_identityref(schema, ty, value, in_union),
         Builtin::InstanceIdentifier => {
-            let s = value.as_str().ok_or_else(|| err(format!("expected an instance-identifier string, got {value}")))?;
+            let s = value.as_str().ok_or_else(|| err(format!("expected a path (as text) pointing to another node, got {value}")))?;
             resolve_iid(schema, s).map(|(_, cbor)| cbor)
         }
         Builtin::Leafref => match ty.leafref_target.and_then(|t| schema.node(t).type_id) {
-            Some(target_type) => type_to_cbor(schema, target_type, value, in_union),
+            Some(target_type) => type_to_cbor_checked(schema, target_type, value, in_union),
             // Unresolved (e.g. a relative leafref, not exercised in this
             // catalog): fall back to passthrough so encoding still
             // succeeds rather than hard-failing.
-            None => json_scalar_passthrough_to_cbor(value),
+            None => Ok(json_to_cbor_generic(value)),
         },
         Builtin::Union => {
             let member = pick_union_member_for_json(schema, ty, value)
-                .ok_or_else(|| err(format!("no union member of type {type_id} matches value {value}")))?;
-            type_to_cbor(schema, member, value, true)
+                .ok_or_else(|| err(format!("{value} does not match any of the allowed types here: {}", union_member_kinds(schema, ty))))?;
+            type_to_cbor_checked(schema, member, value, true)
         }
     }
 }
 
-fn json_scalar_passthrough_to_cbor(value: &Json) -> R<Cbor> {
+/// A fully generic, infallible JSON->CBOR mapping, with no schema
+/// involved at all -- mirrors `type2cbor`'s `return value` fallback
+/// (yang-enc.rb:384-385): Ruby's dynamically-typed `value` can be
+/// embedded directly into the surrounding CBOR structure regardless of
+/// what the declared type actually was, since Ruby's CBOR encoder
+/// serializes any native Hash/Array/String/Integer/... value as-is.
+/// This is the Rust equivalent, recursing into arrays/objects so a
+/// malformed *nested* value (not just a scalar) still gets *some*
+/// representation on the wire under `--continue`.
+fn json_to_cbor_generic(value: &Json) -> Cbor {
     match value {
-        Json::String(s) => Ok(Cbor::Text(s.clone())),
-        Json::Bool(b) => Ok(Cbor::Bool(*b)),
+        Json::Null => Cbor::Null,
+        Json::Bool(b) => Cbor::Bool(*b),
         Json::Number(n) => {
             if let Some(i) = n.as_i64() {
-                Ok(Cbor::from(i))
+                Cbor::from(i)
             } else if let Some(u) = n.as_u64() {
-                Ok(Cbor::from(u))
+                Cbor::from(u)
             } else {
-                Ok(Cbor::Float(n.as_f64().unwrap_or(0.0)))
+                Cbor::Float(n.as_f64().unwrap_or(0.0))
             }
         }
-        Json::Null => Ok(Cbor::Null),
-        other => Err(err(format!("cannot passthrough-encode {other}"))),
+        Json::String(s) => Cbor::Text(s.clone()),
+        Json::Array(items) => Cbor::Array(items.iter().map(json_to_cbor_generic).collect()),
+        Json::Object(obj) => Cbor::Map(obj.iter().map(|(k, v)| (Cbor::Text(k.clone()), json_to_cbor_generic(v))).collect()),
     }
 }
 
@@ -171,21 +330,21 @@ pub fn type_to_json(schema: &Schema, type_id: TypeId, value: &Cbor, in_union: bo
     let ty = schema.ty(type_id);
     match ty.builtin {
         Builtin::Int8 | Builtin::Int16 | Builtin::Int32 | Builtin::Uint8 | Builtin::Uint16 | Builtin::Uint32 => {
-            let i = cbor_as_i128(value).ok_or_else(|| err(format!("expected an integer, got {value:?}")))?;
+            let i = cbor_as_i128(value).ok_or_else(|| unexpected_value("a whole number", value))?;
             Ok(Json::from(i as i64))
         }
         Builtin::Int64 => {
-            let i = cbor_as_i128(value).ok_or_else(|| err(format!("expected an integer, got {value:?}")))?;
+            let i = cbor_as_i128(value).ok_or_else(|| unexpected_value("a whole number", value))?;
             Ok(Json::String((i as i64).to_string()))
         }
         Builtin::Uint64 => {
-            let i = cbor_as_i128(value).ok_or_else(|| err(format!("expected an integer, got {value:?}")))?;
+            let i = cbor_as_i128(value).ok_or_else(|| unexpected_value("a whole number", value))?;
             Ok(Json::String((i as u64).to_string()))
         }
-        Builtin::Boolean => Ok(Json::Bool(value.as_bool().ok_or_else(|| err(format!("expected a bool, got {value:?}")))?)),
-        Builtin::String => Ok(Json::String(value.as_text().ok_or_else(|| err(format!("expected a string, got {value:?}")))?.to_string())),
+        Builtin::Boolean => Ok(Json::Bool(value.as_bool().ok_or_else(|| unexpected_value("true or false", value))?)),
+        Builtin::String => Ok(Json::String(value.as_text().ok_or_else(|| unexpected_value("text", value))?.to_string())),
         Builtin::Binary => {
-            let bytes = value.as_bytes().ok_or_else(|| err(format!("expected bytes, got {value:?}")))?;
+            let bytes = value.as_bytes().ok_or_else(|| unexpected_value("binary data", value))?;
             Ok(Json::String(base64_encode(bytes)))
         }
         Builtin::Empty => Ok(Json::Array(vec![Json::Null])),
@@ -199,8 +358,13 @@ pub fn type_to_json(schema: &Schema, type_id: TypeId, value: &Cbor, in_union: bo
             None => cbor_scalar_passthrough_to_json(value),
         },
         Builtin::Union => {
-            let member = pick_union_member_for_cbor(schema, ty, value)
-                .ok_or_else(|| err(format!("no union member of type {type_id} matches value {value:?}")))?;
+            let member = pick_union_member_for_cbor(schema, ty, value).ok_or_else(|| {
+                err(format!(
+                    "the device sent {}, which doesn't match any of this field's allowed types ({}) -- the loaded YANG catalog may not match this device's firmware",
+                    describe_cbor(value),
+                    union_member_kinds(schema, ty)
+                ))
+            })?;
             type_to_json(schema, member, value, true)
         }
     }
@@ -213,7 +377,7 @@ fn cbor_scalar_passthrough_to_json(value: &Cbor) -> R<Json> {
         Cbor::Integer(_) => Ok(Json::from(cbor_as_i128(value).unwrap_or(0) as i64)),
         Cbor::Float(f) => Ok(serde_json::Number::from_f64(*f).map(Json::Number).unwrap_or(Json::Null)),
         Cbor::Null => Ok(Json::Null),
-        other => Err(err(format!("cannot passthrough-decode {other:?}"))),
+        other => Err(err(format!("the device sent {}, which this port has no defined way to decode here", describe_cbor(other)))),
     }
 }
 
@@ -224,11 +388,41 @@ fn cbor_as_i128(value: &Cbor) -> Option<i128> {
     }
 }
 
+/// A short, plain-English description of a CBOR value for error
+/// messages, in place of ciborium's own `Debug` output (e.g.
+/// `Integer(Integer(300))`) -- decode errors are diagnostic (a device
+/// sent something this port's schema couldn't make sense of, not
+/// something the reader typed), so what matters is naming the *kind* of
+/// value seen without leaking this port's own library internals.
+/// A decode-side type mismatch: the device's response doesn't match
+/// what this leaf's YANG type says to expect. Framed as coming from the
+/// device, not something the reader typed -- there's nothing to "fix"
+/// in a request here, only a hint that the loaded YANG catalog may not
+/// match this device's firmware.
+fn unexpected_value(expected: &str, value: &Cbor) -> CodecError {
+    err(format!("expected {expected} in the device's response, but got {} -- the loaded YANG catalog may not match this device's firmware", describe_cbor(value)))
+}
+
+fn describe_cbor(value: &Cbor) -> String {
+    match value {
+        Cbor::Integer(_) => format!("the number {}", cbor_as_i128(value).unwrap_or_default()),
+        Cbor::Text(s) => format!("the text {s:?}"),
+        Cbor::Bytes(b) => format!("{} byte(s) of binary data", b.len()),
+        Cbor::Bool(b) => format!("the boolean {b}"),
+        Cbor::Float(f) => format!("the number {f}"),
+        Cbor::Null => "null".to_string(),
+        Cbor::Array(items) => format!("a list of {} item(s)", items.len()),
+        Cbor::Map(entries) => format!("a map of {} entrie(s)", entries.len()),
+        Cbor::Tag(t, inner) => format!("a tagged value (tag {t}, containing {})", describe_cbor(inner)),
+        _ => "an unrecognized value".to_string(),
+    }
+}
+
 // -- decimal64 ---------------------------------------------------------
 
 fn encode_decimal64(ty: &TypeDef, value: &Json, _in_union: bool) -> R<Cbor> {
-    let fraction_digits = ty.fraction_digits.ok_or_else(|| err("decimal64 type missing fraction-digits"))? as usize;
-    let s = value.as_str().ok_or_else(|| err(format!("expected a decimal64 string, got {value}")))?;
+    let fraction_digits = ty.fraction_digits.ok_or_else(|| err("this decimal field is missing its fraction-digits setting in the schema -- this looks like a catalog problem"))? as usize;
+    let s = value.as_str().ok_or_else(|| err(format!("expected a decimal number written as text (e.g. \"12.34\"), got {value}")))?;
     let (sign, rest) = match s.strip_prefix('-') {
         Some(r) => (-1i128, r),
         None => (1i128, s),
@@ -236,10 +430,10 @@ fn encode_decimal64(ty: &TypeDef, value: &Json, _in_union: bool) -> R<Cbor> {
     let (int_part, frac_part) = rest.split_once('.').unwrap_or((rest, ""));
     let int_part = if int_part.is_empty() { "0" } else { int_part };
     if frac_part.len() > fraction_digits {
-        return Err(err(format!("{s:?} has more than {fraction_digits} fractional digits")));
+        return Err(err(format!("{s:?} has more decimal places than allowed here (at most {fraction_digits})")));
     }
     let padded_frac = format!("{frac_part:0<fraction_digits$}");
-    let mantissa: i128 = format!("{int_part}{padded_frac}").parse().map_err(|_| err(format!("invalid decimal64 {s:?}")))?;
+    let mantissa: i128 = format!("{int_part}{padded_frac}").parse().map_err(|_| err(format!("{s:?} is not a valid decimal number")))?;
     let mantissa = sign * mantissa;
     // decimal64 is always tag(4)-wrapped per RFC 9254 6.3, union or not
     // (unlike enum/bits/identityref, which only tag-wrap inside a union).
@@ -256,13 +450,13 @@ fn decimal64_tag_parts(value: &Cbor) -> R<(i64, i128)> {
     match value {
         Cbor::Tag(4, inner) => match inner.as_array() {
             Some(arr) if arr.len() == 2 => {
-                let exp = cbor_as_i128(&arr[0]).ok_or_else(|| err("decimal64 exponent not an integer"))? as i64;
-                let mantissa = cbor_as_i128(&arr[1]).ok_or_else(|| err("decimal64 mantissa not an integer"))?;
+                let exp = cbor_as_i128(&arr[0]).ok_or_else(|| err("the device sent a decimal number whose exponent isn't a valid integer"))? as i64;
+                let mantissa = cbor_as_i128(&arr[1]).ok_or_else(|| err("the device sent a decimal number whose value isn't a valid integer"))?;
                 Ok((exp, mantissa))
             }
-            _ => Err(err(format!("malformed decimal64 tag content {inner:?}"))),
+            _ => Err(err(format!("the device sent a malformed decimal number ({})", describe_cbor(inner)))),
         },
-        other => Err(err(format!("expected a decimal64 tag(4,...), got {other:?}"))),
+        other => Err(unexpected_value("a decimal number", other)),
     }
 }
 
@@ -277,8 +471,8 @@ fn format_ruby_float(f: f64) -> String {
 // -- enumeration ---------------------------------------------------------
 
 fn encode_enum(ty: &TypeDef, value: &Json, in_union: bool) -> R<Cbor> {
-    let name = value.as_str().ok_or_else(|| err(format!("expected an enum name, got {value}")))?;
-    let e = ty.enums.iter().find(|e| e.name == name).ok_or_else(|| err(format!("unknown enum value {name:?}")))?;
+    let name = value.as_str().ok_or_else(|| err(format!("expected one of this field's allowed text values, got {value}")))?;
+    let e = ty.enums.iter().find(|e| e.name == name).ok_or_else(|| err(format!("{name:?} is not one of the allowed values for this field")))?;
     if in_union {
         Ok(Cbor::Tag(44, Box::new(Cbor::Text(name.to_string()))))
     } else {
@@ -289,15 +483,15 @@ fn encode_enum(ty: &TypeDef, value: &Json, in_union: bool) -> R<Cbor> {
 fn decode_enum(ty: &TypeDef, value: &Cbor, in_union: bool) -> R<Json> {
     if in_union {
         if let Cbor::Tag(44, inner) = value {
-            let name = inner.as_text().ok_or_else(|| err("enum tag content not text"))?;
+            let name = inner.as_text().ok_or_else(|| unexpected_value("text (an enum value)", inner))?;
             return Ok(Json::String(name.to_string()));
         }
     }
-    let n = cbor_as_i128(value).ok_or_else(|| err(format!("expected an enum ordinal, got {value:?}")))?;
+    let n = cbor_as_i128(value).ok_or_else(|| unexpected_value("a whole number (an enum value)", value))?;
     match ty.enums.iter().find(|e| e.value as i128 == n) {
         Some(e) => Ok(Json::String(e.name.clone())),
         None => {
-            eprintln!("yang: unknown enumeration ordinal {n}; decoding as raw value (YANG model behind firmware?)");
+            eprintln!("WARNING: the device reported enum value {n}, which isn't defined in the loaded YANG catalog (the device's firmware may be newer than the catalog) -- showing the raw number instead of a name");
             Ok(Json::from(n as i64))
         }
     }
@@ -309,7 +503,7 @@ fn encode_bits(ty: &TypeDef, value: &Json, in_union: bool) -> R<Cbor> {
     let names: Vec<&str> = match value {
         Json::String(s) => s.split_whitespace().collect(),
         Json::Array(items) => items.iter().filter_map(|v| v.as_str()).collect(),
-        other => return Err(err(format!("expected a bits string/array, got {other}"))),
+        other => return Err(err(format!("expected a space-separated list of names (as text, or a list of names), got {other}"))),
     };
     if in_union {
         return Ok(Cbor::Tag(43, Box::new(Cbor::Text(names.join(" ")))));
@@ -317,7 +511,7 @@ fn encode_bits(ty: &TypeDef, value: &Json, in_union: bool) -> R<Cbor> {
 
     let mut positions = Vec::new();
     for name in &names {
-        let bit = ty.bits.iter().find(|b| b.name == *name).ok_or_else(|| err(format!("unknown bit {name:?}")))?;
+        let bit = ty.bits.iter().find(|b| b.name == *name).ok_or_else(|| err(format!("{name:?} is not one of the allowed names for this field")))?;
         positions.push(bit.position);
     }
     positions.sort_unstable();
@@ -369,7 +563,7 @@ fn bits_bytes_to_spans(bytes: &[u8]) -> Vec<Cbor> {
 fn decode_bits(ty: &TypeDef, value: &Cbor, in_union: bool) -> R<Json> {
     if in_union {
         if let Cbor::Tag(43, inner) = value {
-            let s = inner.as_text().ok_or_else(|| err("bits tag content not text"))?;
+            let s = inner.as_text().ok_or_else(|| unexpected_value("text (a list of names)", inner))?;
             return Ok(Json::String(s.to_string()));
         }
     }
@@ -377,7 +571,7 @@ fn decode_bits(ty: &TypeDef, value: &Cbor, in_union: bool) -> R<Json> {
     let spans: Vec<&Cbor> = match value {
         Cbor::Bytes(_) => vec![value],
         Cbor::Array(items) => items.iter().collect(),
-        other => return Err(err(format!("expected bits bytes/array, got {other:?}"))),
+        other => return Err(unexpected_value("bit-flag data", other)),
     };
 
     let mut names = Vec::new();
@@ -400,7 +594,7 @@ fn decode_bits(ty: &TypeDef, value: &Cbor, in_union: bool) -> R<Json> {
                 }
                 byte_offset += b.len() as u32;
             }
-            other => return Err(err(format!("unexpected bits span element {other:?}"))),
+            other => return Err(err(format!("the device sent malformed bit-flag data (an unexpected {})", describe_cbor(other)))),
         }
     }
     Ok(Json::String(names.join(" ")))
@@ -420,8 +614,8 @@ pub(crate) fn all_identity_bases(schema: &Schema, ty: &TypeDef) -> Option<std::c
 }
 
 fn encode_identityref(schema: &Schema, ty: &TypeDef, value: &Json, in_union: bool) -> R<Cbor> {
-    let s = value.as_str().ok_or_else(|| err(format!("expected an identity name, got {value}")))?;
-    let candidates = all_identity_bases(schema, ty).ok_or_else(|| err("identityref type has no base"))?;
+    let s = value.as_str().ok_or_else(|| err(format!("expected the name of one of this field's allowed values (as text), got {value}")))?;
+    let candidates = all_identity_bases(schema, ty).ok_or_else(|| err("this field's schema doesn't declare any allowed values at all -- this looks like a catalog problem"))?;
     let source_module = ty.source_module.as_deref().unwrap_or("");
 
     let found = candidates.into_iter().find(|&id| {
@@ -431,8 +625,8 @@ fn encode_identityref(schema: &Schema, ty: &TypeDef, value: &Json, in_union: boo
             None => identity.module == source_module && identity.name == s,
         }
     });
-    let id = found.ok_or_else(|| err(format!("unknown identity value {s:?}")))?;
-    let sid = schema.identity(id).sid.ok_or_else(|| err(format!("identity {s:?} has no SID")))?;
+    let id = found.ok_or_else(|| err(format!("{s:?} is not one of the allowed values for this field")))?;
+    let sid = schema.identity(id).sid.ok_or_else(|| err(format!("{s:?} exists in the schema but has no SID assigned -- this looks like a catalog problem")))?;
     if in_union {
         Ok(Cbor::Tag(45, Box::new(Cbor::from(sid))))
     } else {
@@ -443,13 +637,17 @@ fn encode_identityref(schema: &Schema, ty: &TypeDef, value: &Json, in_union: boo
 fn decode_identityref(schema: &Schema, _ty: &TypeDef, value: &Cbor, in_union: bool) -> R<Json> {
     let sid = if in_union {
         match value {
-            Cbor::Tag(45, inner) => cbor_as_i128(inner).ok_or_else(|| err("identityref tag content not an integer"))?,
-            other => return Err(err(format!("expected identityref tag(45,...), got {other:?}"))),
+            Cbor::Tag(45, inner) => cbor_as_i128(inner).ok_or_else(|| unexpected_value("a whole number (an identity reference)", inner))?,
+            other => return Err(unexpected_value("an identity reference (tag 45)", other)),
         }
     } else {
-        cbor_as_i128(value).ok_or_else(|| err(format!("expected an identity SID, got {value:?}")))?
+        cbor_as_i128(value).ok_or_else(|| unexpected_value("a whole number (an identity reference)", value))?
     };
-    let identity = schema.identities.iter().find(|i| i.sid == Some(sid as i64)).ok_or_else(|| err(format!("unknown identity SID {sid}")))?;
+    let identity = schema
+        .identities
+        .iter()
+        .find(|i| i.sid == Some(sid as i64))
+        .ok_or_else(|| err(format!("the device referenced identity #{sid}, which isn't in the loaded YANG catalog -- the catalog may not match this device's firmware")))?;
     // Decode always qualifies with the defining module, confirmed against
     // real device output (e.g. "ietf-routing:ipv4",
     // "ietf-datastores:startup") even when that module matches the
@@ -552,7 +750,13 @@ fn pick_union_member_for_json(schema: &Schema, ty: &TypeDef, value: &Json) -> Op
             return Some(m);
         }
     }
-    members.first().copied()
+    // No heuristic above matched -- genuinely ambiguous/unmatched, not
+    // "pick something and hope": returning the first member
+    // unconditionally here (an earlier version of this did) would make
+    // `type_to_cbor_checked`'s "no member matches" error effectively
+    // dead code, and would report failure against an arbitrary member
+    // instead of saying plainly that nothing in the union fits.
+    None
 }
 
 fn pick_union_member_for_cbor(schema: &Schema, ty: &TypeDef, value: &Cbor) -> Option<TypeId> {
@@ -594,7 +798,11 @@ fn pick_union_member_for_cbor(schema: &Schema, ty: &TypeDef, value: &Cbor) -> Op
         Cbor::Null => members.iter().copied().find(|&m| resolved_builtin(schema, m).0 == Builtin::Empty),
         _ => None,
     }
-    .or_else(|| members.first().copied())
+    // No member's builtin kind matches this CBOR value's own kind --
+    // genuinely unmatched, not "pick something and hope" (see
+    // `pick_union_member_for_json`'s matching comment): blindly falling
+    // back to the first member here would decode against the wrong
+    // type and report a confusing error unrelated to the real mismatch.
 }
 
 // ===========================================================================
@@ -634,9 +842,9 @@ fn parse_iid_segment(seg: &str) -> R<IidSegment<'_>> {
     let mut keys = Vec::new();
     let mut r = rest;
     while let Some(open) = r.find('[') {
-        let close = r[open..].find(']').ok_or_else(|| err(format!("unbalanced '[' in IID segment {seg:?}")))?;
+        let close = r[open..].find(']').ok_or_else(|| err(format!("the path segment {seg:?} has an opening '[' with no matching ']'")))?;
         let inner = &r[open + 1..open + close];
-        let (k, v) = inner.split_once('=').ok_or_else(|| err(format!("malformed key predicate {inner:?} in {seg:?}")))?;
+        let (k, v) = inner.split_once('=').ok_or_else(|| err(format!("{inner:?} in {seg:?} isn't a key selector -- it should look like key='value'")))?;
         let v = v.trim();
         let v = v.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')).or_else(|| v.strip_prefix('"').and_then(|v| v.strip_suffix('"'))).unwrap_or(v);
         keys.push((k, v));
@@ -657,17 +865,17 @@ fn convert_iid_key_value(schema: &Schema, type_id: TypeId, raw: &str) -> R<Json>
         // RFC 7951 64-bit string convention, not a JSON number.
         Builtin::Int64 | Builtin::Uint64 => Ok(Json::String(raw.to_string())),
         Builtin::Int8 | Builtin::Int16 | Builtin::Int32 => {
-            let n: i64 = raw.parse().map_err(|_| err(format!("invalid integer key value {raw:?}")))?;
+            let n: i64 = raw.parse().map_err(|_| err(format!("{raw:?} is not a whole number, but this list key needs one")))?;
             Ok(Json::from(n))
         }
         Builtin::Uint8 | Builtin::Uint16 | Builtin::Uint32 => {
-            let n: u64 = raw.parse().map_err(|_| err(format!("invalid integer key value {raw:?}")))?;
+            let n: u64 = raw.parse().map_err(|_| err(format!("{raw:?} is not a whole number, but this list key needs one")))?;
             Ok(Json::from(n))
         }
         Builtin::Boolean => match raw {
             "true" => Ok(Json::Bool(true)),
             "false" => Ok(Json::Bool(false)),
-            other => Err(err(format!("invalid boolean key value {other:?}"))),
+            other => Err(err(format!("{other:?} is not \"true\" or \"false\", but this list key needs one of those"))),
         },
         Builtin::Empty if raw == "[null]" => Ok(Json::Array(vec![Json::Null])),
         _ => Ok(Json::String(raw.to_string())),
@@ -690,9 +898,13 @@ pub fn resolve_iid(schema: &Schema, path: &str) -> R<(NodeId, Cbor)> {
 
     for raw_seg in segs {
         let seg = parse_iid_segment(raw_seg)?;
-        let child = schema.find_child(cur, seg.name).ok_or_else(|| err(format!("could not find {} in schema tree ({path:?})", seg.name)))?;
+        let child = schema
+            .find_child(cur, seg.name)
+            .ok_or_else(|| err(format!("\"{}\" in the path {path:?} doesn't exist in this device's YANG model -- check for a typo", seg.name)))?;
         let node = schema.node(child);
-        let sid = node.sid.ok_or_else(|| err(format!("{} has no SID", seg.name)))?;
+        let sid = node
+            .sid
+            .ok_or_else(|| err(format!("\"{}\" exists in the schema but has no SID assigned -- this looks like a catalog problem, not a mistake in your path", seg.name)))?;
 
         let mut ordered_keys = Vec::new();
         if !node.keys.is_empty() {
@@ -700,20 +912,28 @@ pub fn resolve_iid(schema: &Schema, path: &str) -> R<(NodeId, Cbor)> {
                 if let Some((_, v)) = seg.keys.iter().find(|(k, _)| k == key_name) {
                     let key_child = schema
                         .find_child(child, key_name)
-                        .ok_or_else(|| err(format!("could not find key {key_name:?} in schema tree ({path:?})")))?;
-                    let key_type = schema.node(key_child).type_id.ok_or_else(|| err(format!("key {key_name:?} has no type")))?;
+                        .ok_or_else(|| err(format!("the key \"{key_name}\" of \"{}\" doesn't exist in this device's YANG model ({path:?})", seg.name)))?;
+                    let key_type = schema
+                        .node(key_child)
+                        .type_id
+                        .ok_or_else(|| err(format!("the key \"{key_name}\" has no type in the schema -- this looks like a catalog problem")))?;
                     let json_v = convert_iid_key_value(schema, key_type, v)?;
-                    let cbor_v = type_to_cbor(schema, key_type, &json_v, false)?;
+                    // Matches Ruby's `iid2cbor` (yang-enc.rb:459-467): its
+                    // own `type2cbor` call for a key value never receives
+                    // `continue_on_error` at all (implicit `false`) --
+                    // instance-identifier resolution is always strict,
+                    // regardless of `--continue`.
+                    let cbor_v = type_to_cbor(schema, key_type, &json_v, false, false)?;
                     ordered_keys.push(cbor_v);
                 }
             }
             for (k, _) in &seg.keys {
                 if !node.keys.iter().any(|nk| nk == k) {
-                    return Err(err(format!("could not find key: {k:?} in schema tree ({path:?})")));
+                    return Err(err(format!("\"{k}\" is not a key of the list at {path:?} -- check the key name")));
                 }
             }
         } else if !seg.keys.is_empty() {
-            return Err(err(format!("{} is not a list; unexpected keys in {path:?}", seg.name)));
+            return Err(err(format!("\"{}\" is not a list, so it can't take key='value' selectors like in {path:?}", seg.name)));
         }
 
         cur = child;
@@ -734,13 +954,20 @@ pub fn resolve_iid(schema: &Schema, path: &str) -> R<(NodeId, Cbor)> {
 /// Split a decoded IID CBOR value into (absolute SID, key CBOR values).
 fn split_iid_cbor(value: &Cbor) -> R<(i64, Vec<Cbor>)> {
     match value {
-        Cbor::Integer(_) => Ok((cbor_as_i128(value).ok_or_else(|| err("invalid SID"))? as i64, Vec::new())),
+        Cbor::Integer(_) => Ok((cbor_as_i128(value).ok_or_else(|| err("the device sent a path identifier that isn't a valid integer"))? as i64, Vec::new())),
         Cbor::Array(items) => {
             let mut it = items.iter();
-            let sid = it.next().and_then(cbor_as_i128).ok_or_else(|| err(format!("IID array {items:?} missing a leading SID")))? as i64;
+            let sid = it
+                .next()
+                .and_then(cbor_as_i128)
+                .ok_or_else(|| err(format!("the device sent a path identifier (a {}-item list) with no valid number in the first position", items.len())))?
+                as i64;
             Ok((sid, it.cloned().collect()))
         }
-        other => Err(err(format!("expected a bare SID or [SID, keys...], got {other:?}"))),
+        other => Err(err(format!(
+            "the device sent a path identifier that's neither a plain number nor a list starting with one -- got {}",
+            describe_cbor(other)
+        ))),
     }
 }
 
@@ -750,7 +977,10 @@ fn split_iid_cbor(value: &Cbor) -> R<(i64, Vec<Cbor>)> {
 /// SID, matching `iid2json`'s behavior).
 pub fn decode_iid(schema: &Schema, value: &Cbor) -> R<(NodeId, String)> {
     let (sid, mut keys) = split_iid_cbor(value)?;
-    let node = *schema.sid_index.get(&sid).ok_or_else(|| err(format!("unknown SID {sid}")))?;
+    let node = *schema
+        .sid_index
+        .get(&sid)
+        .ok_or_else(|| err(format!("the device referenced path identifier #{sid}, which isn't in the loaded YANG catalog -- the catalog may not match this device's firmware")))?;
     let path = node_path_string(schema, node, &mut keys)?;
     Ok((node, path))
 }
@@ -777,8 +1007,13 @@ fn node_path_string(schema: &Schema, node: NodeId, keys: &mut Vec<Cbor>) -> R<St
             // the front, in the same outer-to-inner order `resolve_iid`
             // accumulates them -- not just the final target node.
             for key_name in &nd.keys {
-                let key_child = schema.find_child(n, key_name).ok_or_else(|| err(format!("list {} missing key leaf {key_name:?}", nd.name)))?;
-                let key_type = schema.node(key_child).type_id.ok_or_else(|| err(format!("key {key_name:?} has no type")))?;
+                let key_child = schema
+                    .find_child(n, key_name)
+                    .ok_or_else(|| err(format!("the list \"{}\" is missing its own key field \"{key_name}\" in the schema -- this looks like a catalog problem", nd.name)))?;
+                let key_type = schema
+                    .node(key_child)
+                    .type_id
+                    .ok_or_else(|| err(format!("the key \"{key_name}\" has no type in the schema -- this looks like a catalog problem")))?;
                 if keys.is_empty() {
                     break;
                 }
@@ -802,6 +1037,18 @@ fn cbor_to_iid_string(schema: &Schema, value: &Cbor) -> R<String> {
 
 const IMPLICIT_INPUT_OUTPUT_BASE: &[&str] = &["rpc", "action"];
 
+/// A name for `node` fit for an error message: the synthetic multi-
+/// module root (`schema.rs`'s `finish()`) is called `"data-tree-schema"`
+/// internally, which means nothing to someone who didn't write this
+/// port -- call it what it is to them instead.
+fn node_display_name(node: &Node) -> &str {
+    if node.name == "data-tree-schema" {
+        "the request"
+    } else {
+        &node.name
+    }
+}
+
 fn effective_delta_base(schema: &Schema, node: NodeId) -> i64 {
     let n = schema.node(node);
     if n.kw == "input" || n.kw == "output" {
@@ -816,21 +1063,33 @@ fn effective_delta_base(schema: &Schema, node: NodeId) -> i64 {
     n.sid.unwrap_or(0)
 }
 
-fn encode_leaf_value(schema: &Schema, node: &Node, value: &Json) -> R<Cbor> {
-    let type_id = node.type_id.ok_or_else(|| err(format!("{} has no type", node.name)))?;
-    type_to_cbor(schema, type_id, value, false)
+fn encode_leaf_value(schema: &Schema, node: &Node, value: &Json, continue_on_error: bool) -> R<Cbor> {
+    let type_id = node.type_id.ok_or_else(|| err(format!("\"{}\" has no type defined in the schema -- this looks like a catalog problem", node.name)))?;
+    type_to_cbor(schema, type_id, value, false, continue_on_error)
 }
 
 fn decode_leaf_value(schema: &Schema, node: &Node, value: &Cbor) -> R<Json> {
-    let type_id = node.type_id.ok_or_else(|| err(format!("{} has no type", node.name)))?;
+    let type_id = node.type_id.ok_or_else(|| err(format!("\"{}\" has no type defined in the schema -- this looks like a catalog problem", node.name)))?;
     type_to_json(schema, type_id, value, false)
 }
 
 /// Encode one container's (or one list entry's, or one rpc input/output's)
 /// body: a JSON object of child-name -> value into a CBOR map keyed by
 /// delta-SID.
-fn encode_body(schema: &Schema, scope: NodeId, obj: &serde_json::Map<String, Json>, cf: ContentFormat) -> R<Cbor> {
+///
+/// Two error classes here are `--continue`-gated, mirroring
+/// `json2cbor_hash` (yang-enc.rb:176-191) exactly: an input key with no
+/// matching schema child, or a matching child with no SID, skips that
+/// one field (via `lenient`) instead of failing the whole body. The
+/// mandatory-field/list-key check below is *not* in `json2cbor_hash` at
+/// all -- Ruby's `json_schemer`-based pre-check catches a missing
+/// required field before encoding ever starts, a step this port doesn't
+/// have (see `type_to_cbor`'s doc comment) -- so it's added here
+/// instead, gated the same way for consistency with everything else
+/// `--continue` softens.
+fn encode_body(schema: &Schema, scope: NodeId, obj: &serde_json::Map<String, Json>, cf: ContentFormat, continue_on_error: bool) -> R<Cbor> {
     let base = effective_delta_base(schema, scope);
+    let scope_node = schema.node(scope);
     // Matches `json2cbor_hash` (support/yang-enc/yang-enc.rb:176-191)
     // exactly: map entries come out in the *input* JSON/YAML object's own
     // key order, full stop -- not schema declaration order, not ascending
@@ -844,21 +1103,54 @@ fn encode_body(schema: &Schema, scope: NodeId, obj: &serde_json::Map<String, Jso
     // rule).
     let mut entries = Vec::new();
     for (key, val) in obj {
-        let child = schema.find_child(scope, key).ok_or_else(|| err(format!("unknown child {key:?} of {}", schema.node(scope).name)))?;
-        let child_sid = schema.node(child).sid.ok_or_else(|| err(format!("{key:?} has no SID")))?;
-        let cbor_val = encode_node_value(schema, child, val, cf)?;
+        let found = schema
+            .find_child(scope, key)
+            .ok_or_else(|| err(format!("{key:?} is not a valid field inside {} -- check for a typo or the wrong nesting", node_display_name(scope_node))))
+            .and_then(|child| {
+                schema
+                    .node(child)
+                    .sid
+                    .map(|sid| (child, sid))
+                    .ok_or_else(|| err(format!("{key:?} exists in the schema but has no SID assigned -- this looks like a catalog/schema problem, not a mistake in your data")))
+            });
+        let Some((child, child_sid)) = lenient(found.map(Some), continue_on_error, || None)? else { continue };
+        let cbor_val = encode_node_value(schema, child, val, cf, continue_on_error)?;
         entries.push((Cbor::from(child_sid - base), cbor_val));
     }
+
+    // Anything required (a mandatory child, or -- when this scope is a
+    // `list` node -- one of its own keys) but absent from `obj`.
+    // Operational-state (`config false`) children are never required for
+    // an ipatch/put request, matching `to_json_schema`'s own filter.
+    for &child in &scope_node.children {
+        let c = schema.node(child);
+        if matches!(cf, ContentFormat::Ipatch | ContentFormat::Put) && !c.config {
+            continue;
+        }
+        let is_key = scope_node.keys.iter().any(|k| k == c.local_name());
+        if (c.mandatory || is_key) && !obj.contains_key(&c.name) {
+            let why = if is_key { "it's a key of this list -- every entry needs one" } else { "it's a required field" };
+            lenient(Err(err(format!("{:?} is missing from {} ({why})", c.name, node_display_name(scope_node)))), continue_on_error, || ())?;
+        }
+    }
+
     Ok(Cbor::Map(entries))
 }
 
 fn decode_body(schema: &Schema, scope: NodeId, value: &Cbor, cf: ContentFormat) -> R<Json> {
     let base = effective_delta_base(schema, scope);
-    let map = value.as_map().ok_or_else(|| err(format!("expected a CBOR map for {}, got {value:?}", schema.node(scope).name)))?;
+    let map = value
+        .as_map()
+        .ok_or_else(|| err(format!("expected a set of fields for {}, but the device sent {}", node_display_name(schema.node(scope)), describe_cbor(value))))?;
     let mut obj = serde_json::Map::new();
     for (k, v) in map {
-        let delta = cbor_as_i128(k).ok_or_else(|| err("map key is not an integer"))? as i64;
-        let child = *schema.sid_index.get(&(delta + base)).ok_or_else(|| err(format!("unknown SID {}", delta + base)))?;
+        let delta = cbor_as_i128(k).ok_or_else(|| err("the device sent a field whose identifier isn't a valid number"))? as i64;
+        let child = *schema.sid_index.get(&(delta + base)).ok_or_else(|| {
+            err(format!(
+                "the device sent field #{}, which isn't in the loaded YANG catalog -- the catalog may not match this device's firmware",
+                delta + base
+            ))
+        })?;
         let name = schema.node(child).name.clone();
         obj.insert(name, decode_node_value(schema, child, v, cf)?);
     }
@@ -866,54 +1158,80 @@ fn decode_body(schema: &Schema, scope: NodeId, value: &Cbor, cf: ContentFormat) 
 }
 
 /// Encode a single JSON value for `node` (whatever kind it is) into CBOR.
-pub fn encode_node_value(schema: &Schema, node: NodeId, value: &Json, cf: ContentFormat) -> R<Cbor> {
+///
+/// The container/list shape checks below are `--continue`-gated
+/// (falling back to an empty `{}`/`[]`, matching Ruby's own
+/// `result = {}`/`result = []` defaults), mirroring `json2cbor`'s
+/// `'module'`/`'container'`/`'input'`/`'output'`/`'list'` branches
+/// (yang-enc.rb:212-241) exactly. `leaf-list` and `rpc`/`action`'s own
+/// top-level shape assumption have no such guard in Ruby either (an
+/// unguarded `json.map`/`.keys` call that would just crash on the wrong
+/// shape) -- replicated here as unconditional hard errors, not a
+/// missing feature.
+pub fn encode_node_value(schema: &Schema, node: NodeId, value: &Json, cf: ContentFormat, continue_on_error: bool) -> R<Cbor> {
     let n = schema.node(node);
     match n.kw.as_str() {
-        "leaf" => encode_leaf_value(schema, n, value),
+        "leaf" => encode_leaf_value(schema, n, value, continue_on_error),
         "leaf-list" => {
-            let items = value.as_array().ok_or_else(|| err(format!("{} (leaf-list) expects an array, got {value}", n.name)))?;
+            let items = value.as_array().ok_or_else(|| err(format!("\"{}\" needs a list of values, got {value}", node_display_name(n))))?;
             let mut out = Vec::with_capacity(items.len());
             for item in items {
-                out.push(encode_leaf_value(schema, n, item)?);
+                out.push(encode_leaf_value(schema, n, item, continue_on_error)?);
             }
             Ok(Cbor::Array(out))
         }
-        "container" | "input" | "output" => {
-            let obj = value.as_object().ok_or_else(|| err(format!("{} (container) expects a map, got {value}", n.name)))?;
-            encode_body(schema, node, obj, cf)
-        }
-        "list" => match value {
-            Json::Array(items) => {
-                let mut out = Vec::with_capacity(items.len());
-                for item in items {
-                    let obj = item.as_object().ok_or_else(|| err(format!("{} entry expects a map, got {item}", n.name)))?;
-                    out.push(encode_body(schema, node, obj, cf)?);
+        "container" | "input" | "output" => lenient(
+            value
+                .as_object()
+                .ok_or_else(|| err(format!("\"{}\" needs an object (key/value fields), got {value}", node_display_name(n))))
+                .and_then(|obj| encode_body(schema, node, obj, cf, continue_on_error)),
+            continue_on_error,
+            || Cbor::Map(vec![]),
+        ),
+        "list" => lenient(
+            match value {
+                Json::Array(items) => {
+                    let mut out = Vec::with_capacity(items.len());
+                    for item in items {
+                        let obj = item.as_object().ok_or_else(|| err(format!("each entry in \"{}\" needs to be an object (key/value fields), got {item}", node_display_name(n))))?;
+                        out.push(encode_body(schema, node, obj, cf, continue_on_error)?);
+                    }
+                    Ok(Cbor::Array(out))
                 }
-                Ok(Cbor::Array(out))
-            }
-            Json::Object(obj) if cf.is_sequence() => encode_body(schema, node, obj, cf),
-            other => Err(err(format!("{} (list) expects an array{}, got {other}", n.name, if cf.is_sequence() { " or a single-entry map" } else { "" }))),
-        },
+                Json::Object(obj) if cf.is_sequence() => encode_body(schema, node, obj, cf, continue_on_error),
+                other => Err(err(format!(
+                    "\"{}\" needs a list{}, got {other}",
+                    node_display_name(n),
+                    if cf.is_sequence() { " (or a single entry, for fetch/ipatch)" } else { "" }
+                ))),
+            },
+            continue_on_error,
+            || Cbor::Array(vec![]),
+        ),
         "rpc" | "action" => {
             // On the wire this is always flat (the input/output params
             // directly, keyed by delta from the *rpc's* own SID -- see
             // `effective_delta_base`). As user-facing YAML/JSON input,
             // though, a single `input:`/`output:` wrapper key disambiguates
             // which side is meant; unwrap it if present.
-            let obj = value.as_object().ok_or_else(|| err(format!("{} expects a map, got {value}", n.name)))?;
+            let obj = value.as_object().ok_or_else(|| err(format!("\"{}\" needs an object (its input/output fields), got {value}", node_display_name(n))))?;
             if obj.len() == 1 {
                 for side_name in ["input", "output"] {
                     if let Some(inner) = obj.get(side_name) {
-                        let side_node = schema.find_child(node, side_name).ok_or_else(|| err(format!("{} has no {side_name}", n.name)))?;
-                        let inner_obj = inner.as_object().ok_or_else(|| err(format!("{} {side_name} expects a map, got {inner}", n.name)))?;
-                        return encode_body(schema, side_node, inner_obj, cf);
+                        let side_node = schema
+                            .find_child(node, side_name)
+                            .ok_or_else(|| err(format!("\"{}\" doesn't have a \"{side_name}\" side in the schema -- this looks like a catalog problem", node_display_name(n))))?;
+                        let inner_obj = inner
+                            .as_object()
+                            .ok_or_else(|| err(format!("the \"{side_name}\" of \"{}\" needs an object (key/value fields), got {inner}", node_display_name(n))))?;
+                        return encode_body(schema, side_node, inner_obj, cf, continue_on_error);
                     }
                 }
             }
             let side = schema.find_child(node, "input").unwrap_or(node);
-            encode_body(schema, side, obj, cf)
+            encode_body(schema, side, obj, cf, continue_on_error)
         }
-        other => Err(err(format!("unsupported schema-node kind {other:?} for {}", n.name))),
+        other => Err(err(format!("\"{}\" has an unsupported schema shape ({other:?}) -- this looks like a catalog problem", node_display_name(n)))),
     }
 }
 
@@ -922,7 +1240,7 @@ pub fn decode_node_value(schema: &Schema, node: NodeId, value: &Cbor, cf: Conten
     match n.kw.as_str() {
         "leaf" => decode_leaf_value(schema, n, value),
         "leaf-list" => {
-            let items = value.as_array().ok_or_else(|| err(format!("{} (leaf-list) expects a CBOR array, got {value:?}", n.name)))?;
+            let items = value.as_array().ok_or_else(|| err(format!("\"{}\" needs a list of values, but the device sent {}", node_display_name(n), describe_cbor(value))))?;
             let mut out = Vec::with_capacity(items.len());
             for item in items {
                 out.push(decode_leaf_value(schema, n, item)?);
@@ -939,25 +1257,56 @@ pub fn decode_node_value(schema: &Schema, node: NodeId, value: &Cbor, cf: Conten
                 Ok(Json::Array(out))
             }
             Cbor::Map(_) if cf.is_sequence() => decode_body(schema, node, value, cf),
-            other => Err(err(format!("{} (list) expects a CBOR array or map, got {other:?}", n.name))),
+            other => Err(err(format!("\"{}\" needs a list, but the device sent {}", node_display_name(n), describe_cbor(other)))),
         },
         "rpc" | "action" => {
-            let side_out = schema.find_child(node, "output");
-            let side_in = schema.find_child(node, "input");
-            // A response payload doesn't say whether keys belong to
-            // input or output; try output first (the common decode
-            // direction for a POST response), falling back to input.
-            if let Some(out_node) = side_out {
-                if let Ok(v) = decode_body(schema, out_node, value, cf) {
-                    return Ok(v);
-                }
+            // Mirrors `cbor2json`'s `'rpc'`/`'action'` branch
+            // (yang-enc.rb:757-794). The wire payload is always flat (no
+            // `input`/`output` wrapper -- see `encode_node_value`'s
+            // matching comment): both sides' children are deltas from
+            // the *rpc's own* SID (`effective_delta_base`), so which
+            // side a payload belongs to isn't recoverable from any one
+            // key in isolation via the global `sid_index` (that lookup
+            // would resolve to a real node either way, whichever side it
+            // actually belongs to -- an earlier version of this tried
+            // "decode as output, fall back to input on error" and that
+            // never actually failed, always spuriously picking output).
+            // Ruby's own algorithm -- replicated here -- looks at the
+            // *first* key only, and checks each side's *direct* children
+            // (not a global lookup) for one whose SID matches; input is
+            // checked before output, same as Ruby's substatement order.
+            let map = value
+                .as_map()
+                .ok_or_else(|| err(format!("\"{}\" needs an object (its input/output fields), but the device sent {}", node_display_name(n), describe_cbor(value))))?;
+            if map.is_empty() {
+                // No mandatory parameters on this side -- ok, matches
+                // Ruby's `cbor.is_a? Hash and cbor.empty?` case.
+                return Ok(Json::Object(serde_json::Map::new()));
             }
-            if let Some(in_node) = side_in {
-                return decode_body(schema, in_node, value, cf);
-            }
-            decode_body(schema, node, value, cf)
+            let base = n.sid.unwrap_or(0);
+            let (first_key, _) = map.first().expect("checked non-empty above");
+            let delta = cbor_as_i128(first_key).ok_or_else(|| err("the device sent a field whose identifier isn't a valid number"))? as i64;
+            let absolute_sid = delta + base;
+            let side_name = ["input", "output"]
+                .into_iter()
+                .find(|&side| {
+                    schema
+                        .find_child(node, side)
+                        .is_some_and(|side_node| schema.node(side_node).children.iter().any(|&c| schema.node(c).sid == Some(absolute_sid)))
+                })
+                .ok_or_else(|| {
+                    err(format!(
+                        "couldn't tell whether \"{}\"'s response is its input or output parameters (field #{absolute_sid} matches neither) -- the loaded YANG catalog may not match this device's firmware",
+                        node_display_name(n)
+                    ))
+                })?;
+            let side_node = schema.find_child(node, side_name).expect("just matched above");
+            let decoded = decode_body(schema, side_node, value, cf)?;
+            let mut wrapper = serde_json::Map::new();
+            wrapper.insert(side_name.to_string(), decoded);
+            Ok(Json::Object(wrapper))
         }
-        other => Err(err(format!("unsupported schema-node kind {other:?} for {}", n.name))),
+        other => Err(err(format!("\"{}\" has an unsupported schema shape ({other:?}) -- this looks like a catalog problem", node_display_name(n)))),
     }
 }
 
@@ -967,7 +1316,7 @@ pub fn decode_node_value(schema: &Schema, node: NodeId, value: &Cbor, cf: Conten
 
 fn cbor_to_bytes(value: &Cbor) -> R<Vec<u8>> {
     let mut buf = Vec::new();
-    ciborium::into_writer(value, &mut buf).map_err(|e| err(format!("CBOR encode error: {e}")))?;
+    ciborium::into_writer(value, &mut buf).map_err(|e| err(format!("could not encode this as CBOR ({e}) -- this looks like an internal bug, not something in your data")))?;
     Ok(buf)
 }
 
@@ -975,10 +1324,25 @@ fn cbor_seq_from_bytes(bytes: &[u8]) -> R<Vec<Cbor>> {
     let mut cursor = std::io::Cursor::new(bytes);
     let mut items = Vec::new();
     while (cursor.position() as usize) < bytes.len() {
-        let v: Cbor = ciborium::from_reader(&mut cursor).map_err(|e| err(format!("CBOR decode error: {e}")))?;
+        let v: Cbor = ciborium::from_reader(&mut cursor).map_err(|e| err(format!("could not decode this as CBOR ({e}) -- the data may be corrupted, truncated, or not CBOR at all")))?;
         items.push(v);
     }
     Ok(items)
+}
+
+/// `rcc conv`'s `['cbor', 'cbor']` case (yang-enc.rb:164-167): decode a
+/// CBOR-sequence byte string generically (no schema, no content-format
+/// -- each top-level item as whatever CBOR value it is) and re-encode
+/// each item individually. A normalize pass, not a byte-identical
+/// passthrough: canonicalizes indefinite-length items, non-minimal
+/// integer encodings, etc.
+pub fn normalize_cbor_seq(bytes: &[u8]) -> R<Vec<u8>> {
+    let items = cbor_seq_from_bytes(bytes)?;
+    let mut out = Vec::new();
+    for item in &items {
+        out.extend(cbor_to_bytes(item)?);
+    }
+    Ok(out)
 }
 
 /// Validate one `fetch`/`ipatch`/`post` sequence entry's shape, matching
@@ -1011,7 +1375,7 @@ fn validate_single_key(cf: ContentFormat, entry: &Json) -> R<()> {
 
 /// `json_seq2cbor`: encode a sequence of fetch/ipatch/post entries into a
 /// concatenated CBOR-sequence byte string.
-pub fn json_seq_to_cbor(schema: &Schema, items: &[Json], cf: ContentFormat) -> R<Vec<u8>> {
+pub fn json_seq_to_cbor(schema: &Schema, items: &[Json], cf: ContentFormat, continue_on_error: bool) -> R<Vec<u8>> {
     let mut out = Vec::new();
     for item in items {
         let cbor_item = match cf {
@@ -1020,7 +1384,7 @@ pub fn json_seq_to_cbor(schema: &Schema, items: &[Json], cf: ContentFormat) -> R
                 Json::Object(map) if map.len() == 1 => {
                     let (path, val) = map.iter().next().unwrap();
                     let (target, iid) = resolve_iid(schema, path)?;
-                    let encoded_val = if val.is_null() { Cbor::Null } else { encode_node_value(schema, target, val, cf)? };
+                    let encoded_val = if val.is_null() { Cbor::Null } else { encode_node_value(schema, target, val, cf, continue_on_error)? };
                     Cbor::Map(vec![(iid, encoded_val)])
                 }
                 // Wrong key *count* (0 or >1) gets the specific
@@ -1038,11 +1402,11 @@ pub fn json_seq_to_cbor(schema: &Schema, items: &[Json], cf: ContentFormat) -> R
                 let map = item.as_object().unwrap();
                 let (path, val) = map.iter().next().unwrap();
                 let (target, iid) = resolve_iid(schema, path)?;
-                let encoded_val = if val.is_null() { Cbor::Null } else { encode_node_value(schema, target, val, cf)? };
+                let encoded_val = if val.is_null() { Cbor::Null } else { encode_node_value(schema, target, val, cf, continue_on_error)? };
                 Cbor::Map(vec![(iid, encoded_val)])
             }
             ContentFormat::Yang | ContentFormat::Get | ContentFormat::Put => {
-                return Err(err(format!("{:?} does not use sequence encoding", cf)));
+                return Err(err(format!("internal error: {} doesn't use sequence encoding and shouldn't reach this code path", cf.upper_name())));
             }
         };
         out.extend(cbor_to_bytes(&cbor_item)?);
@@ -1081,16 +1445,25 @@ pub fn cbor_seq_to_json(schema: &Schema, bytes: &[u8], cf: ContentFormat) -> R<V
                 let (_, path) = decode_iid(schema, other)?;
                 out.push(Json::String(path));
             }
-            other => return Err(err(format!("unexpected top-level CBOR item {other:?} for {:?}", cf))),
+            other => return Err(err(format!("the device sent {} as a {} response entry, which doesn't fit the expected shape", describe_cbor(other), cf.upper_name()))),
         }
     }
     Ok(out)
 }
 
-/// `json2cbor`/whole-tree encode for `yang`/`get`/`put`.
-pub fn json_to_cbor(schema: &Schema, value: &Json, cf: ContentFormat) -> R<Vec<u8>> {
-    let obj = value.as_object().ok_or_else(|| err(format!("{:?} expects a JSON object at the top level, got {value}", cf)))?;
-    let cbor = encode_body(schema, schema.root, obj, cf)?;
+/// `json2cbor`/whole-tree encode for `yang`/`get`/`put`. The top-level
+/// shape check is `--continue`-gated (falls back to an empty map),
+/// matching `json2cbor`'s `'module'` branch (yang-enc.rb:212-222) --
+/// `schema.root`'s own `kw` is `"module"`.
+pub fn json_to_cbor(schema: &Schema, value: &Json, cf: ContentFormat, continue_on_error: bool) -> R<Vec<u8>> {
+    let cbor = lenient(
+        value
+            .as_object()
+            .ok_or_else(|| err(format!("a {} request needs an object (key/value fields) at the top level, got {value}", cf.upper_name())))
+            .and_then(|obj| encode_body(schema, schema.root, obj, cf, continue_on_error)),
+        continue_on_error,
+        || Cbor::Map(vec![]),
+    )?;
     cbor_to_bytes(&cbor)
 }
 
@@ -1100,7 +1473,7 @@ pub fn cbor_to_json(schema: &Schema, bytes: &[u8], cf: ContentFormat) -> R<Json>
         return Ok(Json::Object(serde_json::Map::new()));
     }
     let items = cbor_seq_from_bytes(bytes)?;
-    let value = items.into_iter().next().ok_or_else(|| err("empty CBOR payload"))?;
+    let value = items.into_iter().next().ok_or_else(|| err("could not read any CBOR value from this response"))?;
     decode_body(schema, schema.root, &value, cf)
 }
 
@@ -1139,7 +1512,7 @@ fn base64_decode(s: &str) -> R<Vec<u8>> {
     let clean: Vec<u8> = s.bytes().filter(|&b| b != b'=' && !b.is_ascii_whitespace()).collect();
     let mut out = Vec::with_capacity(clean.len() * 3 / 4);
     for chunk in clean.chunks(4) {
-        let vals: Vec<u32> = chunk.iter().map(|&c| val(c)).collect::<Option<Vec<_>>>().ok_or_else(|| err(format!("invalid base64 {s:?}")))?;
+        let vals: Vec<u32> = chunk.iter().map(|&c| val(c)).collect::<Option<Vec<_>>>().ok_or_else(|| err(format!("{s:?} is not valid base64-encoded text")))?;
         let n = vals.iter().enumerate().fold(0u32, |acc, (i, &v)| acc | (v << (18 - 6 * i)));
         out.push((n >> 16) as u8);
         if vals.len() > 2 {
@@ -1186,7 +1559,7 @@ mod tests {
     #[test]
     fn rejects_a_non_map_array_entry() {
         let schema = empty_schema();
-        let err = json_seq_to_cbor(&schema, &[Json::Array(vec![Json::String("/some/path".into())])], ContentFormat::Ipatch).unwrap_err();
+        let err = json_seq_to_cbor(&schema, &[Json::Array(vec![Json::String("/some/path".into())])], ContentFormat::Ipatch, false).unwrap_err();
         assert!(err.0.contains("IPATCH"), "{}", err.0);
         assert!(err.0.contains("got array"), "{}", err.0);
     }
@@ -1194,7 +1567,7 @@ mod tests {
     #[test]
     fn rejects_a_scalar_entry() {
         let schema = empty_schema();
-        let err = json_seq_to_cbor(&schema, &[Json::String("/some/path".into())], ContentFormat::Post).unwrap_err();
+        let err = json_seq_to_cbor(&schema, &[Json::String("/some/path".into())], ContentFormat::Post, false).unwrap_err();
         assert!(err.0.contains("POST"), "{}", err.0);
         assert!(err.0.contains("got String"), "{}", err.0);
     }
@@ -1202,7 +1575,7 @@ mod tests {
     #[test]
     fn rejects_a_null_entry() {
         let schema = empty_schema();
-        let err = json_seq_to_cbor(&schema, &[Json::Null], ContentFormat::Ipatch).unwrap_err();
+        let err = json_seq_to_cbor(&schema, &[Json::Null], ContentFormat::Ipatch, false).unwrap_err();
         assert!(err.0.contains("got null"), "{}", err.0);
     }
 
@@ -1212,7 +1585,7 @@ mod tests {
         let mut map = serde_json::Map::new();
         map.insert("/a".to_string(), Json::from(1));
         map.insert("/b".to_string(), Json::from(2));
-        let err = json_seq_to_cbor(&schema, &[Json::Object(map)], ContentFormat::Ipatch).unwrap_err();
+        let err = json_seq_to_cbor(&schema, &[Json::Object(map)], ContentFormat::Ipatch, false).unwrap_err();
         assert!(err.0.contains("exactly one key/value pair"), "{}", err.0);
         assert!(err.0.contains("got 2"), "{}", err.0);
         assert!(err.0.contains("/a") && err.0.contains("/b"), "{}", err.0);
@@ -1221,7 +1594,7 @@ mod tests {
     #[test]
     fn rejects_an_empty_map() {
         let schema = empty_schema();
-        let err = json_seq_to_cbor(&schema, &[Json::Object(serde_json::Map::new())], ContentFormat::Fetch).unwrap_err();
+        let err = json_seq_to_cbor(&schema, &[Json::Object(serde_json::Map::new())], ContentFormat::Fetch, false).unwrap_err();
         assert!(err.0.contains("got 0"), "{}", err.0);
     }
 
@@ -1287,5 +1660,286 @@ mod tests {
         assert_eq!(decode_decimal64(&ty, &Cbor::Tag(4, Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(257)]))), false).unwrap(), Json::String("2.57".into()));
         assert_eq!(decode_decimal64(&ty, &Cbor::Tag(4, Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(25700)]))), false).unwrap(), Json::String("257.0".into()));
         assert_eq!(decode_decimal64(&ty, &Cbor::Tag(4, Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(0)]))), false).unwrap(), Json::String("0.0".into()));
+    }
+
+    // -- native validation / `--continue` leniency --------------------
+    //
+    // This is the coverage `json_validate`/`json_schemer` gave the Ruby
+    // reference (see `type_to_cbor`'s own doc comment for why it's
+    // native here instead): a hand-built catalog with a range, a length
+    // + pattern, an `empty` leaf, and a keyed list, pinned independent
+    // of whatever any real catalog happens to declare. Each check is
+    // exercised both ways: a hard error without `--continue`, and a
+    // warning-plus-best-effort encoding with it.
+
+    fn validation_test_schema() -> Schema {
+        let yang = r#"
+            module test {
+                namespace "urn:test";
+                prefix t;
+
+                container box {
+                    leaf level {
+                        type uint8 {
+                            range "0..10";
+                        }
+                        mandatory true;
+                    }
+                    leaf mode {
+                        type string {
+                            length "1..4";
+                            pattern "[a-z]+";
+                        }
+                    }
+                    leaf armed {
+                        type empty;
+                    }
+                    leaf-list tag {
+                        type string;
+                    }
+                    leaf setting {
+                        type union {
+                            type boolean;
+                            type uint8 {
+                                range "0..10";
+                            }
+                        }
+                    }
+                    list item {
+                        key "id";
+                        leaf id {
+                            type uint8;
+                        }
+                        leaf name {
+                            type string;
+                        }
+                    }
+                }
+            }
+        "#;
+        let sid = r#"{
+            "module-name": "test",
+            "module-revision": "2026-01-01",
+            "items": [
+                {"namespace": "module", "identifier": "test", "sid": 1000},
+                {"namespace": "data", "identifier": "/test:box", "sid": 1001},
+                {"namespace": "data", "identifier": "/test:box/level", "sid": 1002},
+                {"namespace": "data", "identifier": "/test:box/mode", "sid": 1003},
+                {"namespace": "data", "identifier": "/test:box/armed", "sid": 1004},
+                {"namespace": "data", "identifier": "/test:box/item", "sid": 1005},
+                {"namespace": "data", "identifier": "/test:box/item/id", "sid": 1006},
+                {"namespace": "data", "identifier": "/test:box/item/name", "sid": 1007},
+                {"namespace": "data", "identifier": "/test:box/tag", "sid": 1008},
+                {"namespace": "data", "identifier": "/test:box/setting", "sid": 1009}
+            ]
+        }"#;
+        crate::schema::build(&[yang.to_string()], &[sid.to_string()]).expect("validation test schema builds")
+    }
+
+    fn box_node(schema: &Schema) -> NodeId {
+        schema.find_child(schema.root, "test:box").expect("test:box exists")
+    }
+
+    /// A minimally-valid `box` body: just the one mandatory field.
+    fn box_obj() -> serde_json::Map<String, Json> {
+        let mut m = serde_json::Map::new();
+        m.insert("level".to_string(), Json::from(5));
+        m
+    }
+
+    #[test]
+    fn range_violation_hard_fails_without_continue_and_degrades_with_it() {
+        let schema = validation_test_schema();
+        let box_id = box_node(&schema);
+        let mut obj = box_obj();
+        obj.insert("level".to_string(), Json::from(300));
+
+        let e = encode_node_value(&schema, box_id, &Json::Object(obj.clone()), ContentFormat::Put, false).unwrap_err();
+        assert!(e.0.contains("300"), "{}", e.0);
+        assert!(e.0.contains("between 0 and 10"), "{}", e.0);
+
+        // Continuing: the request still encodes (degraded, but present).
+        assert!(encode_node_value(&schema, box_id, &Json::Object(obj), ContentFormat::Put, true).is_ok());
+    }
+
+    #[test]
+    fn pattern_violation_hard_fails_without_continue_and_degrades_with_it() {
+        let schema = validation_test_schema();
+        let box_id = box_node(&schema);
+        let mut obj = box_obj();
+        obj.insert("mode".to_string(), Json::String("ABC".into()));
+
+        let e = encode_node_value(&schema, box_id, &Json::Object(obj.clone()), ContentFormat::Put, false).unwrap_err();
+        assert!(e.0.contains("ABC"), "{}", e.0);
+        assert!(e.0.contains("[a-z]+"), "{}", e.0);
+
+        assert!(encode_node_value(&schema, box_id, &Json::Object(obj), ContentFormat::Put, true).is_ok());
+    }
+
+    #[test]
+    fn length_violation_is_rejected_with_the_actual_bound_shown() {
+        let schema = validation_test_schema();
+        let box_id = box_node(&schema);
+        let mut obj = box_obj();
+        obj.insert("mode".to_string(), Json::String("toolong".into()));
+
+        let e = encode_node_value(&schema, box_id, &Json::Object(obj), ContentFormat::Put, false).unwrap_err();
+        assert!(e.0.contains("7 character"), "{}", e.0);
+        assert!(e.0.contains("between 1 and 4"), "{}", e.0);
+    }
+
+    #[test]
+    fn unknown_field_hard_fails_without_continue_and_is_skipped_with_it() {
+        let schema = validation_test_schema();
+        let box_id = box_node(&schema);
+        let mut obj = box_obj();
+        obj.insert("nope".to_string(), Json::from(1));
+
+        let e = encode_node_value(&schema, box_id, &Json::Object(obj.clone()), ContentFormat::Put, false).unwrap_err();
+        assert!(e.0.contains("\"nope\""), "{}", e.0);
+        assert!(e.0.contains("not a valid field"), "{}", e.0);
+
+        let cbor = encode_node_value(&schema, box_id, &Json::Object(obj), ContentFormat::Put, true).unwrap();
+        let decoded = decode_node_value(&schema, box_id, &cbor, ContentFormat::Put).unwrap();
+        let decoded_obj = decoded.as_object().unwrap();
+        assert!(!decoded_obj.contains_key("nope"), "unknown field should have been dropped, got {decoded:?}");
+        assert!(decoded_obj.contains_key("level"));
+    }
+
+    #[test]
+    fn missing_mandatory_field_hard_fails_without_continue_and_is_absent_with_it() {
+        let schema = validation_test_schema();
+        let box_id = box_node(&schema);
+        let obj = serde_json::Map::new(); // no "level" at all
+
+        let e = encode_node_value(&schema, box_id, &Json::Object(obj.clone()), ContentFormat::Put, false).unwrap_err();
+        assert!(e.0.contains("\"level\""), "{}", e.0);
+        assert!(e.0.contains("required"), "{}", e.0);
+
+        let cbor = encode_node_value(&schema, box_id, &Json::Object(obj), ContentFormat::Put, true).unwrap();
+        let decoded = decode_node_value(&schema, box_id, &cbor, ContentFormat::Put).unwrap();
+        assert_eq!(decoded, Json::Object(serde_json::Map::new()), "the missing field should simply stay absent, not appear as null or a default");
+    }
+
+    #[test]
+    fn missing_list_key_hard_fails_without_continue_and_is_absent_with_it() {
+        let schema = validation_test_schema();
+        let box_id = box_node(&schema);
+        let mut item = serde_json::Map::new();
+        item.insert("name".to_string(), Json::String("x".into()));
+        let mut obj = box_obj();
+        obj.insert("item".to_string(), Json::Array(vec![Json::Object(item)]));
+
+        let e = encode_node_value(&schema, box_id, &Json::Object(obj.clone()), ContentFormat::Put, false).unwrap_err();
+        assert!(e.0.contains("\"id\""), "{}", e.0);
+        assert!(e.0.contains("key of this list"), "{}", e.0);
+
+        assert!(encode_node_value(&schema, box_id, &Json::Object(obj), ContentFormat::Put, true).is_ok());
+    }
+
+    #[test]
+    fn malformed_leaf_value_hard_fails_without_continue_and_passes_through_raw_with_it() {
+        let schema = validation_test_schema();
+        let box_id = box_node(&schema);
+        let mut obj = box_obj();
+        obj.insert("level".to_string(), Json::String("not-a-number".into()));
+
+        let e = encode_node_value(&schema, box_id, &Json::Object(obj.clone()), ContentFormat::Put, false).unwrap_err();
+        assert!(e.0.contains("expected a whole number"), "{}", e.0);
+
+        let cbor = encode_node_value(&schema, box_id, &Json::Object(obj), ContentFormat::Put, true).unwrap();
+        // Degraded: the raw string made it onto the wire verbatim (delta-
+        // SID 1 == level's SID 1002 minus box's own SID 1001), not a
+        // properly-typed integer.
+        let map = cbor.as_map().expect("still a CBOR map");
+        let (_, level_cbor) = map.iter().find(|(k, _)| cbor_as_i128(k) == Some(1)).expect("level's entry is present");
+        assert_eq!(level_cbor, &Cbor::Text("not-a-number".to_string()));
+    }
+
+    #[test]
+    fn empty_typed_leaf_requires_the_null_array_shape() {
+        let schema = validation_test_schema();
+        let box_id = box_node(&schema);
+        let mut obj = box_obj();
+        obj.insert("armed".to_string(), Json::Bool(true)); // wrong shape
+
+        let e = encode_node_value(&schema, box_id, &Json::Object(obj.clone()), ContentFormat::Put, false).unwrap_err();
+        assert!(e.0.contains("[null]"), "{}", e.0);
+
+        obj.insert("armed".to_string(), Json::Array(vec![Json::Null])); // correct shape
+        assert!(encode_node_value(&schema, box_id, &Json::Object(obj), ContentFormat::Put, false).is_ok());
+    }
+
+    // -- structural shape checks (container -> object, list -> array,
+    // leaf-list -> array) -- what a JSON-Schema `type` keyword would
+    // enforce, confirming the encoder's own type-shape checks give at
+    // least the same coverage without one.
+
+    #[test]
+    fn container_shape_mismatch_hard_fails_without_continue_and_is_empty_with_it() {
+        let schema = validation_test_schema();
+        let box_id = box_node(&schema);
+
+        let e = encode_node_value(&schema, box_id, &Json::from(5), ContentFormat::Put, false).unwrap_err();
+        assert!(e.0.contains("needs an object"), "{}", e.0);
+
+        // Continuing: `box` itself becomes an empty map -- matches
+        // Ruby's own `result = {}` fallback, and the *same* shortcut it
+        // takes: `encode_body`'s own missing-required-field check is
+        // never reached here, since there's no body to check fields of.
+        assert_eq!(encode_node_value(&schema, box_id, &Json::from(5), ContentFormat::Put, true).unwrap(), Cbor::Map(vec![]));
+    }
+
+    #[test]
+    fn list_shape_mismatch_hard_fails_without_continue_and_is_empty_with_it() {
+        let schema = validation_test_schema();
+        let box_id = box_node(&schema);
+        let item_id = schema.find_child(box_id, "item").expect("test:box/item exists");
+
+        let e = encode_node_value(&schema, item_id, &Json::from(5), ContentFormat::Put, false).unwrap_err();
+        assert!(e.0.contains("needs a list"), "{}", e.0);
+
+        assert_eq!(encode_node_value(&schema, item_id, &Json::from(5), ContentFormat::Put, true).unwrap(), Cbor::Array(vec![]));
+    }
+
+    #[test]
+    fn leaf_list_shape_mismatch_is_always_a_hard_error_regardless_of_continue() {
+        // Unlike container/list, `leaf-list`'s own shape check has no
+        // `--continue` leniency in Ruby either (an unguarded `json.map`
+        // that would just crash on the wrong shape) -- replicated here
+        // faithfully rather than "fixed", per this port's own stated
+        // policy (see `encode_node_value`'s doc comment).
+        let schema = validation_test_schema();
+        let box_id = box_node(&schema);
+        let tag_id = schema.find_child(box_id, "tag").expect("test:box/tag exists");
+
+        assert!(encode_node_value(&schema, tag_id, &Json::from(5), ContentFormat::Put, false).is_err());
+        assert!(encode_node_value(&schema, tag_id, &Json::from(5), ContentFormat::Put, true).is_err());
+    }
+
+    #[test]
+    fn union_mismatch_names_the_value_and_the_allowed_types_not_an_internal_id() {
+        let schema = validation_test_schema();
+        let box_id = box_node(&schema);
+        // `setting` is a `union { boolean; uint8 { range "0..10"; } }` --
+        // a plain string matches neither member.
+        let mut obj = box_obj();
+        obj.insert("setting".to_string(), Json::String("nope".into()));
+
+        let e = encode_node_value(&schema, box_id, &Json::Object(obj.clone()), ContentFormat::Put, false).unwrap_err();
+        assert!(e.0.contains("\"nope\""), "{}", e.0);
+        assert!(e.0.contains("boolean"), "{}", e.0);
+        assert!(e.0.contains("uint8"), "{}", e.0);
+        // The old message named an internal TypeId (a bare integer) --
+        // never let one leak back in.
+        assert!(!e.0.contains("type 0") && !e.0.contains("type 1"), "should not mention an internal type id: {}", e.0);
+
+        // A value that *does* match a member still degrades sensibly
+        // under --continue if that member's own constraints reject it
+        // (300 doesn't fit uint8 0..10).
+        obj.insert("setting".to_string(), Json::from(300));
+        let e2 = encode_node_value(&schema, box_id, &Json::Object(obj.clone()), ContentFormat::Put, false).unwrap_err();
+        assert!(e2.0.contains("between 0 and 10"), "{}", e2.0);
+        assert!(encode_node_value(&schema, box_id, &Json::Object(obj), ContentFormat::Put, true).is_ok());
     }
 }
