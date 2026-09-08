@@ -5,11 +5,17 @@
 //! flag-for-flag (minus `--log-append`/`--log-msg`/`--log-run`/
 //! `--log-steps`, out of scope for this port).
 
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(name = "rcc", about = "MUP1/CoAP/CORECONF client for VelocityDRIVE-SP devices")]
 pub struct Opts {
+    /// `conv`/`schema`, folding in `yang-enc`'s CLI (mirrors
+    /// `support/yang-enc/yang-enc.rb`). Omitted entirely: the flat
+    /// device-flag CoAP client below (mirrors `mup1cc` itself).
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
     /// IP based terminal device to connect to. Ex: termhub://10.0.0.2:4000
     /// or /dev/ttyUSB0. If an Easytest setup is reserved then this
     /// defaults to the terminal specified in the topology file.
@@ -87,13 +93,7 @@ impl Opts {
     /// `None` (unset) / `Some(true)` / `Some(false)`, matching the Ruby
     /// tri-state `$opts[:workspace]`.
     pub fn workspace_flag(&self) -> Option<bool> {
-        if self.workspace {
-            Some(true)
-        } else if self.no_workspace {
-            Some(false)
-        } else {
-            None
-        }
+        workspace_flag(self.workspace, self.no_workspace)
     }
 
     /// Duplicate-group check matching `mup1cc:419-425`: at most one
@@ -109,4 +109,71 @@ impl Opts {
         }
         Ok(())
     }
+}
+
+/// `None` (unset) / `Some(true)` / `Some(false)`, matching the Ruby
+/// tri-state `$opts[:workspace]`. Only `Opts` itself needs this --
+/// `ConvArgs`/`SchemaArgs` below have no download alternative to choose
+/// between, so they have no such flag at all.
+fn workspace_flag(workspace: bool, no_workspace: bool) -> Option<bool> {
+    if workspace {
+        Some(true)
+    } else if no_workspace {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Folds `support/yang-enc/yang-enc.rb`'s CLI into `rcc` as subcommands,
+/// matching that standalone tool's offline nature exactly: no `-d`, no
+/// checksum-download fallback, no `-w`/`--no-workspace` (there is no
+/// alternative to choose between) -- just the workspace catalog by
+/// default, or an explicit `.yang`/`.sid` set given on the command line.
+#[derive(Subcommand, Debug)]
+pub enum Command {
+    /// Convert between YAML/JSON/CBOR encodings of a CoAP/CORECONF
+    /// payload (mirrors `yang-enc conv`).
+    Conv(ConvArgs),
+    /// Generate a JSON Schema (draft-07) from a YANG schema (mirrors
+    /// `yang-enc schema`).
+    Schema(SchemaArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ConvArgs {
+    /// Input file format.
+    #[arg(short = 'i', long = "input", value_parser = ["yaml", "json", "cbor"], default_value = "yaml")]
+    pub input_format: String,
+
+    /// Output file format.
+    #[arg(short = 'o', long = "output", value_parser = ["yaml", "json", "cbor"], default_value = "cbor")]
+    pub output_format: String,
+
+    /// Input content format. yang: a YANG data tree (RFC 7950 section 3).
+    /// fetch: one or more FETCH requests or responses. ipatch: one or
+    /// more iPATCH requests. get/put: aliases for yang. post: an RPC/
+    /// action request or response.
+    #[arg(short = 'c', long = "content", value_parser = ["yang", "fetch", "ipatch", "get", "put", "post"], default_value = "yang")]
+    pub content: String,
+
+    /// Continue processing on schema validation error.
+    #[arg(long = "continue-on-error")]
+    pub continue_on_error: bool,
+
+    /// An optional data file (default: read from STDIN), and/or an
+    /// explicit catalog to use instead of the workspace catalog: some
+    /// `.yang` files plus their matching `.sid` files (both required
+    /// together). Order doesn't matter -- each argument is sorted into
+    /// one of the three groups by its extension, mirroring
+    /// `yang-enc.rb:93-96`.
+    pub files: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct SchemaArgs {
+    /// An explicit set of `.yang` files to schematize instead of the
+    /// workspace catalog. `.sid` files are not accepted here (a JSON
+    /// Schema doesn't need SIDs at all), mirroring `yang-enc.rb:131`.
+    pub files: Vec<String>,
 }

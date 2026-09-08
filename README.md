@@ -40,6 +40,18 @@ echo '- "/ietf-system:system/contact"' | cargo run -p rcc -- -d /dev/ttyACM0 -m 
 Flags mirror `mup1cc`'s `OptionParser` block -- see `rcc/src/opts.rs` or
 `rcc --help`.
 
+`rcc conv`/`rcc schema` fold in `support/yang-enc/yang-enc.rb`'s CLI
+(format conversion and JSON-Schema generation) as subcommands on the same
+binary, matching that standalone tool's offline nature exactly: no `-d`,
+no checksum-download fallback, no `-w`/`--no-workspace` at all -- just
+the workspace catalog by default, or an explicit `.yang`/`.sid` set given
+on the command line:
+
+```
+echo '- "/ietf-system:system/contact"' | cargo run -p rcc -- conv -i yaml -o cbor -c fetch
+cargo run -p rcc -- schema > schema.json
+```
+
 ## Workspace layout
 
 - `mup1/` -- MUP1 framing (checksums, byte-stuffing, decode state
@@ -59,6 +71,10 @@ Flags mirror `mup1cc`'s `OptionParser` block -- see `rcc/src/opts.rs` or
   - `sid.rs` -- RFC 9595 `.sid` file parsing.
   - `codec.rs` -- the SID-CBOR wire codec, porting
     `support/yang-enc/yang-enc.rb`.
+  - `json_schema.rs` -- draft-07 JSON Schema generation from a built
+    schema, porting `yang-enc.rb`'s `to_json_schema`/`type2schema`
+    (`rcc schema`'s output, and the schema `rcc conv`'s eventual
+    validation gate will check requests against).
   - `catalog.rs` -- workspace (`support/scripts/gen-cc-nodes.yaml`) and
     checksum-download catalog acquisition, porting
     `support/yang-enc/yang-schema.rb` minus its on-disk parsed-schema
@@ -88,14 +104,27 @@ Flags mirror `mup1cc`'s `OptionParser` block -- see `rcc/src/opts.rs` or
   port has no equivalent of. This is unrelated to device-emitted MUP1
   trace frames, which are handled unconditionally regardless of `-s`
   and have been verified against real hardware.
-- **Validation**: this port does not replicate the Ruby reference's
-  JSON-Schema generation-and-validation pass that runs before encoding
-  a request. Structural errors (unknown child, wrong shape, bad
-  instance-identifier) still surface from the encoder itself;
-  range/pattern/length constraint validation does not. `-c`/
-  `--continue`'s error-vs-warning distinction is correspondingly
-  shallow (logged, not threaded through to change encoding behavior on
-  partial failure).
+- **Validation**: implemented natively rather than via a generated JSON
+  Schema (`yang::json_schema::to_json_schema` still exists independently,
+  for `rcc schema`) -- range/length/pattern/enum/bit/identity/required
+  checks live directly in `yang/src/codec.rs`'s encoder
+  (`type_to_cbor`/`encode_body`), right next to the type-shape checks
+  they're a natural extension of. `-c`/`--continue` has real, per-field
+  leniency matching the Ruby reference's `json2cbor_hash`/`type2cbor`
+  exactly: without it, any violation (an unknown field, a missing
+  mandatory field or list key, an out-of-range/wrong-length/pattern-
+  mismatched value, a malformed leaf) hard-fails with a message stating
+  the actual constraint (e.g. "must be between 0 and 65535"), not just a
+  type name. With it, the request still gets sent: the offending field
+  is skipped (container/list-shape or unknown-field errors) or passed
+  through as its raw JSON value (a leaf that fails to encode), matching
+  what Ruby's own `--continue` does. See `yang/src/codec.rs`'s test
+  module for the full battery of these cases, both ways. `anydata
+  board:factory_default_config` is schematized as `{}` (any value) by
+  `to_json_schema` specifically, rather than the Ruby reference's
+  recursive re-derivation of the *default* schema under content-format
+  `put` -- a narrow gap in that one generated-schema feature, unrelated
+  to request validation.
 - **Input/output format selection (`-i`/`-o`/`-I`/`-O`)**: the
   flag/extension/default priority chain is unit-tested for both JSON
   and YAML, in both directions. Reading from STDIN specifically (as
