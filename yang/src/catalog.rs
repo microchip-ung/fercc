@@ -206,10 +206,12 @@ fn run_command_capturing_stdout(program: &str, args: &[&str]) -> R<Vec<u8>> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     fn test_data_dir() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("test-data")
     }
 
+    #[cfg(unix)]
     fn unique_path(name: &str) -> PathBuf {
         let path = std::env::temp_dir().join(format!("rcc-catalog-test-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
