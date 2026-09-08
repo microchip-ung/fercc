@@ -408,7 +408,7 @@ fn decode_bits(ty: &TypeDef, value: &Cbor, in_union: bool) -> R<Json> {
 
 // -- identityref (RFC 9254 6.10 / RFC 9595) ------------------------------
 
-fn all_identity_bases(schema: &Schema, ty: &TypeDef) -> Option<std::collections::HashSet<IdentityId>> {
+pub(crate) fn all_identity_bases(schema: &Schema, ty: &TypeDef) -> Option<std::collections::HashSet<IdentityId>> {
     let mut iter = ty.identity_bases.iter();
     let first = *iter.next()?;
     let mut set = schema.derived_from(first);

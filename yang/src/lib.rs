@@ -6,6 +6,7 @@
 
 pub mod catalog;
 pub mod codec;
+pub mod json_schema;
 pub mod parser;
 pub mod schema;
 pub mod sid;
