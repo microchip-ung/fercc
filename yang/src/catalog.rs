@@ -141,7 +141,7 @@ pub fn download_and_extract(checksum: &str, dest_dir: &Path, verbose: bool) -> R
         }
     }
     Err(err(format!(
-        "remote catalog based on {checksum} not found! last error: {}",
+        "couldn't download the YANG catalog for checksum {checksum} from any known mirror -- check your network connection, or this device's firmware may be too new or too old for this tool. Last error: {}",
         last_err.map(|e| e.to_string()).unwrap_or_default()
     )))
 }
