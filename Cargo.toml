@@ -3,7 +3,7 @@
 
 [workspace]
 resolver = "2"
-members = ["mup1", "coap", "yang", "rcc"]
+members = ["cbor", "mup1", "coap", "yang", "rcc"]
 
 [workspace.package]
 edition = "2021"
@@ -13,7 +13,6 @@ license = "MIT"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml_ng = "0.10"
-ciborium = "0.2"
 serialport = { version = "4", default-features = false }
 ureq = "3"
 flate2 = "1"

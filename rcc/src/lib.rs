@@ -352,8 +352,7 @@ fn run_schema(args: &opts::SchemaArgs) -> Result<(), String> {
 /// isn't loaded yet, so this bypasses the codec entirely), returning the
 /// 16-byte checksum as a lowercase hex string.
 fn fetch_yang_lib_checksum_from_dut(coap: &mut CoapClient, verbose: bool) -> Result<String, String> {
-    let mut req = Vec::new();
-    ciborium::into_writer(&ciborium::Value::from(SID_CHECKSUM), &mut req).map_err(|e| e.to_string())?;
+    let req = cbor::to_vec(&cbor::Value::from(SID_CHECKSUM));
 
     let resp = coap.fetch("c", &req, |f| print_other_frame(&f)).map_err(|e| e.to_string())?;
     if resp.code_class != 2 || resp.code_detail != 5 {
@@ -362,8 +361,8 @@ fn fetch_yang_lib_checksum_from_dut(coap: &mut CoapClient, verbose: bool) -> Res
             resp.code_class, resp.code_detail
         ));
     }
-    let value: ciborium::Value =
-        ciborium::from_reader(resp.payload.as_slice()).map_err(|e| format!("the device's checksum response could not be decoded as CBOR: {e}"))?;
+    let mut pos = 0;
+    let value = cbor::from_slice(resp.payload.as_slice(), &mut pos).map_err(|e| format!("the device's checksum response could not be decoded as CBOR: {e}"))?;
     let map = value.as_map().ok_or("the device's checksum response was malformed (expected a CBOR map)")?;
     let (_, val) = map.first().ok_or("the device's checksum response was empty")?;
     let bytes = val.as_bytes().ok_or("the device's checksum response was malformed (expected raw bytes)")?;

@@ -12,6 +12,7 @@ name = "rcc"
 path = "src/main.rs"
 
 [dependencies]
+cbor = { path = "../cbor" }
 mup1 = { path = "../mup1" }
 coap = { path = "../coap" }
 yang = { path = "../yang" }
@@ -19,7 +20,6 @@ serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true
 clap.workspace = true
-ciborium.workspace = true
 
 [dev-dependencies]
 flate2.workspace = true

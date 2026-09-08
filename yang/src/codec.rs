@@ -7,7 +7,7 @@
 //! `sw-velocitydrive-devclient`'s `src/yang/yang-codec.ts` and
 //! `client-lib/src/lm_yang.c`.
 
-use ciborium::Value as Cbor;
+use cbor::Value as Cbor;
 use serde_json::Value as Json;
 
 use crate::schema::{Builtin, IdentityId, Node, NodeId, Schema, TypeDef, TypeId};
@@ -316,7 +316,13 @@ fn json_to_cbor_generic(value: &Json) -> Cbor {
             } else if let Some(u) = n.as_u64() {
                 Cbor::from(u)
             } else {
-                Cbor::Float(n.as_f64().unwrap_or(0.0))
+                // Not representable as a plain integer (e.g. a
+                // fractional number) -- there's no CBOR float support
+                // in this codebase at all (a real device can neither
+                // send nor make sense of one), so fall back to the
+                // number's own text form rather than a fabricated
+                // approximation.
+                Cbor::Text(n.to_string())
             }
         }
         Json::String(s) => Cbor::Text(s.clone()),
@@ -375,7 +381,6 @@ fn cbor_scalar_passthrough_to_json(value: &Cbor) -> R<Json> {
         Cbor::Text(s) => Ok(Json::String(s.clone())),
         Cbor::Bool(b) => Ok(Json::Bool(*b)),
         Cbor::Integer(_) => Ok(Json::from(cbor_as_i128(value).unwrap_or(0) as i64)),
-        Cbor::Float(f) => Ok(serde_json::Number::from_f64(*f).map(Json::Number).unwrap_or(Json::Null)),
         Cbor::Null => Ok(Json::Null),
         other => Err(err(format!("the device sent {}, which this port has no defined way to decode here", describe_cbor(other)))),
     }
@@ -383,7 +388,7 @@ fn cbor_scalar_passthrough_to_json(value: &Cbor) -> R<Json> {
 
 fn cbor_as_i128(value: &Cbor) -> Option<i128> {
     match value {
-        Cbor::Integer(i) => Some(i128::from(*i)),
+        Cbor::Integer(i) => Some(*i),
         _ => None,
     }
 }
@@ -409,12 +414,10 @@ fn describe_cbor(value: &Cbor) -> String {
         Cbor::Text(s) => format!("the text {s:?}"),
         Cbor::Bytes(b) => format!("{} byte(s) of binary data", b.len()),
         Cbor::Bool(b) => format!("the boolean {b}"),
-        Cbor::Float(f) => format!("the number {f}"),
         Cbor::Null => "null".to_string(),
         Cbor::Array(items) => format!("a list of {} item(s)", items.len()),
         Cbor::Map(entries) => format!("a map of {} entrie(s)", entries.len()),
         Cbor::Tag(t, inner) => format!("a tagged value (tag {t}, containing {})", describe_cbor(inner)),
-        _ => "an unrecognized value".to_string(),
     }
 }
 
@@ -1315,16 +1318,14 @@ pub fn decode_node_value(schema: &Schema, node: NodeId, value: &Cbor, cf: Conten
 // ===========================================================================
 
 fn cbor_to_bytes(value: &Cbor) -> R<Vec<u8>> {
-    let mut buf = Vec::new();
-    ciborium::into_writer(value, &mut buf).map_err(|e| err(format!("could not encode this as CBOR ({e}) -- this looks like an internal bug, not something in your data")))?;
-    Ok(buf)
+    Ok(cbor::to_vec(value))
 }
 
 fn cbor_seq_from_bytes(bytes: &[u8]) -> R<Vec<Cbor>> {
-    let mut cursor = std::io::Cursor::new(bytes);
+    let mut pos = 0;
     let mut items = Vec::new();
-    while (cursor.position() as usize) < bytes.len() {
-        let v: Cbor = ciborium::from_reader(&mut cursor).map_err(|e| err(format!("could not decode this as CBOR ({e}) -- the data may be corrupted, truncated, or not CBOR at all")))?;
+    while pos < bytes.len() {
+        let v = cbor::from_slice(bytes, &mut pos).map_err(|e| err(format!("could not decode this as CBOR ({e}) -- the data may be corrupted, truncated, or not CBOR at all")))?;
         items.push(v);
     }
     Ok(items)
