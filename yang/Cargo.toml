@@ -12,7 +12,6 @@ cbor = { path = "../cbor" }
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true
-ureq.workspace = true
 flate2.workspace = true
 tar.workspace = true
 regex.workspace = true

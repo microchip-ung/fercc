@@ -79,7 +79,16 @@ cargo run -p rcc -- schema > schema.json
     checksum-download catalog acquisition, porting
     `support/yang-enc/yang-schema.rb` minus its on-disk parsed-schema
     cache (re-parsing fresh every invocation is the explicit point of
-    doing this in Rust).
+    doing this in Rust). There's no HTTP/TLS library anywhere in this
+    codebase: the download itself is always an external command --
+    `curl` by default (matching the real Ruby reference's own `wget`
+    backtick call, `support/scripts/mup1cc:98-103`), or whatever
+    `--catalog-fetcher <command>` names instead. The contract: called
+    as `<command> <checksum>`, write the catalog's `.tar.gz` bytes to
+    stdout and exit 0 -- `rcc` extracts them itself, so the command
+    doesn't need to leave any files behind, and it's entirely up to
+    that command how network security (TLS, proxies, certificates,
+    alternate mirrors) is handled.
 - `rcc/` -- the CLI binary tying it all together.
 - `test-data/` -- a curated set of YAML/CBOR fixture pairs plus a bundled
   YANG catalog tarball. Originally ~387 pairs copied wholesale from

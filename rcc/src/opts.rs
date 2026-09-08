@@ -87,6 +87,17 @@ pub struct Opts {
     /// DUT, even if an Easytest setup is reserved.
     #[arg(long = "no-workspace")]
     pub no_workspace: bool,
+
+    /// Replace the built-in `curl`-based catalog download (used when
+    /// the YANG catalog comes from the DUT's own checksum rather than
+    /// -w/--workspace) with this command instead. Called as `<command>
+    /// <checksum>`; it must write the catalog's .tar.gz bytes to
+    /// stdout and exit 0 -- rcc extracts them itself, so the command
+    /// doesn't need to leave any files behind. Whatever network
+    /// security handling (TLS, proxies, certificates, alternate
+    /// mirrors) this needs is entirely up to the command itself.
+    #[arg(long = "catalog-fetcher", value_name = "COMMAND")]
+    pub catalog_fetcher: Option<String>,
 }
 
 impl Opts {

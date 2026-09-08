@@ -11,6 +11,17 @@
 //! Either path lands on the same `CatalogFiles` (raw .yang/.sid source
 //! text), fed straight into `schema::build` -- only the *download* of the
 //! raw catalog files is ever cached, never the parsed schema.
+//!
+//! There's no HTTP/TLS library in this codebase at all: fetching the
+//! tarball's bytes is always delegated to an external command --
+//! `curl` by default (matching the real Ruby reference's own `wget`-
+//! via-backtick approach, `support/scripts/mup1cc:98-103`), or whatever
+//! `--catalog-fetcher` names instead, so it's entirely up to that
+//! command (and its own TLS/certificate configuration) how network
+//! security is handled. The contract is minimal and leaves no files
+//! behind: given the checksum as its only argument, write the
+//! catalog's `.tar.gz` bytes to stdout and exit 0 -- this module does
+//! the gunzip/untar itself, in memory.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -111,10 +122,12 @@ pub fn load_from_dir(dir: &Path) -> R<CatalogFiles> {
 
 /// Fetch the catalog tarball named by `checksum` (the DUT's YANG-library
 /// checksum, from SID 29304 / `ietf-constrained-yang-library:yang-
-/// library/checksum`) from the first mirror that has it, extracting into
-/// `dest_dir`. Only the download is skipped on a repeat run (`dest_dir`
+/// library/checksum`) and extract it into `dest_dir`. `fetcher`, if
+/// given, names an external command to run instead of the built-in
+/// `curl` default (see the module doc comment for the contract it must
+/// satisfy). Only the download is skipped on a repeat run (`dest_dir`
 /// already populated) -- the schema itself is always rebuilt fresh.
-pub fn download_and_extract(checksum: &str, dest_dir: &Path, verbose: bool) -> R<()> {
+pub fn download_and_extract(checksum: &str, dest_dir: &Path, fetcher: Option<&str>, verbose: bool) -> R<()> {
     if dest_dir.join(".complete").is_file() {
         if verbose {
             eprintln!("catalog for {checksum} already downloaded at {}", dest_dir.display());
@@ -123,19 +136,37 @@ pub fn download_and_extract(checksum: &str, dest_dir: &Path, verbose: bool) -> R
     }
     fs::create_dir_all(dest_dir)?;
 
+    let tarball = match fetcher {
+        Some(command) => run_external_fetcher(command, checksum, verbose)?,
+        None => fetch_with_curl(checksum, verbose)?,
+    };
+    extract_tarball(&tarball, dest_dir)?;
+
+    fs::write(dest_dir.join(".complete"), b"")?;
+    Ok(())
+}
+
+fn extract_tarball(bytes: &[u8], dest_dir: &Path) -> R<()> {
+    let gz = flate2::read::GzDecoder::new(bytes);
+    let mut archive = tar::Archive::new(gz);
+    archive.unpack(dest_dir).map_err(|e| err(format!("extracting the catalog tarball: {e}")))
+}
+
+/// The built-in default: try each known mirror in turn with a plain
+/// `curl -fsSL <url>`, capturing its stdout as the tarball's bytes.
+fn fetch_with_curl(checksum: &str, verbose: bool) -> R<Vec<u8>> {
     let mut last_err = None;
     for mirror in REMOTE_CATALOGS {
         let url = format!("{mirror}/{checksum}.tar.gz");
         if verbose {
             eprintln!("trying {url}...");
         }
-        match fetch_and_extract(&url, dest_dir) {
-            Ok(()) => {
-                fs::write(dest_dir.join(".complete"), b"")?;
+        match run_command_capturing_stdout("curl", &["-fsSL", &url]) {
+            Ok(bytes) => {
                 if verbose {
                     eprintln!("catalog found in\n  {mirror}");
                 }
-                return Ok(());
+                return Ok(bytes);
             }
             Err(e) => last_err = Some(e),
         }
@@ -146,11 +177,95 @@ pub fn download_and_extract(checksum: &str, dest_dir: &Path, verbose: bool) -> R
     )))
 }
 
-fn fetch_and_extract(url: &str, dest_dir: &Path) -> R<()> {
-    let mut response = ureq::get(url).call().map_err(|e| err(format!("GET {url}: {e}")))?;
-    let gz = response.body_mut().as_reader();
-    let tar = flate2::read::GzDecoder::new(gz);
-    let mut archive = tar::Archive::new(tar);
-    archive.unpack(dest_dir).map_err(|e| err(format!("extracting {url}: {e}")))?;
-    Ok(())
+/// Run a `--catalog-fetcher` replacement: called as `<command>
+/// <checksum>`, must write the catalog's `.tar.gz` bytes to stdout and
+/// exit 0.
+fn run_external_fetcher(command: &str, checksum: &str, verbose: bool) -> R<Vec<u8>> {
+    if verbose {
+        eprintln!("running catalog fetcher: {command} {checksum}");
+    }
+    run_command_capturing_stdout(command, &[checksum])
+}
+
+fn run_command_capturing_stdout(program: &str, args: &[&str]) -> R<Vec<u8>> {
+    let output = std::process::Command::new(program).args(args).output().map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            err(format!("the '{program}' command isn't available on this system"))
+        } else {
+            err(format!("couldn't run '{program}': {e}"))
+        }
+    })?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(err(format!("'{program}' exited with {} -- {}", output.status, String::from_utf8_lossy(&output.stderr).trim())))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_data_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("test-data")
+    }
+
+    fn unique_path(name: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("rcc-catalog-test-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&path);
+        let _ = fs::remove_file(&path);
+        path
+    }
+
+    #[test]
+    fn nonexistent_fetcher_command_gives_a_clear_error() {
+        let err = run_command_capturing_stdout("this-program-does-not-exist-anywhere", &[]).unwrap_err();
+        assert!(err.to_string().contains("isn't available"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_capturing_stdout_returns_its_stdout_bytes() {
+        let bytes = run_command_capturing_stdout("printf", &["%s", "hello"]).unwrap();
+        assert_eq!(bytes, b"hello");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failing_command_reports_its_stderr() {
+        let err = run_command_capturing_stdout("sh", &["-c", "echo it broke >&2; exit 3"]).unwrap_err();
+        assert!(err.to_string().contains("it broke"), "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn external_fetcher_contract_end_to_end() {
+        // A fake `--catalog-fetcher`: ignores the checksum it's given
+        // and just cats the bundled real catalog tarball to stdout --
+        // exactly the contract a real replacement is expected to
+        // satisfy, and exactly what the built-in `curl` default's own
+        // stdout capture must handle too.
+        let tarball = test_data_dir().join("e6311dd5be50af0f0286fd3a6fb218a1.tar.gz");
+        let script_path = unique_path("fetcher-script.sh");
+        fs::write(&script_path, format!("#!/bin/sh\nexec cat '{}'\n", tarball.display())).unwrap();
+        let mut perms = fs::metadata(&script_path).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        fs::set_permissions(&script_path, perms).unwrap();
+
+        let dest_dir = unique_path("dest");
+        download_and_extract("ignored-checksum", &dest_dir, Some(script_path.to_str().unwrap()), false).unwrap();
+
+        let files = load_from_dir(&dest_dir).unwrap();
+        assert!(!files.yang.is_empty());
+        assert!(!files.sid.is_empty());
+        assert!(dest_dir.join(".complete").is_file());
+
+        // A repeat call must be short-circuited by the `.complete`
+        // sentinel before ever invoking the fetcher again -- point at
+        // a command that would fail loudly if it were actually run.
+        download_and_extract("ignored-checksum", &dest_dir, Some("this-program-does-not-exist-anywhere"), false).unwrap();
+
+        let _ = fs::remove_dir_all(&dest_dir);
+        let _ = fs::remove_file(&script_path);
+    }
 }

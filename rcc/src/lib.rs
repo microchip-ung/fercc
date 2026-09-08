@@ -78,7 +78,7 @@ pub fn run() -> Result<(), String> {
         }
         load_workspace_schema(opts.verbose)?
     } else {
-        load_downloaded_schema(&mut coap, opts.verbose)?
+        load_downloaded_schema(&mut coap, opts.catalog_fetcher.as_deref(), opts.verbose)?
     };
 
     let input_data = if matches!(method.as_str(), "fetch" | "ipatch" | "put" | "post") {
@@ -119,7 +119,7 @@ pub fn load_workspace_schema(verbose: bool) -> Result<Schema, String> {
     yang::schema::build(&files.yang, &files.sid).map_err(|e| e.to_string())
 }
 
-fn load_downloaded_schema(coap: &mut CoapClient, verbose: bool) -> Result<Schema, String> {
+fn load_downloaded_schema(coap: &mut CoapClient, catalog_fetcher: Option<&str>, verbose: bool) -> Result<Schema, String> {
     let checksum = fetch_yang_lib_checksum_from_dut(coap, verbose)?;
     if verbose {
         eprintln!("YANG Lib checksum in DUT: {checksum}");
@@ -135,7 +135,7 @@ fn load_downloaded_schema(coap: &mut CoapClient, verbose: bool) -> Result<Schema
     // subdirectory must not collide with that name.
     let catalog_dir = cache_dir.join("catalog");
     std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
-    yang::catalog::download_and_extract(&checksum, &catalog_dir, verbose).map_err(|e| e.to_string())?;
+    yang::catalog::download_and_extract(&checksum, &catalog_dir, catalog_fetcher, verbose).map_err(|e| e.to_string())?;
     let files = yang::catalog::load_from_dir(&catalog_dir).map_err(|e| e.to_string())?;
     yang::schema::build(&files.yang, &files.sid).map_err(|e| e.to_string())
 }
