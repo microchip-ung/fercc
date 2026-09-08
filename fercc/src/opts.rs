@@ -16,9 +16,8 @@ pub struct Opts {
     #[command(subcommand)]
     pub command: Option<Command>,
 
-    /// IP based terminal device to connect to. Ex: termhub://10.0.0.2:4000
-    /// or /dev/ttyUSB0. If an Easytest setup is reserved then this
-    /// defaults to the terminal specified in the topology file.
+    /// Serial device, or termhub://host:port / telnet://host:port.
+    /// Defaults to a reserved Easytest topology's terminal, if any.
     #[arg(short = 'd', long = "device")]
     pub device: Option<String>,
 
@@ -62,12 +61,8 @@ pub struct Opts {
     #[arg(short = 'q', long = "query", value_parser = ["c=c", "c=n", "c=a", "d=a", "d=t"])]
     pub query: Vec<String>,
 
-    /// Not implemented by this port: accepted only for CLI-surface
-    /// compatibility with the Ruby reference's OptionParser flag set.
-    /// The Ruby tool uses this to set a trace level for its internal
-    /// MUP1/CoAP/DTLS handler-subsystem event logging; this port has no
-    /// such internal event-tracer, so any value given here is parsed
-    /// and silently ignored.
+    /// Not implemented by this port -- accepted and ignored, for
+    /// CLI-surface compatibility with the Ruby reference.
     #[arg(short = 's', long = "sys-trace", value_parser = ["fatal", "error", "info", "debug"])]
     pub sys_trace: Option<String>,
 
@@ -75,7 +70,7 @@ pub struct Opts {
     #[arg(short = 'v', long = "verbose")]
     pub verbose: bool,
 
-    /// Continue on errors in JSON schema validation.
+    /// Continue past request-validation errors instead of stopping.
     #[arg(short = 'c', long = "continue")]
     pub continue_on_error: bool,
 
@@ -88,14 +83,9 @@ pub struct Opts {
     #[arg(long = "no-workspace")]
     pub no_workspace: bool,
 
-    /// Replace the built-in `curl`-based catalog download (used when
-    /// the YANG catalog comes from the DUT's own checksum rather than
-    /// -w/--workspace) with this command instead. Called as `<command>
-    /// <checksum>`; it must write the catalog's .tar.gz bytes to
-    /// stdout and exit 0 -- fercc extracts them itself, so the command
-    /// doesn't need to leave any files behind. Whatever network
-    /// security handling (TLS, proxies, certificates, alternate
-    /// mirrors) this needs is entirely up to the command itself.
+    /// Replace the built-in `curl`-based catalog download with this
+    /// command instead. Called as `<command> <checksum>`; must write
+    /// the catalog's .tar.gz bytes to stdout and exit 0.
     #[arg(long = "catalog-fetcher", value_name = "COMMAND")]
     pub catalog_fetcher: Option<String>,
 }
@@ -168,7 +158,7 @@ pub struct ConvArgs {
     #[arg(short = 'c', long = "content", value_parser = ["yang", "fetch", "ipatch", "get", "put", "post"], default_value = "yang")]
     pub content: String,
 
-    /// Continue processing on schema validation error.
+    /// Continue past request-validation errors instead of stopping.
     #[arg(long = "continue-on-error")]
     pub continue_on_error: bool,
 
