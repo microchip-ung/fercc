@@ -133,11 +133,10 @@ fn workspace_flag(workspace: bool, no_workspace: bool) -> Option<bool> {
 /// default, or an explicit `.yang`/`.sid` set given on the command line.
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Convert between YAML/JSON/CBOR encodings of a CoAP/CORECONF
-    /// payload (mirrors `yang-enc conv`).
+    /// Convert between YAML/JSON/CBOR encodings of a CORECONF
+    /// payload.
     Conv(ConvArgs),
-    /// Generate a JSON Schema (draft-07) from a YANG schema (mirrors
-    /// `yang-enc schema`).
+    /// Generate a JSON Schema from a YANG schema.
     Schema(SchemaArgs),
 }
 
@@ -166,15 +165,13 @@ pub struct ConvArgs {
     /// explicit catalog to use instead of the workspace catalog: some
     /// `.yang` files plus their matching `.sid` files (both required
     /// together). Order doesn't matter -- each argument is sorted into
-    /// one of the three groups by its extension, mirroring
-    /// `yang-enc.rb:93-96`.
+    /// one of the three groups by its extension.
     pub files: Vec<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct SchemaArgs {
     /// An explicit set of `.yang` files to schematize instead of the
-    /// workspace catalog. `.sid` files are not accepted here (a JSON
-    /// Schema doesn't need SIDs at all), mirroring `yang-enc.rb:131`.
+    /// workspace catalog.
     pub files: Vec<String>,
 }
