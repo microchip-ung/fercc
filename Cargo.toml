@@ -17,4 +17,4 @@ serialport = { version = "4", default-features = false }
 flate2 = "1"
 tar = "0.4"
 clap = { version = "4", features = ["derive"] }
-regex = "1"
+regex-lite = "0.1"

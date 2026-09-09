@@ -14,4 +14,4 @@ serde_json.workspace = true
 serde_yml.workspace = true
 flate2.workspace = true
 tar.workspace = true
-regex.workspace = true
+regex-lite.workspace = true

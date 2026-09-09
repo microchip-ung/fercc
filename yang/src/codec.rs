@@ -181,7 +181,7 @@ fn range_description(ranges: &[(i128, i128)]) -> String {
 
 fn matches_all_patterns(s: &str, patterns: &[String]) -> R<bool> {
     for p in patterns {
-        let re = regex::Regex::new(p).map_err(|e| err(format!("invalid pattern {p:?} in schema: {e}")))?;
+        let re = regex_lite::Regex::new(p).map_err(|e| err(format!("invalid pattern {p:?} in schema: {e}")))?;
         if !re.is_match(s) {
             return Ok(false);
         }
