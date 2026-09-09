@@ -90,7 +90,7 @@ pub fn load_workspace(repo_root: &Path) -> R<CatalogFiles> {
     let yang_dir = repo_root.join("docs/sw_refs/yang");
 
     let cfg_text = fs::read_to_string(&cfg_path).map_err(|e| err(format!("reading {}: {e}", cfg_path.display())))?;
-    let cfg: GenCcNodesCfg = serde_yaml_ng::from_str(&cfg_text).map_err(|e| err(format!("parsing {}: {e}", cfg_path.display())))?;
+    let cfg: GenCcNodesCfg = serde_yml::from_str(&cfg_text).map_err(|e| err(format!("parsing {}: {e}", cfg_path.display())))?;
 
     let mut yang = Vec::with_capacity(cfg.sid_files.len());
     let mut sid = Vec::with_capacity(cfg.sid_files.len());

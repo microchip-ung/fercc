@@ -18,7 +18,7 @@ coap = { path = "../coap" }
 yang = { path = "../yang" }
 serde.workspace = true
 serde_json.workspace = true
-serde_yaml_ng.workspace = true
+serde_yml.workspace = true
 clap.workspace = true
 
 [dev-dependencies]

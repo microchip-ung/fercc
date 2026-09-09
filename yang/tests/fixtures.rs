@@ -99,7 +99,7 @@ fn fixture_corpus_round_trips() {
             let yaml_text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
             let expected_cbor = fs::read(&cbor_path).map_err(|e| e.to_string())?;
 
-            let value: Json = serde_yaml_ng::from_str(&yaml_text).map_err(|e| format!("yaml parse: {e}"))?;
+            let value: Json = serde_yml::from_str(&yaml_text).map_err(|e| format!("yaml parse: {e}"))?;
             let items = value.as_array().ok_or("top-level yaml is not a sequence")?;
             let got_cbor = codec::json_seq_to_cbor(schema, items, cf, false).map_err(|e| format!("encode: {e}"))?;
             if got_cbor != expected_cbor {
@@ -164,7 +164,7 @@ fn coreconf_error_responses_decode_correctly() {
 
         let outcome = (|| -> Result<(), String> {
             let yaml_text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-            let expected: Json = serde_yaml_ng::from_str(&yaml_text).map_err(|e| format!("yaml parse: {e}"))?;
+            let expected: Json = serde_yml::from_str(&yaml_text).map_err(|e| format!("yaml parse: {e}"))?;
             let cbor_bytes = fs::read(&cbor_path).map_err(|e| e.to_string())?;
 
             let decoded = codec::cbor_to_json(schema, &cbor_bytes, ContentFormat::Yang).map_err(|e| format!("decode: {e}"))?;
