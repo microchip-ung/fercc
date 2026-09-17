@@ -2,13 +2,13 @@
   {
     "id": "build-env",
     "type": "docker",
-    "docker-tag": "main.7-a99e577d9944",
-    "docker-sha": "sha256:1ae378ca3fe31986a741a018ad33c08a7a76e3f099f92b76a232b67a26bd5986",
+    "docker-tag": "main.10-2b9834fb8032",
+    "docker-sha": "sha256:db07e86936e47740ef549f74e8afa09b8e58230e0eb52360c42ea0cd55540f48",
     "docker-path": "artifacts-aws.devops.microchip.com:7996/ung/sw-fercc-docker/build-env"
   },
   {
     "id": "sw-fercc-docker",
     "type": "build-artifact",
-    "build-artifact-url": "https://artifacts-aws.devops.microchip.com/artifactory/ung-generic-dev-local/ci/UNGE/sw-fercc-docker/main/7-a99e577d9944"
+    "build-artifact-url": "https://artifacts-aws.devops.microchip.com/artifactory/ung-generic-dev-local/ci/UNGE/sw-fercc-docker/main/10-2b9834fb8032"
   }
 ]
