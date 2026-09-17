@@ -249,7 +249,14 @@ mod tests {
         // stdout capture must handle too.
         let tarball = test_data_dir().join("e6311dd5be50af0f0286fd3a6fb218a1.tar.gz");
         let script_path = unique_path("fetcher-script.sh");
-        fs::write(&script_path, format!("#!/bin/sh\nexec cat '{}'\n", tarball.display())).unwrap();
+        {
+            // sync_all() ensures the kernel write lock is released before we
+            // exec the script; without it we get ETXTBSY on Linux in CI.
+            use std::io::Write;
+            let mut f = fs::File::create(&script_path).unwrap();
+            f.write_all(format!("#!/bin/sh\nexec cat '{}'\n", tarball.display()).as_bytes()).unwrap();
+            f.sync_all().unwrap();
+        }
         let mut perms = fs::metadata(&script_path).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
         fs::set_permissions(&script_path, perms).unwrap();
