@@ -1,0 +1,132 @@
+// Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+// SPDX-License-Identifier: MIT
+
+import groovy.transform.Field
+
+@Field CVE_RECIPIENTS = "Benjamin.Dahse@microchip.com, allan.nielsen@microchip.com"
+@Field ARTIFACT_DAYS  = 30
+
+def ciUpload(paths) {
+  withCredentials([usernamePassword(credentialsId: 'artifacts-aws-cred',
+      usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASS')]) {
+    container('fercc-builder') {
+      // Pass git context explicitly: git remote get-url origin doesn't work
+      // inside the build container, but Jenkins already knows all of this.
+      sh "scripts/artifactory-ci --incremental \${CI_MANIFEST} --git-repo \${GIT_URL} --days ${ARTIFACT_DAYS} ${paths}"
+    }
+  }
+}
+
+pipeline {
+  agent {
+    kubernetes {
+      yamlFile '.kubernetespod.yaml'
+    }
+  }
+
+  options {
+    ansiColor('xterm')
+  }
+
+  environment {
+    CI_MANIFEST = "${env.WORKSPACE}/ci-manifest.json"
+  }
+
+  // Run on every push to main, and daily at 06:17 Copenhagen time so new CVEs
+  // are caught even when no code has changed.
+  triggers {
+    cron(env.BRANCH_NAME == 'main' ? 'TZ=Europe/Copenhagen\n17 6 * * *' : '')
+  }
+
+  stages {
+    stage('Prepare') {
+      steps {
+        sh 'git clean -qffdx'
+        script {
+          def artUrl = "https://artifacts-aws.devops.microchip.com/artifactory/ung-generic-dev-local/ci/${env.JOB_NAME}/${env.BUILD_NUMBER}/"
+          currentBuild.description = "<a href=\"${artUrl}\">${artUrl}</a>"
+        }
+      }
+    }
+
+    stage('Build') {
+      // Skip on timer-triggered runs: the binary hasn't changed, only the CVE
+      // database may have, so compiling again is wasteful.
+      when { not { triggeredBy 'TimerTrigger' } }
+      steps {
+        container('fercc-builder') {
+          sh 'cargo build --release'
+        }
+        script { ciUpload('target/release/fercc') }
+      }
+    }
+
+    stage('Test') {
+      when { not { triggeredBy 'TimerTrigger' } }
+      steps {
+        container('fercc-builder') {
+          sh 'cargo test'
+        }
+      }
+    }
+
+    stage('SBOM') {
+      steps {
+        container('fercc-builder') {
+          sh 'syft . -o spdx-json=fercc-sbom.spdx.json'
+        }
+        script { ciUpload('fercc-sbom.spdx.json') }
+      }
+    }
+
+    stage('CVE scan') {
+      steps {
+        // catchError lets the stage continue to the upload even when grype
+        // finds CVEs (non-zero exit), so the report always lands in Artifactory.
+        catchError(buildResult: 'FAILURE', stageResult: 'FAILURE') {
+          container('fercc-builder') {
+            sh 'grype sbom:fercc-sbom.spdx.json -v --fail-on high -o table -o json=fercc-cve-report.json -o template=fercc-cve-report.html -t scripts/grype-report.tmpl'
+          }
+        }
+        script {
+          ciUpload('fercc-cve-report.json')
+          ciUpload('fercc-cve-report.html')
+        }
+      }
+    }
+  }
+
+  post {
+    always {
+      script {
+        try {
+          def logLines = currentBuild.rawBuild.getLog(Integer.MAX_VALUE)
+          writeFile file: 'fercc-console.log', text: logLines.join('\n')
+        } catch (e) {
+          writeFile file: 'fercc-console.log',
+            text: "Console log requires In-process Script Approval.\n" +
+                  "Error: ${e.message}"
+        }
+        catchError(buildResult: currentBuild.currentResult, stageResult: 'FAILURE') {
+          ciUpload('fercc-console.log')
+        }
+
+        withCredentials([usernamePassword(credentialsId: 'artifacts-aws-cred',
+            usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASS')]) {
+          container('fercc-builder') {
+            sh "scripts/artifactory-ci --final \${CI_MANIFEST} --days ${ARTIFACT_DAYS} --git-repo \${GIT_URL}"
+          }
+        }
+
+        def jobName = currentBuild.fullDisplayName
+        emailext(
+          body: '''${SCRIPT, template="groovy-html.template"}''',
+          mimeType: 'text/html',
+          to: CVE_RECIPIENTS,
+          subject: "[fercc CVE scan] ${jobName} - ${currentBuild.currentResult}",
+          replyTo: CVE_RECIPIENTS
+        )
+      }
+    }
+  }
+}

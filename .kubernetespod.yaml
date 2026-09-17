@@ -1,0 +1,43 @@
+# Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+# SPDX-License-Identifier: MIT
+#
+# Kubernetes CI agent pod.  Update fercc-builder.image after each new
+# sw-fercc-docker build by replacing the tag and digest below.
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+    - name: fercc-builder
+      # Image built by sw-fercc-docker.  Update tag + digest after each
+      # sw-fercc-docker publish.
+      # Dockerfile live here https://bitbucket.microchip.com/projects/UNGE/repos/sw-fercc-docker
+      image: artifacts-aws.devops.microchip.com:7996/ung/sw-fercc-docker/build-env@sha256:1ae378ca3fe31986a741a018ad33c08a7a76e3f099f92b76a232b67a26bd5986
+      command:
+        - cat
+      tty: true
+      env:
+        - name: BLD_USER
+          value: jenkins
+        - name: BLD_UID
+          value: "1000"
+        - name: CARGO_HOME
+          value: /opt/cargo
+      resources:
+        requests:
+          cpu: "2"
+          memory: "2Gi"
+        limits:
+          cpu: "4"
+          memory: "4Gi"
+    - name: artifactory
+      image: artifacts-aws.devops.microchip.com:7996/ung/sw-tool-artifactory-scripts/env:2
+      command:
+        - cat
+      tty: true
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "256Mi"
+        limits:
+          cpu: "500m"
+          memory: "512Mi"

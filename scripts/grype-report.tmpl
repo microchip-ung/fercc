@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>fercc CVE scan report</title>
+  <style>
+    body { font-family: sans-serif; font-size: 14px; margin: 2em; color: #222; }
+    h1   { font-size: 1.4em; }
+    .meta { color: #555; margin-bottom: 1.5em; }
+    table { border-collapse: collapse; width: 100%; }
+    th    { background: #444; color: #fff; text-align: left; padding: 6px 10px; }
+    td    { border-bottom: 1px solid #ddd; padding: 5px 10px; vertical-align: top; }
+    tr:hover td { background: #f5f5f5; }
+    .Critical { color: #c00; font-weight: bold; }
+    .High     { color: #d44; font-weight: bold; }
+    .Medium   { color: #b80; }
+    .Low      { color: #888; }
+    .none     { color: #aaa; font-style: italic; }
+    .fixed    { color: #080; }
+    .not-fixed { color: #c00; }
+  </style>
+</head>
+<body>
+<h1>fercc CVE scan report</h1>
+<div class="meta">
+  Source: {{ .Source.Target }}<br>
+  {{ if .Distro }}Distro: {{ .Distro.Name }} {{ .Distro.Version }}<br>{{ end }}
+  Total matches: {{ len .Matches }}
+</div>
+{{ if .Matches }}
+<table>
+  <tr>
+    <th>CVE / Advisory</th>
+    <th>Severity</th>
+    <th>Package</th>
+    <th>Version</th>
+    <th>Fixed in</th>
+    <th>Description</th>
+  </tr>
+  {{ range .Matches }}
+  <tr>
+    <td><a href="{{ index .Vulnerability.URLs 0 }}">{{ .Vulnerability.ID }}</a></td>
+    <td class="{{ .Vulnerability.Severity }}">{{ .Vulnerability.Severity }}</td>
+    <td>{{ .Artifact.Name }}</td>
+    <td>{{ .Artifact.Version }}</td>
+    <td class="{{ .Vulnerability.Fix.State }}">
+      {{- if .Vulnerability.Fix.Versions -}}
+        {{ range .Vulnerability.Fix.Versions }}{{ . }} {{ end }}
+      {{- else -}}
+        <span class="none">—</span>
+      {{- end -}}
+    </td>
+    <td>{{ .Vulnerability.Description }}</td>
+  </tr>
+  {{ end }}
+</table>
+{{ else }}
+<p style="color:#080;font-weight:bold">✓ No vulnerabilities found.</p>
+{{ end }}
+</body>
+</html>
