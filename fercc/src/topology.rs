@@ -35,7 +35,7 @@ fn candidate_paths() -> Vec<PathBuf> {
 pub fn load() -> Option<Topology> {
     for path in candidate_paths() {
         if let Ok(text) = std::fs::read_to_string(&path) {
-            return serde_yaml_ng::from_str(&text).ok();
+            return serde_yml::from_str(&text).ok();
         }
     }
     None

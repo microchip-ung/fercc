@@ -38,14 +38,20 @@ impl Format {
 pub fn parse(text: &str, format: Format) -> Result<Json, String> {
     match format {
         Format::Json => serde_json::from_str(text).map_err(|e| format!("JSON parse error: {e}")),
-        Format::Yaml => serde_yaml_ng::from_str(text).map_err(|e| format!("YAML parse error: {e}")),
+        Format::Yaml => serde_yml::from_str(text).map_err(|e| format!("YAML parse error: {e}")),
     }
 }
 
 pub fn render(value: &Json, format: Format) -> Result<String, String> {
     match format {
         Format::Json => serde_json::to_string_pretty(value).map_err(|e| format!("JSON encode error: {e}")),
-        Format::Yaml => serde_yaml_ng::to_string(value).map_err(|e| format!("YAML encode error: {e}")),
+        Format::Yaml => {
+            let mut s = serde_yml::to_string(value).map_err(|e| format!("YAML encode error: {e}"))?;
+            if !s.ends_with('\n') {
+                s.push('\n');
+            }
+            Ok(s)
+        }
     }
 }
 
