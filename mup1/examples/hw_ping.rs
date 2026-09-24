@@ -6,7 +6,9 @@ use std::time::{Duration, Instant};
 use mup1::{frame_type, ChecksumType, Mup1Client};
 
 fn main() {
-    let device = std::env::args().nth(1).unwrap_or_else(|| "/dev/ttyACM0".to_string());
+    let device = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "/dev/ttyACM0".to_string());
     let transport = mup1::open_device(&device, 115200).expect("open device");
     let mut client = Mup1Client::new(transport, ChecksumType::Internet);
 

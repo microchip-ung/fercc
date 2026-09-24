@@ -31,7 +31,9 @@ use yang::codec::{self, ContentFormat};
 use yang::schema::Schema;
 
 fn test_data_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("test-data")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("test-data")
 }
 
 fn schema() -> &'static Schema {
@@ -76,7 +78,10 @@ fn fixture_corpus_round_trips() {
     let schema = schema();
     let dir = test_data_dir();
 
-    let mut entries: Vec<_> = fs::read_dir(&dir).expect("read test-data dir").filter_map(|e| e.ok()).collect();
+    let mut entries: Vec<_> = fs::read_dir(&dir)
+        .expect("read test-data dir")
+        .filter_map(|e| e.ok())
+        .collect();
     entries.sort_by_key(|e| e.path());
 
     let mut cases = 0;
@@ -88,7 +93,9 @@ fn fixture_corpus_round_trips() {
             continue;
         }
         let name = path.file_stem().unwrap().to_str().unwrap().to_string();
-        let Some(cf) = content_format_for(&name) else { continue };
+        let Some(cf) = content_format_for(&name) else {
+            continue;
+        };
         let cbor_path = dir.join(format!("{name}.cbor"));
         if !cbor_path.exists() {
             continue;
@@ -99,15 +106,19 @@ fn fixture_corpus_round_trips() {
             let yaml_text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
             let expected_cbor = fs::read(&cbor_path).map_err(|e| e.to_string())?;
 
-            let value: Json = serde_yml::from_str(&yaml_text).map_err(|e| format!("yaml parse: {e}"))?;
+            let value: Json =
+                serde_yml::from_str(&yaml_text).map_err(|e| format!("yaml parse: {e}"))?;
             let items = value.as_array().ok_or("top-level yaml is not a sequence")?;
-            let got_cbor = codec::json_seq_to_cbor(schema, items, cf, false).map_err(|e| format!("encode: {e}"))?;
+            let got_cbor = codec::json_seq_to_cbor(schema, items, cf, false)
+                .map_err(|e| format!("encode: {e}"))?;
             if got_cbor != expected_cbor {
                 return Err("encode mismatch".to_string());
             }
 
-            let decoded = codec::cbor_seq_to_json(schema, &expected_cbor, cf).map_err(|e| format!("decode: {e}"))?;
-            let re_encoded = codec::json_seq_to_cbor(schema, &decoded, cf, false).map_err(|e| format!("re-encode: {e}"))?;
+            let decoded = codec::cbor_seq_to_json(schema, &expected_cbor, cf)
+                .map_err(|e| format!("decode: {e}"))?;
+            let re_encoded = codec::json_seq_to_cbor(schema, &decoded, cf, false)
+                .map_err(|e| format!("re-encode: {e}"))?;
             if re_encoded != expected_cbor {
                 return Err("roundtrip mismatch".to_string());
             }
@@ -120,7 +131,11 @@ fn fixture_corpus_round_trips() {
     }
 
     assert!(cases == 12, "expected exactly 12 curated fixture cases, found {cases} -- test-data/ missing, or the corpus changed without updating this count?");
-    assert!(failures.is_empty(), "{} unexpected fixture failures:\n{failures:#?}", failures.len());
+    assert!(
+        failures.is_empty(),
+        "{} unexpected fixture failures:\n{failures:#?}",
+        failures.len()
+    );
 }
 
 /// Negative cases: real device *error* responses (content-format 140,
@@ -141,7 +156,10 @@ fn coreconf_error_responses_decode_correctly() {
     let schema = schema();
     let dir = test_data_dir();
 
-    let mut entries: Vec<_> = fs::read_dir(&dir).expect("read test-data dir").filter_map(|e| e.ok()).collect();
+    let mut entries: Vec<_> = fs::read_dir(&dir)
+        .expect("read test-data dir")
+        .filter_map(|e| e.ok())
+        .collect();
     entries.sort_by_key(|e| e.path());
 
     let mut cases = 0;
@@ -164,12 +182,16 @@ fn coreconf_error_responses_decode_correctly() {
 
         let outcome = (|| -> Result<(), String> {
             let yaml_text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-            let expected: Json = serde_yml::from_str(&yaml_text).map_err(|e| format!("yaml parse: {e}"))?;
+            let expected: Json =
+                serde_yml::from_str(&yaml_text).map_err(|e| format!("yaml parse: {e}"))?;
             let cbor_bytes = fs::read(&cbor_path).map_err(|e| e.to_string())?;
 
-            let decoded = codec::cbor_to_json(schema, &cbor_bytes, ContentFormat::Yang).map_err(|e| format!("decode: {e}"))?;
+            let decoded = codec::cbor_to_json(schema, &cbor_bytes, ContentFormat::Yang)
+                .map_err(|e| format!("decode: {e}"))?;
             if decoded != expected {
-                return Err(format!("decode mismatch: got {decoded:#?}, expected {expected:#?}"));
+                return Err(format!(
+                    "decode mismatch: got {decoded:#?}, expected {expected:#?}"
+                ));
             }
             Ok(())
         })();
@@ -180,5 +202,9 @@ fn coreconf_error_responses_decode_correctly() {
     }
 
     assert!(cases == 4, "expected exactly 4 *-error-res fixtures, found {cases} -- test-data/ missing, or the corpus changed without updating this count?");
-    assert!(failures.is_empty(), "{} unexpected coreconf-error fixture failures:\n{failures:#?}", failures.len());
+    assert!(
+        failures.is_empty(),
+        "{} unexpected coreconf-error fixture failures:\n{failures:#?}",
+        failures.len()
+    );
 }

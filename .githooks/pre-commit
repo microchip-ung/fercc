@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+files=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs')
+
+if [ -z "$files" ]; then
+    exit 0
+fi
+
+unformatted=""
+for f in $files; do
+    if ! rustfmt --check --edition 2021 "$f" >/dev/null 2>&1; then
+        unformatted="$unformatted $f"
+    fi
+done
+
+if [ -n "$unformatted" ]; then
+    echo "cargo fmt / rustfmt check failed for:" >&2
+    for f in $unformatted; do
+        echo "  $f" >&2
+    done
+    echo "" >&2
+    echo "Run 'cargo fmt --all' (or 'rustfmt <file>') and re-stage." >&2
+    exit 1
+fi
+
+exit 0

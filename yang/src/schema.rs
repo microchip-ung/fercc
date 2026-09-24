@@ -24,8 +24,19 @@ pub type TypeId = usize;
 pub type IdentityId = usize;
 
 const SCHEMA_NODE_KEYWORDS: &[&str] = &[
-    "container", "leaf", "leaf-list", "list", "choice", "case", "rpc", "action", "input", "output",
-    "notification", "anydata", "anyxml",
+    "container",
+    "leaf",
+    "leaf-list",
+    "list",
+    "choice",
+    "case",
+    "rpc",
+    "action",
+    "input",
+    "output",
+    "notification",
+    "anydata",
+    "anyxml",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,7 +235,10 @@ pub struct Node {
 
 impl Node {
     pub fn local_name(&self) -> &str {
-        self.name.rsplit_once(':').map(|(_, n)| n).unwrap_or(&self.name)
+        self.name
+            .rsplit_once(':')
+            .map(|(_, n)| n)
+            .unwrap_or(&self.name)
     }
 }
 
@@ -255,7 +269,11 @@ impl Schema {
     }
 
     pub fn find_child(&self, parent: NodeId, name: &str) -> Option<NodeId> {
-        self.nodes[parent].children.iter().copied().find(|&c| self.nodes[c].name == name)
+        self.nodes[parent]
+            .children
+            .iter()
+            .copied()
+            .find(|&c| self.nodes[c].name == name)
     }
 
     /// All identities transitively derived from `base` (including `base`
@@ -369,7 +387,10 @@ pub fn build(yang_sources: &[String], sid_sources: &[String]) -> R<Schema> {
     let mut b = Builder {
         raw_modules,
         contexts,
-        defs: Definitions { typedefs, groupings },
+        defs: Definitions {
+            typedefs,
+            groupings,
+        },
         building: Default::default(),
         built: Default::default(),
         nodes: Vec::new(),
@@ -398,7 +419,13 @@ pub fn build(yang_sources: &[String], sid_sources: &[String]) -> R<Schema> {
 }
 
 impl<'a> Builder<'a> {
-    fn new_node(&mut self, kw: &str, name: String, owner_module: String, parent: Option<NodeId>) -> NodeId {
+    fn new_node(
+        &mut self,
+        kw: &str,
+        name: String,
+        owner_module: String,
+        parent: Option<NodeId>,
+    ) -> NodeId {
         let id = self.nodes.len();
         self.nodes.push(Node {
             kw: kw.to_string(),
@@ -425,7 +452,13 @@ impl<'a> Builder<'a> {
             return id;
         }
         let id = self.identities.len();
-        self.identities.push(Identity { name: name.to_string(), module: module.to_string(), base: Vec::new(), derived: Vec::new(), sid: None });
+        self.identities.push(Identity {
+            name: name.to_string(),
+            module: module.to_string(),
+            base: Vec::new(),
+            derived: Vec::new(),
+            sid: None,
+        });
         self.identity_by_module_name.insert(key, id);
         id
     }
@@ -441,8 +474,14 @@ impl<'a> Builder<'a> {
         }
         self.building.insert(name.to_string());
 
-        let raw = *self.raw_modules.get(name).ok_or_else(|| err(format!("unknown module {name:?}")))?;
-        let imports: Vec<String> = raw.subs_of("import").map(|i| i.arg_str().to_string()).collect();
+        let raw = *self
+            .raw_modules
+            .get(name)
+            .ok_or_else(|| err(format!("unknown module {name:?}")))?;
+        let imports: Vec<String> = raw
+            .subs_of("import")
+            .map(|i| i.arg_str().to_string())
+            .collect();
         for imp in &imports {
             self.ensure_module(imp)?;
         }
@@ -480,10 +519,17 @@ impl<'a> Builder<'a> {
     fn split_qualified<'v>(&self, current_module: &str, value: &'v str) -> R<(String, &'v str)> {
         match value.split_once(':') {
             Some((prefix, local)) => {
-                let ctx = self.contexts.get(current_module).ok_or_else(|| err(format!("unknown module {current_module:?}")))?;
+                let ctx = self
+                    .contexts
+                    .get(current_module)
+                    .ok_or_else(|| err(format!("unknown module {current_module:?}")))?;
                 let module = ctx
                     .resolve_prefix(prefix)
-                    .ok_or_else(|| err(format!("unknown prefix {prefix:?} in module {current_module:?}")))?
+                    .ok_or_else(|| {
+                        err(format!(
+                            "unknown prefix {prefix:?} in module {current_module:?}"
+                        ))
+                    })?
                     .to_string();
                 Ok((module, local))
             }
@@ -507,7 +553,13 @@ impl<'a> Builder<'a> {
     /// source text resolves against its *defining* module, so `naming`
     /// stays constant across nested splices instead of following
     /// `resolve` down into each grouping.
-    fn interpret_children(&mut self, resolve: &str, naming: &str, stmts: &[Stmt], parent: NodeId) -> R<()> {
+    fn interpret_children(
+        &mut self,
+        resolve: &str,
+        naming: &str,
+        stmts: &[Stmt],
+        parent: NodeId,
+    ) -> R<()> {
         for s in stmts {
             self.interpret_one(resolve, naming, s, parent)?;
         }
@@ -569,7 +621,13 @@ impl<'a> Builder<'a> {
         format!("{module}:{local}")
     }
 
-    fn interpret_schema_node(&mut self, resolve: &str, naming: &str, s: &Stmt, parent: NodeId) -> R<()> {
+    fn interpret_schema_node(
+        &mut self,
+        resolve: &str,
+        naming: &str,
+        s: &Stmt,
+        parent: NodeId,
+    ) -> R<()> {
         let is_top = self.nodes[parent].kw == "module";
         // input/output are the only schema-node statements RFC 7950 gives
         // no argument to (there's always at most one of each per
@@ -578,7 +636,11 @@ impl<'a> Builder<'a> {
             "input" | "output" => s.keyword.as_str(),
             _ => s.arg_str(),
         };
-        let name = if is_top { self.qualify_top_level(naming, local) } else { local.to_string() };
+        let name = if is_top {
+            self.qualify_top_level(naming, local)
+        } else {
+            local.to_string()
+        };
 
         let node = self.new_node(&s.keyword, name, naming.to_string(), Some(parent));
 
@@ -603,7 +665,11 @@ impl<'a> Builder<'a> {
             }
             "list" => {
                 if let Some(k) = s.sub("key") {
-                    self.nodes[node].keys = k.arg_str().split_whitespace().map(|s| s.to_string()).collect();
+                    self.nodes[node].keys = k
+                        .arg_str()
+                        .split_whitespace()
+                        .map(|s| s.to_string())
+                        .collect();
                 }
             }
             "rpc" | "action" => {
@@ -611,7 +677,12 @@ impl<'a> Builder<'a> {
                     self.new_node("input", "input".to_string(), naming.to_string(), Some(node));
                 }
                 if s.sub("output").is_none() {
-                    self.new_node("output", "output".to_string(), naming.to_string(), Some(node));
+                    self.new_node(
+                        "output",
+                        "output".to_string(),
+                        naming.to_string(),
+                        Some(node),
+                    );
                 }
             }
             _ => {}
@@ -629,12 +700,30 @@ impl<'a> Builder<'a> {
     /// anyxml child is wrapped in a synthetic, unnamed case sharing the
     /// child's own name (RFC 7950 7.9.2); an explicit `case` is used as
     /// declared.
-    fn interpret_choice_body(&mut self, resolve: &str, naming: &str, stmts: &[Stmt], choice_node: NodeId) -> R<()> {
-        const IMPLICIT_CASE_KEYWORDS: &[&str] =
-            &["container", "leaf", "leaf-list", "list", "choice", "anydata", "anyxml"];
+    fn interpret_choice_body(
+        &mut self,
+        resolve: &str,
+        naming: &str,
+        stmts: &[Stmt],
+        choice_node: NodeId,
+    ) -> R<()> {
+        const IMPLICIT_CASE_KEYWORDS: &[&str] = &[
+            "container",
+            "leaf",
+            "leaf-list",
+            "list",
+            "choice",
+            "anydata",
+            "anyxml",
+        ];
         for s in stmts {
             if s.prefix.is_none() && IMPLICIT_CASE_KEYWORDS.contains(&s.keyword.as_str()) {
-                let case_id = self.new_node("case", s.arg_str().to_string(), naming.to_string(), Some(choice_node));
+                let case_id = self.new_node(
+                    "case",
+                    s.arg_str().to_string(),
+                    naming.to_string(),
+                    Some(choice_node),
+                );
                 self.interpret_one(resolve, naming, s, case_id)?;
             } else {
                 self.interpret_one(resolve, naming, s, choice_node)?;
@@ -649,7 +738,12 @@ impl<'a> Builder<'a> {
             .defs
             .groupings
             .get(&(def_module.clone(), local.to_string()))
-            .ok_or_else(|| err(format!("grouping {:?} not found (used from {resolve})", s.arg_str())))?;
+            .ok_or_else(|| {
+                err(format!(
+                    "grouping {:?} not found (used from {resolve})",
+                    s.arg_str()
+                ))
+            })?;
 
         // Splice the grouping's body directly into the use site: its own
         // source text resolves against *its* defining module
@@ -677,7 +771,14 @@ impl<'a> Builder<'a> {
     /// (its own import-prefix table, for the absolute-path case);
     /// `naming` is compared against the target's owner to decide whether
     /// newly-added children need cross-module qualification.
-    fn interpret_augment(&mut self, resolve: &str, naming: &str, s: &Stmt, _use_site: NodeId, relative_root: Option<NodeId>) -> R<()> {
+    fn interpret_augment(
+        &mut self,
+        resolve: &str,
+        naming: &str,
+        s: &Stmt,
+        _use_site: NodeId,
+        relative_root: Option<NodeId>,
+    ) -> R<()> {
         let path = s.arg_str();
         let target = match relative_root {
             Some(root) => self.resolve_relative_path(root, path)?,
@@ -718,7 +819,11 @@ impl<'a> Builder<'a> {
         let mut cur = root;
         for seg in path.split('/').filter(|s| !s.is_empty()) {
             let local = seg.rsplit_once(':').map(|(_, n)| n).unwrap_or(seg);
-            cur = self.find_by_local(cur, local).ok_or_else(|| err(format!("augment target segment {seg:?} not found (relative path {path:?})")))?;
+            cur = self.find_by_local(cur, local).ok_or_else(|| {
+                err(format!(
+                    "augment target segment {seg:?} not found (relative path {path:?})"
+                ))
+            })?;
         }
         Ok(cur)
     }
@@ -731,45 +836,70 @@ impl<'a> Builder<'a> {
     /// through.
     fn resolve_sid_data_identifier(&self, path: &str) -> R<NodeId> {
         let mut segs = path.split('/').filter(|s| !s.is_empty());
-        let first = segs.next().ok_or_else(|| err(format!("empty SID data identifier {path:?}")))?;
+        let first = segs
+            .next()
+            .ok_or_else(|| err(format!("empty SID data identifier {path:?}")))?;
         // An `rc:yang-data` root (e.g. "/ietf-coreconf:error") is matched
         // by its full qualified name directly -- it has no module-root
         // parent to descend from (see interpret_extension).
         let mut cur = if let Some(&root) = self.yang_data_roots.get(first) {
             root
         } else {
-            let (dst_module, first_local) = first
-                .split_once(':')
-                .ok_or_else(|| err(format!("first segment {first:?} of SID data identifier {path:?} has no module prefix")))?;
-            let dst_root = *self
-                .module_root
-                .get(dst_module)
-                .ok_or_else(|| err(format!("unknown module {dst_module:?} in SID data identifier {path:?}")))?;
-            self.find_by_local(dst_root, first_local)
-                .ok_or_else(|| err(format!("target segment {first_local:?} not found in module {dst_module:?} ({path:?})")))?
+            let (dst_module, first_local) = first.split_once(':').ok_or_else(|| {
+                err(format!(
+                    "first segment {first:?} of SID data identifier {path:?} has no module prefix"
+                ))
+            })?;
+            let dst_root = *self.module_root.get(dst_module).ok_or_else(|| {
+                err(format!(
+                    "unknown module {dst_module:?} in SID data identifier {path:?}"
+                ))
+            })?;
+            self.find_by_local(dst_root, first_local).ok_or_else(|| {
+                err(format!(
+                    "target segment {first_local:?} not found in module {dst_module:?} ({path:?})"
+                ))
+            })?
         };
         for seg in segs {
             let local = seg.rsplit_once(':').map(|(_, n)| n).unwrap_or(seg);
-            cur = self.find_by_local(cur, local).ok_or_else(|| err(format!("target segment {seg:?} not found ({path:?})")))?;
+            cur = self
+                .find_by_local(cur, local)
+                .ok_or_else(|| err(format!("target segment {seg:?} not found ({path:?})")))?;
         }
         Ok(cur)
     }
 
     fn find_by_local(&self, parent: NodeId, local: &str) -> Option<NodeId> {
-        self.nodes[parent].children.iter().copied().find(|&c| self.nodes[c].local_name() == local)
+        self.nodes[parent]
+            .children
+            .iter()
+            .copied()
+            .find(|&c| self.nodes[c].local_name() == local)
     }
 
     /// Resolve an absolute schema-node-id (`/prefix:top/child/...`) using
     /// `current_module`'s own import-prefix map for the first segment.
     fn resolve_absolute_schema_node_id(&self, current_module: &str, path: &str) -> R<NodeId> {
         let mut segs = path.split('/').filter(|s| !s.is_empty());
-        let first = segs.next().ok_or_else(|| err(format!("empty schema-node-id {path:?}")))?;
+        let first = segs
+            .next()
+            .ok_or_else(|| err(format!("empty schema-node-id {path:?}")))?;
         let (dst_module, first_local) = self.split_qualified(current_module, first)?;
-        let dst_root = *self.module_root.get(&dst_module).ok_or_else(|| err(format!("unknown target module {dst_module:?} in {path:?}")))?;
-        let mut cur = self.find_by_local(dst_root, first_local).ok_or_else(|| err(format!("target segment {first_local:?} not found in module {dst_module:?} ({path:?})")))?;
+        let dst_root = *self
+            .module_root
+            .get(&dst_module)
+            .ok_or_else(|| err(format!("unknown target module {dst_module:?} in {path:?}")))?;
+        let mut cur = self.find_by_local(dst_root, first_local).ok_or_else(|| {
+            err(format!(
+                "target segment {first_local:?} not found in module {dst_module:?} ({path:?})"
+            ))
+        })?;
         for seg in segs {
             let local = seg.rsplit_once(':').map(|(_, n)| n).unwrap_or(seg);
-            cur = self.find_by_local(cur, local).ok_or_else(|| err(format!("target segment {seg:?} not found ({path:?})")))?;
+            cur = self
+                .find_by_local(cur, local)
+                .ok_or_else(|| err(format!("target segment {seg:?} not found ({path:?})")))?;
         }
         Ok(cur)
     }
@@ -800,7 +930,9 @@ impl<'a> Builder<'a> {
                 .typedefs
                 .get(&(def_module.clone(), local.to_string()))
                 .ok_or_else(|| err(format!("typedef {name:?} not found (used from {module})")))?;
-            let base = raw.sub("type").ok_or_else(|| err(format!("typedef {name:?} has no type")))?;
+            let base = raw
+                .sub("type")
+                .ok_or_else(|| err(format!("typedef {name:?} has no type")))?;
             let base_id = self.interpret_type(&def_module, base)?;
             self.types[base_id].clone()
         };
@@ -839,17 +971,29 @@ impl<'a> Builder<'a> {
             Builtin::Bits => {
                 let mut next_pos = 0u32;
                 for b in t.subs_of("bit") {
-                    let position = b.sub("position").and_then(|p| p.arg_str().parse().ok()).unwrap_or(next_pos);
+                    let position = b
+                        .sub("position")
+                        .and_then(|p| p.arg_str().parse().ok())
+                        .unwrap_or(next_pos);
                     next_pos = position + 1;
-                    ty.bits.push(Bit { name: b.arg_str().to_string(), position });
+                    ty.bits.push(Bit {
+                        name: b.arg_str().to_string(),
+                        position,
+                    });
                 }
             }
             Builtin::Enumeration => {
                 let mut next_val = 0i64;
                 for e in t.subs_of("enum") {
-                    let value = e.sub("value").and_then(|v| v.arg_str().parse().ok()).unwrap_or(next_val);
+                    let value = e
+                        .sub("value")
+                        .and_then(|v| v.arg_str().parse().ok())
+                        .unwrap_or(next_val);
                     next_val = value + 1;
-                    ty.enums.push(EnumVal { name: e.arg_str().to_string(), value });
+                    ty.enums.push(EnumVal {
+                        name: e.arg_str().to_string(),
+                        value,
+                    });
                 }
             }
             Builtin::Identityref => {
@@ -949,9 +1093,12 @@ impl<'a> Builder<'a> {
             let path = self.types[ty_id].leafref_path.clone().unwrap();
             let module = self.types[ty_id].source_module.clone().unwrap();
             let target = if let Some(abs) = path.trim().strip_prefix('/') {
-                self.resolve_absolute_schema_node_id(&module, &format!("/{abs}")).ok()
+                self.resolve_absolute_schema_node_id(&module, &format!("/{abs}"))
+                    .ok()
             } else {
-                owner.get(&ty_id).and_then(|&node| self.resolve_relative_leafref(node, &path))
+                owner
+                    .get(&ty_id)
+                    .and_then(|&node| self.resolve_relative_leafref(node, &path))
             };
             if let Some(target) = target {
                 self.types[ty_id].leafref_target = Some(target);
@@ -990,7 +1137,10 @@ impl<'a> Builder<'a> {
                     }
                 }
                 Namespace::Identity => {
-                    if let Some(&id) = self.identity_by_module_name.get(&(f.module_name.clone(), item.identifier.clone())) {
+                    if let Some(&id) = self
+                        .identity_by_module_name
+                        .get(&(f.module_name.clone(), item.identifier.clone()))
+                    {
                         self.identities[id].sid = Some(item.sid);
                     }
                 }
@@ -1017,7 +1167,12 @@ impl<'a> Builder<'a> {
     // -- finalize: flatten choice/case into the data-tree schema ---------
 
     fn finish(mut self) -> R<Schema> {
-        let root = self.new_node("module", "data-tree-schema".to_string(), String::new(), None);
+        let root = self.new_node(
+            "module",
+            "data-tree-schema".to_string(),
+            String::new(),
+            None,
+        );
         self.nodes[root].sid = Some(0);
 
         let module_roots: Vec<NodeId> = self.module_root.values().copied().collect();
@@ -1070,7 +1225,9 @@ impl<'a> Builder<'a> {
             for c in children {
                 ids.extend(self.flatten_clone_multi(c, new_parent));
             }
-            return *ids.first().unwrap_or(&self.dangling_placeholder(new_parent));
+            return *ids
+                .first()
+                .unwrap_or(&self.dangling_placeholder(new_parent));
         }
 
         let src = &self.nodes[node];

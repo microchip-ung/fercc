@@ -67,7 +67,10 @@ impl ContentFormat {
     }
 
     fn is_sequence(self) -> bool {
-        matches!(self, ContentFormat::Fetch | ContentFormat::Ipatch | ContentFormat::Post)
+        matches!(
+            self,
+            ContentFormat::Fetch | ContentFormat::Ipatch | ContentFormat::Post
+        )
     }
 }
 
@@ -92,7 +95,10 @@ fn resolved_builtin(schema: &Schema, type_id: TypeId) -> (Builtin, TypeId) {
 }
 
 fn json_number_to_i128(value: &Json) -> Option<i128> {
-    value.as_i64().map(|v| v as i128).or_else(|| value.as_u64().map(|v| v as i128))
+    value
+        .as_i64()
+        .map(|v| v as i128)
+        .or_else(|| value.as_u64().map(|v| v as i128))
 }
 
 /// A builtin's own YANG-source spelling ("uint8", not `Builtin::Uint8`),
@@ -126,7 +132,11 @@ fn builtin_yang_name(b: Builtin) -> &'static str {
 /// any `leafref` member to what it actually targets -- "leafref" on its
 /// own would tell a reader nothing about what value is actually wanted.
 fn union_member_kinds(schema: &Schema, ty: &TypeDef) -> String {
-    ty.union_members.iter().map(|&m| builtin_yang_name(resolved_builtin(schema, m).0)).collect::<Vec<_>>().join(", ")
+    ty.union_members
+        .iter()
+        .map(|&m| builtin_yang_name(resolved_builtin(schema, m).0))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Mirrors `print_error`'s two halves at once (yang-enc.rb:1234-1240):
@@ -162,7 +172,10 @@ fn range_bound_i64(v: i128) -> i64 {
 /// True if `ranges` is empty (nothing to restrict) or `value` falls in
 /// at least one of its `(min, max)` pairs.
 fn in_ranges(value: i64, ranges: &[(i128, i128)]) -> bool {
-    ranges.is_empty() || ranges.iter().any(|&(min, max)| value >= range_bound_i64(min) && value <= range_bound_i64(max))
+    ranges.is_empty()
+        || ranges
+            .iter()
+            .any(|&(min, max)| value >= range_bound_i64(min) && value <= range_bound_i64(max))
 }
 
 /// A plain-English description of a range/length restriction, for error
@@ -173,7 +186,11 @@ fn range_description(ranges: &[(i128, i128)]) -> String {
         .iter()
         .map(|&(min, max)| {
             let (min, max) = (range_bound_i64(min), range_bound_i64(max));
-            if min == max { format!("exactly {min}") } else { format!("between {min} and {max}") }
+            if min == max {
+                format!("exactly {min}")
+            } else {
+                format!("between {min} and {max}")
+            }
         })
         .collect();
     parts.join(", or ")
@@ -181,7 +198,8 @@ fn range_description(ranges: &[(i128, i128)]) -> String {
 
 fn matches_all_patterns(s: &str, patterns: &[String]) -> R<bool> {
     for p in patterns {
-        let re = regex_lite::Regex::new(p).map_err(|e| err(format!("invalid pattern {p:?} in schema: {e}")))?;
+        let re = regex_lite::Regex::new(p)
+            .map_err(|e| err(format!("invalid pattern {p:?} in schema: {e}")))?;
         if !re.is_match(s) {
             return Ok(false);
         }
@@ -212,8 +230,18 @@ fn matches_all_patterns(s: &str, patterns: &[String]) -> R<bool> {
 /// gets the exact same `--continue` treatment via `lenient`, matching
 /// `type2cbor`'s single `begin`/`rescue` wrapping its entire body
 /// (yang-enc.rb:275-387).
-pub fn type_to_cbor(schema: &Schema, type_id: TypeId, value: &Json, in_union: bool, continue_on_error: bool) -> R<Cbor> {
-    lenient(type_to_cbor_checked(schema, type_id, value, in_union), continue_on_error, || json_to_cbor_generic(value))
+pub fn type_to_cbor(
+    schema: &Schema,
+    type_id: TypeId,
+    value: &Json,
+    in_union: bool,
+    continue_on_error: bool,
+) -> R<Cbor> {
+    lenient(
+        type_to_cbor_checked(schema, type_id, value, in_union),
+        continue_on_error,
+        || json_to_cbor_generic(value),
+    )
 }
 
 fn type_to_cbor_checked(schema: &Schema, type_id: TypeId, value: &Json, in_union: bool) -> R<Cbor> {
@@ -327,7 +355,11 @@ fn json_to_cbor_generic(value: &Json) -> Cbor {
         }
         Json::String(s) => Cbor::Text(s.clone()),
         Json::Array(items) => Cbor::Array(items.iter().map(json_to_cbor_generic).collect()),
-        Json::Object(obj) => Cbor::Map(obj.iter().map(|(k, v)| (Cbor::Text(k.clone()), json_to_cbor_generic(v))).collect()),
+        Json::Object(obj) => Cbor::Map(
+            obj.iter()
+                .map(|(k, v)| (Cbor::Text(k.clone()), json_to_cbor_generic(v)))
+                .collect(),
+        ),
     }
 }
 
@@ -335,7 +367,12 @@ fn json_to_cbor_generic(value: &Json) -> Cbor {
 pub fn type_to_json(schema: &Schema, type_id: TypeId, value: &Cbor, in_union: bool) -> R<Json> {
     let ty = schema.ty(type_id);
     match ty.builtin {
-        Builtin::Int8 | Builtin::Int16 | Builtin::Int32 | Builtin::Uint8 | Builtin::Uint16 | Builtin::Uint32 => {
+        Builtin::Int8
+        | Builtin::Int16
+        | Builtin::Int32
+        | Builtin::Uint8
+        | Builtin::Uint16
+        | Builtin::Uint32 => {
             let i = cbor_as_i128(value).ok_or_else(|| unexpected_value("a whole number", value))?;
             Ok(Json::from(i as i64))
         }
@@ -347,10 +384,21 @@ pub fn type_to_json(schema: &Schema, type_id: TypeId, value: &Cbor, in_union: bo
             let i = cbor_as_i128(value).ok_or_else(|| unexpected_value("a whole number", value))?;
             Ok(Json::String((i as u64).to_string()))
         }
-        Builtin::Boolean => Ok(Json::Bool(value.as_bool().ok_or_else(|| unexpected_value("true or false", value))?)),
-        Builtin::String => Ok(Json::String(value.as_text().ok_or_else(|| unexpected_value("text", value))?.to_string())),
+        Builtin::Boolean => Ok(Json::Bool(
+            value
+                .as_bool()
+                .ok_or_else(|| unexpected_value("true or false", value))?,
+        )),
+        Builtin::String => Ok(Json::String(
+            value
+                .as_text()
+                .ok_or_else(|| unexpected_value("text", value))?
+                .to_string(),
+        )),
         Builtin::Binary => {
-            let bytes = value.as_bytes().ok_or_else(|| unexpected_value("binary data", value))?;
+            let bytes = value
+                .as_bytes()
+                .ok_or_else(|| unexpected_value("binary data", value))?;
             Ok(Json::String(base64_encode(bytes)))
         }
         Builtin::Empty => Ok(Json::Array(vec![Json::Null])),
@@ -382,7 +430,10 @@ fn cbor_scalar_passthrough_to_json(value: &Cbor) -> R<Json> {
         Cbor::Bool(b) => Ok(Json::Bool(*b)),
         Cbor::Integer(_) => Ok(Json::from(cbor_as_i128(value).unwrap_or(0) as i64)),
         Cbor::Null => Ok(Json::Null),
-        other => Err(err(format!("the device sent {}, which this port has no defined way to decode here", describe_cbor(other)))),
+        other => Err(err(format!(
+            "the device sent {}, which this port has no defined way to decode here",
+            describe_cbor(other)
+        ))),
     }
 }
 
@@ -417,7 +468,10 @@ fn describe_cbor(value: &Cbor) -> String {
         Cbor::Null => "null".to_string(),
         Cbor::Array(items) => format!("a list of {} item(s)", items.len()),
         Cbor::Map(entries) => format!("a map of {} entrie(s)", entries.len()),
-        Cbor::Tag(t, inner) => format!("a tagged value (tag {t}, containing {})", describe_cbor(inner)),
+        Cbor::Tag(t, inner) => format!(
+            "a tagged value (tag {t}, containing {})",
+            describe_cbor(inner)
+        ),
     }
 }
 
@@ -425,7 +479,11 @@ fn describe_cbor(value: &Cbor) -> String {
 
 fn encode_decimal64(ty: &TypeDef, value: &Json, _in_union: bool) -> R<Cbor> {
     let fraction_digits = ty.fraction_digits.ok_or_else(|| err("this decimal field is missing its fraction-digits setting in the schema -- this looks like a catalog problem"))? as usize;
-    let s = value.as_str().ok_or_else(|| err(format!("expected a decimal number written as text (e.g. \"12.34\"), got {value}")))?;
+    let s = value.as_str().ok_or_else(|| {
+        err(format!(
+            "expected a decimal number written as text (e.g. \"12.34\"), got {value}"
+        ))
+    })?;
     let (sign, rest) = match s.strip_prefix('-') {
         Some(r) => (-1i128, r),
         None => (1i128, s),
@@ -433,14 +491,24 @@ fn encode_decimal64(ty: &TypeDef, value: &Json, _in_union: bool) -> R<Cbor> {
     let (int_part, frac_part) = rest.split_once('.').unwrap_or((rest, ""));
     let int_part = if int_part.is_empty() { "0" } else { int_part };
     if frac_part.len() > fraction_digits {
-        return Err(err(format!("{s:?} has more decimal places than allowed here (at most {fraction_digits})")));
+        return Err(err(format!(
+            "{s:?} has more decimal places than allowed here (at most {fraction_digits})"
+        )));
     }
     let padded_frac = format!("{frac_part:0<fraction_digits$}");
-    let mantissa: i128 = format!("{int_part}{padded_frac}").parse().map_err(|_| err(format!("{s:?} is not a valid decimal number")))?;
+    let mantissa: i128 = format!("{int_part}{padded_frac}")
+        .parse()
+        .map_err(|_| err(format!("{s:?} is not a valid decimal number")))?;
     let mantissa = sign * mantissa;
     // decimal64 is always tag(4)-wrapped per RFC 9254 6.3, union or not
     // (unlike enum/bits/identityref, which only tag-wrap inside a union).
-    Ok(Cbor::Tag(4, Box::new(Cbor::Array(vec![Cbor::from(-(fraction_digits as i64)), Cbor::from(mantissa as i64)]))))
+    Ok(Cbor::Tag(
+        4,
+        Box::new(Cbor::Array(vec![
+            Cbor::from(-(fraction_digits as i64)),
+            Cbor::from(mantissa as i64),
+        ])),
+    ))
 }
 
 fn decode_decimal64(_ty: &TypeDef, value: &Cbor, _in_union: bool) -> R<Json> {
@@ -453,11 +521,18 @@ fn decimal64_tag_parts(value: &Cbor) -> R<(i64, i128)> {
     match value {
         Cbor::Tag(4, inner) => match inner.as_array() {
             Some(arr) if arr.len() == 2 => {
-                let exp = cbor_as_i128(&arr[0]).ok_or_else(|| err("the device sent a decimal number whose exponent isn't a valid integer"))? as i64;
-                let mantissa = cbor_as_i128(&arr[1]).ok_or_else(|| err("the device sent a decimal number whose value isn't a valid integer"))?;
+                let exp = cbor_as_i128(&arr[0]).ok_or_else(|| {
+                    err("the device sent a decimal number whose exponent isn't a valid integer")
+                })? as i64;
+                let mantissa = cbor_as_i128(&arr[1]).ok_or_else(|| {
+                    err("the device sent a decimal number whose value isn't a valid integer")
+                })?;
                 Ok((exp, mantissa))
             }
-            _ => Err(err(format!("the device sent a malformed decimal number ({})", describe_cbor(inner)))),
+            _ => Err(err(format!(
+                "the device sent a malformed decimal number ({})",
+                describe_cbor(inner)
+            ))),
         },
         other => Err(unexpected_value("a decimal number", other)),
     }
@@ -474,8 +549,16 @@ fn format_ruby_float(f: f64) -> String {
 // -- enumeration ---------------------------------------------------------
 
 fn encode_enum(ty: &TypeDef, value: &Json, in_union: bool) -> R<Cbor> {
-    let name = value.as_str().ok_or_else(|| err(format!("expected one of this field's allowed text values, got {value}")))?;
-    let e = ty.enums.iter().find(|e| e.name == name).ok_or_else(|| err(format!("{name:?} is not one of the allowed values for this field")))?;
+    let name = value.as_str().ok_or_else(|| {
+        err(format!(
+            "expected one of this field's allowed text values, got {value}"
+        ))
+    })?;
+    let e = ty.enums.iter().find(|e| e.name == name).ok_or_else(|| {
+        err(format!(
+            "{name:?} is not one of the allowed values for this field"
+        ))
+    })?;
     if in_union {
         Ok(Cbor::Tag(44, Box::new(Cbor::Text(name.to_string()))))
     } else {
@@ -486,11 +569,14 @@ fn encode_enum(ty: &TypeDef, value: &Json, in_union: bool) -> R<Cbor> {
 fn decode_enum(ty: &TypeDef, value: &Cbor, in_union: bool) -> R<Json> {
     if in_union {
         if let Cbor::Tag(44, inner) = value {
-            let name = inner.as_text().ok_or_else(|| unexpected_value("text (an enum value)", inner))?;
+            let name = inner
+                .as_text()
+                .ok_or_else(|| unexpected_value("text (an enum value)", inner))?;
             return Ok(Json::String(name.to_string()));
         }
     }
-    let n = cbor_as_i128(value).ok_or_else(|| unexpected_value("a whole number (an enum value)", value))?;
+    let n = cbor_as_i128(value)
+        .ok_or_else(|| unexpected_value("a whole number (an enum value)", value))?;
     match ty.enums.iter().find(|e| e.value as i128 == n) {
         Some(e) => Ok(Json::String(e.name.clone())),
         None => {
@@ -506,7 +592,11 @@ fn encode_bits(ty: &TypeDef, value: &Json, in_union: bool) -> R<Cbor> {
     let names: Vec<&str> = match value {
         Json::String(s) => s.split_whitespace().collect(),
         Json::Array(items) => items.iter().filter_map(|v| v.as_str()).collect(),
-        other => return Err(err(format!("expected a space-separated list of names (as text, or a list of names), got {other}"))),
+        other => {
+            return Err(err(format!(
+            "expected a space-separated list of names (as text, or a list of names), got {other}"
+        )))
+        }
     };
     if in_union {
         return Ok(Cbor::Tag(43, Box::new(Cbor::Text(names.join(" ")))));
@@ -514,7 +604,11 @@ fn encode_bits(ty: &TypeDef, value: &Json, in_union: bool) -> R<Cbor> {
 
     let mut positions = Vec::new();
     for name in &names {
-        let bit = ty.bits.iter().find(|b| b.name == *name).ok_or_else(|| err(format!("{name:?} is not one of the allowed names for this field")))?;
+        let bit = ty.bits.iter().find(|b| b.name == *name).ok_or_else(|| {
+            err(format!(
+                "{name:?} is not one of the allowed names for this field"
+            ))
+        })?;
         positions.push(bit.position);
     }
     positions.sort_unstable();
@@ -566,7 +660,9 @@ fn bits_bytes_to_spans(bytes: &[u8]) -> Vec<Cbor> {
 fn decode_bits(ty: &TypeDef, value: &Cbor, in_union: bool) -> R<Json> {
     if in_union {
         if let Cbor::Tag(43, inner) = value {
-            let s = inner.as_text().ok_or_else(|| unexpected_value("text (a list of names)", inner))?;
+            let s = inner
+                .as_text()
+                .ok_or_else(|| unexpected_value("text (a list of names)", inner))?;
             return Ok(Json::String(s.to_string()));
         }
     }
@@ -597,7 +693,12 @@ fn decode_bits(ty: &TypeDef, value: &Cbor, in_union: bool) -> R<Json> {
                 }
                 byte_offset += b.len() as u32;
             }
-            other => return Err(err(format!("the device sent malformed bit-flag data (an unexpected {})", describe_cbor(other)))),
+            other => {
+                return Err(err(format!(
+                    "the device sent malformed bit-flag data (an unexpected {})",
+                    describe_cbor(other)
+                )))
+            }
         }
     }
     Ok(Json::String(names.join(" ")))
@@ -605,7 +706,10 @@ fn decode_bits(ty: &TypeDef, value: &Cbor, in_union: bool) -> R<Json> {
 
 // -- identityref (RFC 9254 6.10 / RFC 9595) ------------------------------
 
-pub(crate) fn all_identity_bases(schema: &Schema, ty: &TypeDef) -> Option<std::collections::HashSet<IdentityId>> {
+pub(crate) fn all_identity_bases(
+    schema: &Schema,
+    ty: &TypeDef,
+) -> Option<std::collections::HashSet<IdentityId>> {
     let mut iter = ty.identity_bases.iter();
     let first = *iter.next()?;
     let mut set = schema.derived_from(first);
@@ -617,7 +721,11 @@ pub(crate) fn all_identity_bases(schema: &Schema, ty: &TypeDef) -> Option<std::c
 }
 
 fn encode_identityref(schema: &Schema, ty: &TypeDef, value: &Json, in_union: bool) -> R<Cbor> {
-    let s = value.as_str().ok_or_else(|| err(format!("expected the name of one of this field's allowed values (as text), got {value}")))?;
+    let s = value.as_str().ok_or_else(|| {
+        err(format!(
+            "expected the name of one of this field's allowed values (as text), got {value}"
+        ))
+    })?;
     let candidates = all_identity_bases(schema, ty).ok_or_else(|| err("this field's schema doesn't declare any allowed values at all -- this looks like a catalog problem"))?;
     let source_module = ty.source_module.as_deref().unwrap_or("");
 
@@ -628,7 +736,11 @@ fn encode_identityref(schema: &Schema, ty: &TypeDef, value: &Json, in_union: boo
             None => identity.module == source_module && identity.name == s,
         }
     });
-    let id = found.ok_or_else(|| err(format!("{s:?} is not one of the allowed values for this field")))?;
+    let id = found.ok_or_else(|| {
+        err(format!(
+            "{s:?} is not one of the allowed values for this field"
+        ))
+    })?;
     let sid = schema.identity(id).sid.ok_or_else(|| err(format!("{s:?} exists in the schema but has no SID assigned -- this looks like a catalog problem")))?;
     if in_union {
         Ok(Cbor::Tag(45, Box::new(Cbor::from(sid))))
@@ -640,11 +752,13 @@ fn encode_identityref(schema: &Schema, ty: &TypeDef, value: &Json, in_union: boo
 fn decode_identityref(schema: &Schema, _ty: &TypeDef, value: &Cbor, in_union: bool) -> R<Json> {
     let sid = if in_union {
         match value {
-            Cbor::Tag(45, inner) => cbor_as_i128(inner).ok_or_else(|| unexpected_value("a whole number (an identity reference)", inner))?,
+            Cbor::Tag(45, inner) => cbor_as_i128(inner)
+                .ok_or_else(|| unexpected_value("a whole number (an identity reference)", inner))?,
             other => return Err(unexpected_value("an identity reference (tag 45)", other)),
         }
     } else {
-        cbor_as_i128(value).ok_or_else(|| unexpected_value("a whole number (an identity reference)", value))?
+        cbor_as_i128(value)
+            .ok_or_else(|| unexpected_value("a whole number (an identity reference)", value))?
     };
     let identity = schema
         .identities
@@ -657,7 +771,10 @@ fn decode_identityref(schema: &Schema, _ty: &TypeDef, value: &Cbor, in_union: bo
     // identityref's own declaring module -- unlike encode, which accepts
     // (and the real Ruby tool's own request encoding uses) the bare form
     // when they match.
-    Ok(Json::String(format!("{}:{}", identity.module, identity.name)))
+    Ok(Json::String(format!(
+        "{}:{}",
+        identity.module, identity.name
+    )))
 }
 
 // -- union member dispatch (encoding-focused heuristic; see module docs) -
@@ -713,7 +830,11 @@ fn pick_union_member_for_json(schema: &Schema, ty: &TypeDef, value: &Json) -> Op
     for &m in &members {
         if resolved_builtin(schema, m).0 == Builtin::Decimal64 {
             if let Json::String(s) = value {
-                if s.trim_start_matches('-').chars().all(|c| c.is_ascii_digit() || c == '.') && s.contains('.') {
+                if s.trim_start_matches('-')
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c == '.')
+                    && s.contains('.')
+                {
                     return Some(m);
                 }
             }
@@ -723,7 +844,11 @@ fn pick_union_member_for_json(schema: &Schema, ty: &TypeDef, value: &Json) -> Op
         let b = resolved_builtin(schema, m).0;
         if b.is_64bit_int() {
             if let Json::String(s) = value {
-                let ok = if b == Builtin::Int64 { s.parse::<i64>().is_ok() } else { s.parse::<u64>().is_ok() };
+                let ok = if b == Builtin::Int64 {
+                    s.parse::<i64>().is_ok()
+                } else {
+                    s.parse::<u64>().is_ok()
+                };
                 if ok {
                     return Some(m);
                 }
@@ -733,7 +858,15 @@ fn pick_union_member_for_json(schema: &Schema, ty: &TypeDef, value: &Json) -> Op
     for &m in &members {
         match (resolved_builtin(schema, m).0, value) {
             (Builtin::Boolean, Json::Bool(_)) => return Some(m),
-            (Builtin::Int8 | Builtin::Int16 | Builtin::Int32 | Builtin::Uint8 | Builtin::Uint16 | Builtin::Uint32, Json::Number(_)) => return Some(m),
+            (
+                Builtin::Int8
+                | Builtin::Int16
+                | Builtin::Int32
+                | Builtin::Uint8
+                | Builtin::Uint16
+                | Builtin::Uint32,
+                Json::Number(_),
+            ) => return Some(m),
             (Builtin::Empty, Json::Array(a)) if a.len() == 1 && a[0].is_null() => return Some(m),
             _ => {}
         }
@@ -743,13 +876,20 @@ fn pick_union_member_for_json(schema: &Schema, ty: &TypeDef, value: &Json) -> Op
     // particular is ambiguous -- base64-decodes trivially to empty bytes
     // -- so pick the more general/common member first, in separate
     // passes, rather than whichever happens to be declared first).
-    if let Some(&m) = members.iter().find(|&&m| resolved_builtin(schema, m).0 == Builtin::String) {
+    if let Some(&m) = members
+        .iter()
+        .find(|&&m| resolved_builtin(schema, m).0 == Builtin::String)
+    {
         if matches!(value, Json::String(_)) {
             return Some(m);
         }
     }
     for &m in &members {
-        if matches!(resolved_builtin(schema, m).0, Builtin::Binary | Builtin::InstanceIdentifier) && matches!(value, Json::String(_)) {
+        if matches!(
+            resolved_builtin(schema, m).0,
+            Builtin::Binary | Builtin::InstanceIdentifier
+        ) && matches!(value, Json::String(_))
+        {
             return Some(m);
         }
     }
@@ -772,7 +912,10 @@ fn pick_union_member_for_cbor(schema: &Schema, ty: &TypeDef, value: &Cbor) -> Op
         _ => None,
     };
     if let Some(b) = tag_builtin {
-        if let Some(&m) = members.iter().find(|&&m| resolved_builtin(schema, m).0 == b) {
+        if let Some(&m) = members
+            .iter()
+            .find(|&&m| resolved_builtin(schema, m).0 == b)
+        {
             return Some(m);
         }
     }
@@ -781,24 +924,45 @@ fn pick_union_member_for_cbor(schema: &Schema, ty: &TypeDef, value: &Cbor) -> Op
             let n = cbor_as_i128(value).unwrap_or(0);
             let fits_32 = (i32::MIN as i128..=u32::MAX as i128).contains(&n);
             if !fits_32 {
-                if let Some(&m) = members.iter().find(|&&m| resolved_builtin(schema, m).0.is_64bit_int()) {
+                if let Some(&m) = members
+                    .iter()
+                    .find(|&&m| resolved_builtin(schema, m).0.is_64bit_int())
+                {
                     return Some(m);
                 }
             }
             members.iter().copied().find(|&m| {
                 matches!(
                     resolved_builtin(schema, m).0,
-                    Builtin::Int8 | Builtin::Int16 | Builtin::Int32 | Builtin::Uint8 | Builtin::Uint16 | Builtin::Uint32 | Builtin::Int64 | Builtin::Uint64
+                    Builtin::Int8
+                        | Builtin::Int16
+                        | Builtin::Int32
+                        | Builtin::Uint8
+                        | Builtin::Uint16
+                        | Builtin::Uint32
+                        | Builtin::Int64
+                        | Builtin::Uint64
                 )
             })
         }
-        Cbor::Text(_) => members
+        Cbor::Text(_) => members.iter().copied().find(|&m| {
+            matches!(
+                resolved_builtin(schema, m).0,
+                Builtin::String | Builtin::InstanceIdentifier
+            )
+        }),
+        Cbor::Bytes(_) => members
             .iter()
             .copied()
-            .find(|&m| matches!(resolved_builtin(schema, m).0, Builtin::String | Builtin::InstanceIdentifier)),
-        Cbor::Bytes(_) => members.iter().copied().find(|&m| resolved_builtin(schema, m).0 == Builtin::Binary),
-        Cbor::Bool(_) => members.iter().copied().find(|&m| resolved_builtin(schema, m).0 == Builtin::Boolean),
-        Cbor::Null => members.iter().copied().find(|&m| resolved_builtin(schema, m).0 == Builtin::Empty),
+            .find(|&m| resolved_builtin(schema, m).0 == Builtin::Binary),
+        Cbor::Bool(_) => members
+            .iter()
+            .copied()
+            .find(|&m| resolved_builtin(schema, m).0 == Builtin::Boolean),
+        Cbor::Null => members
+            .iter()
+            .copied()
+            .find(|&m| resolved_builtin(schema, m).0 == Builtin::Empty),
         _ => None,
     }
     // No member's builtin kind matches this CBOR value's own kind --
@@ -845,11 +1009,23 @@ fn parse_iid_segment(seg: &str) -> R<IidSegment<'_>> {
     let mut keys = Vec::new();
     let mut r = rest;
     while let Some(open) = r.find('[') {
-        let close = r[open..].find(']').ok_or_else(|| err(format!("the path segment {seg:?} has an opening '[' with no matching ']'")))?;
+        let close = r[open..].find(']').ok_or_else(|| {
+            err(format!(
+                "the path segment {seg:?} has an opening '[' with no matching ']'"
+            ))
+        })?;
         let inner = &r[open + 1..open + close];
-        let (k, v) = inner.split_once('=').ok_or_else(|| err(format!("{inner:?} in {seg:?} isn't a key selector -- it should look like key='value'")))?;
+        let (k, v) = inner.split_once('=').ok_or_else(|| {
+            err(format!(
+                "{inner:?} in {seg:?} isn't a key selector -- it should look like key='value'"
+            ))
+        })?;
         let v = v.trim();
-        let v = v.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')).or_else(|| v.strip_prefix('"').and_then(|v| v.strip_suffix('"'))).unwrap_or(v);
+        let v = v
+            .strip_prefix('\'')
+            .and_then(|v| v.strip_suffix('\''))
+            .or_else(|| v.strip_prefix('"').and_then(|v| v.strip_suffix('"')))
+            .unwrap_or(v);
         keys.push((k, v));
         r = &r[open + close + 1..];
     }
@@ -868,17 +1044,27 @@ fn convert_iid_key_value(schema: &Schema, type_id: TypeId, raw: &str) -> R<Json>
         // RFC 7951 64-bit string convention, not a JSON number.
         Builtin::Int64 | Builtin::Uint64 => Ok(Json::String(raw.to_string())),
         Builtin::Int8 | Builtin::Int16 | Builtin::Int32 => {
-            let n: i64 = raw.parse().map_err(|_| err(format!("{raw:?} is not a whole number, but this list key needs one")))?;
+            let n: i64 = raw.parse().map_err(|_| {
+                err(format!(
+                    "{raw:?} is not a whole number, but this list key needs one"
+                ))
+            })?;
             Ok(Json::from(n))
         }
         Builtin::Uint8 | Builtin::Uint16 | Builtin::Uint32 => {
-            let n: u64 = raw.parse().map_err(|_| err(format!("{raw:?} is not a whole number, but this list key needs one")))?;
+            let n: u64 = raw.parse().map_err(|_| {
+                err(format!(
+                    "{raw:?} is not a whole number, but this list key needs one"
+                ))
+            })?;
             Ok(Json::from(n))
         }
         Builtin::Boolean => match raw {
             "true" => Ok(Json::Bool(true)),
             "false" => Ok(Json::Bool(false)),
-            other => Err(err(format!("{other:?} is not \"true\" or \"false\", but this list key needs one of those"))),
+            other => Err(err(format!(
+                "{other:?} is not \"true\" or \"false\", but this list key needs one of those"
+            ))),
         },
         Builtin::Empty if raw == "[null]" => Ok(Json::Array(vec![Json::Null])),
         _ => Ok(Json::String(raw.to_string())),
@@ -932,11 +1118,16 @@ pub fn resolve_iid(schema: &Schema, path: &str) -> R<(NodeId, Cbor)> {
             }
             for (k, _) in &seg.keys {
                 if !node.keys.iter().any(|nk| nk == k) {
-                    return Err(err(format!("\"{k}\" is not a key of the list at {path:?} -- check the key name")));
+                    return Err(err(format!(
+                        "\"{k}\" is not a key of the list at {path:?} -- check the key name"
+                    )));
                 }
             }
         } else if !seg.keys.is_empty() {
-            return Err(err(format!("\"{}\" is not a list, so it can't take key='value' selectors like in {path:?}", seg.name)));
+            return Err(err(format!(
+                "\"{}\" is not a list, so it can't take key='value' selectors like in {path:?}",
+                seg.name
+            )));
         }
 
         cur = child;
@@ -1022,7 +1213,10 @@ fn node_path_string(schema: &Schema, node: NodeId, keys: &mut Vec<Cbor>) -> R<St
                 }
                 let cbor_v = keys.remove(0);
                 let json_v = type_to_json(schema, key_type, &cbor_v, false)?;
-                let v = json_v.as_str().map(|s| s.to_string()).unwrap_or_else(|| json_v.to_string());
+                let v = json_v
+                    .as_str()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| json_v.to_string());
                 path.push_str(&format!("[{key_name}='{v}']"));
             }
         }
@@ -1066,13 +1260,28 @@ fn effective_delta_base(schema: &Schema, node: NodeId) -> i64 {
     n.sid.unwrap_or(0)
 }
 
-fn encode_leaf_value(schema: &Schema, node: &Node, value: &Json, continue_on_error: bool) -> R<Cbor> {
-    let type_id = node.type_id.ok_or_else(|| err(format!("\"{}\" has no type defined in the schema -- this looks like a catalog problem", node.name)))?;
+fn encode_leaf_value(
+    schema: &Schema,
+    node: &Node,
+    value: &Json,
+    continue_on_error: bool,
+) -> R<Cbor> {
+    let type_id = node.type_id.ok_or_else(|| {
+        err(format!(
+            "\"{}\" has no type defined in the schema -- this looks like a catalog problem",
+            node.name
+        ))
+    })?;
     type_to_cbor(schema, type_id, value, false, continue_on_error)
 }
 
 fn decode_leaf_value(schema: &Schema, node: &Node, value: &Cbor) -> R<Json> {
-    let type_id = node.type_id.ok_or_else(|| err(format!("\"{}\" has no type defined in the schema -- this looks like a catalog problem", node.name)))?;
+    let type_id = node.type_id.ok_or_else(|| {
+        err(format!(
+            "\"{}\" has no type defined in the schema -- this looks like a catalog problem",
+            node.name
+        ))
+    })?;
     type_to_json(schema, type_id, value, false)
 }
 
@@ -1090,7 +1299,13 @@ fn decode_leaf_value(schema: &Schema, node: &Node, value: &Cbor) -> R<Json> {
 /// have (see `type_to_cbor`'s doc comment) -- so it's added here
 /// instead, gated the same way for consistency with everything else
 /// `--continue` softens.
-fn encode_body(schema: &Schema, scope: NodeId, obj: &serde_json::Map<String, Json>, cf: ContentFormat, continue_on_error: bool) -> R<Cbor> {
+fn encode_body(
+    schema: &Schema,
+    scope: NodeId,
+    obj: &serde_json::Map<String, Json>,
+    cf: ContentFormat,
+    continue_on_error: bool,
+) -> R<Cbor> {
     let base = effective_delta_base(schema, scope);
     let scope_node = schema.node(scope);
     // Matches `json2cbor_hash` (support/yang-enc/yang-enc.rb:176-191)
@@ -1116,7 +1331,9 @@ fn encode_body(schema: &Schema, scope: NodeId, obj: &serde_json::Map<String, Jso
                     .map(|sid| (child, sid))
                     .ok_or_else(|| err(format!("{key:?} exists in the schema but has no SID assigned -- this looks like a catalog/schema problem, not a mistake in your data")))
             });
-        let Some((child, child_sid)) = lenient(found.map(Some), continue_on_error, || None)? else { continue };
+        let Some((child, child_sid)) = lenient(found.map(Some), continue_on_error, || None)? else {
+            continue;
+        };
         let cbor_val = encode_node_value(schema, child, val, cf, continue_on_error)?;
         entries.push((Cbor::from(child_sid - base), cbor_val));
     }
@@ -1132,8 +1349,20 @@ fn encode_body(schema: &Schema, scope: NodeId, obj: &serde_json::Map<String, Jso
         }
         let is_key = scope_node.keys.iter().any(|k| k == c.local_name());
         if (c.mandatory || is_key) && !obj.contains_key(&c.name) {
-            let why = if is_key { "it's a key of this list -- every entry needs one" } else { "it's a required field" };
-            lenient(Err(err(format!("{:?} is missing from {} ({why})", c.name, node_display_name(scope_node)))), continue_on_error, || ())?;
+            let why = if is_key {
+                "it's a key of this list -- every entry needs one"
+            } else {
+                "it's a required field"
+            };
+            lenient(
+                Err(err(format!(
+                    "{:?} is missing from {} ({why})",
+                    c.name,
+                    node_display_name(scope_node)
+                ))),
+                continue_on_error,
+                || (),
+            )?;
         }
     }
 
@@ -1142,12 +1371,18 @@ fn encode_body(schema: &Schema, scope: NodeId, obj: &serde_json::Map<String, Jso
 
 fn decode_body(schema: &Schema, scope: NodeId, value: &Cbor, cf: ContentFormat) -> R<Json> {
     let base = effective_delta_base(schema, scope);
-    let map = value
-        .as_map()
-        .ok_or_else(|| err(format!("expected a set of fields for {}, but the device sent {}", node_display_name(schema.node(scope)), describe_cbor(value))))?;
+    let map = value.as_map().ok_or_else(|| {
+        err(format!(
+            "expected a set of fields for {}, but the device sent {}",
+            node_display_name(schema.node(scope)),
+            describe_cbor(value)
+        ))
+    })?;
     let mut obj = serde_json::Map::new();
     for (k, v) in map {
-        let delta = cbor_as_i128(k).ok_or_else(|| err("the device sent a field whose identifier isn't a valid number"))? as i64;
+        let delta = cbor_as_i128(k)
+            .ok_or_else(|| err("the device sent a field whose identifier isn't a valid number"))?
+            as i64;
         let child = *schema.sid_index.get(&(delta + base)).ok_or_else(|| {
             err(format!(
                 "the device sent field #{}, which isn't in the loaded YANG catalog -- the catalog may not match this device's firmware",
@@ -1171,7 +1406,13 @@ fn decode_body(schema: &Schema, scope: NodeId, value: &Cbor, cf: ContentFormat) 
 /// unguarded `json.map`/`.keys` call that would just crash on the wrong
 /// shape) -- replicated here as unconditional hard errors, not a
 /// missing feature.
-pub fn encode_node_value(schema: &Schema, node: NodeId, value: &Json, cf: ContentFormat, continue_on_error: bool) -> R<Cbor> {
+pub fn encode_node_value(
+    schema: &Schema,
+    node: NodeId,
+    value: &Json,
+    cf: ContentFormat,
+    continue_on_error: bool,
+) -> R<Cbor> {
     let n = schema.node(node);
     match n.kw.as_str() {
         "leaf" => encode_leaf_value(schema, n, value, continue_on_error),
@@ -1238,7 +1479,12 @@ pub fn encode_node_value(schema: &Schema, node: NodeId, value: &Json, cf: Conten
     }
 }
 
-pub fn decode_node_value(schema: &Schema, node: NodeId, value: &Cbor, cf: ContentFormat) -> R<Json> {
+pub fn decode_node_value(
+    schema: &Schema,
+    node: NodeId,
+    value: &Cbor,
+    cf: ContentFormat,
+) -> R<Json> {
     let n = schema.node(node);
     match n.kw.as_str() {
         "leaf" => decode_leaf_value(schema, n, value),
@@ -1357,7 +1603,10 @@ fn validate_instance_entry(cf: ContentFormat, entry: &Json) -> R<()> {
         Json::Number(_) => "Numeric",
         Json::String(_) => "String",
     };
-    Err(err(format!("{} entry must be a map of a single instance path to its value, got {kind}", cf.upper_name())))
+    Err(err(format!(
+        "{} entry must be a map of a single instance path to its value, got {kind}",
+        cf.upper_name()
+    )))
 }
 
 fn validate_single_key(cf: ContentFormat, entry: &Json) -> R<()> {
@@ -1376,7 +1625,12 @@ fn validate_single_key(cf: ContentFormat, entry: &Json) -> R<()> {
 
 /// `json_seq2cbor`: encode a sequence of fetch/ipatch/post entries into a
 /// concatenated CBOR-sequence byte string.
-pub fn json_seq_to_cbor(schema: &Schema, items: &[Json], cf: ContentFormat, continue_on_error: bool) -> R<Vec<u8>> {
+pub fn json_seq_to_cbor(
+    schema: &Schema,
+    items: &[Json],
+    cf: ContentFormat,
+    continue_on_error: bool,
+) -> R<Vec<u8>> {
     let mut out = Vec::new();
     for item in items {
         let cbor_item = match cf {
@@ -1385,7 +1639,11 @@ pub fn json_seq_to_cbor(schema: &Schema, items: &[Json], cf: ContentFormat, cont
                 Json::Object(map) if map.len() == 1 => {
                     let (path, val) = map.iter().next().unwrap();
                     let (target, iid) = resolve_iid(schema, path)?;
-                    let encoded_val = if val.is_null() { Cbor::Null } else { encode_node_value(schema, target, val, cf, continue_on_error)? };
+                    let encoded_val = if val.is_null() {
+                        Cbor::Null
+                    } else {
+                        encode_node_value(schema, target, val, cf, continue_on_error)?
+                    };
                     Cbor::Map(vec![(iid, encoded_val)])
                 }
                 // Wrong key *count* (0 or >1) gets the specific
@@ -1403,7 +1661,11 @@ pub fn json_seq_to_cbor(schema: &Schema, items: &[Json], cf: ContentFormat, cont
                 let map = item.as_object().unwrap();
                 let (path, val) = map.iter().next().unwrap();
                 let (target, iid) = resolve_iid(schema, path)?;
-                let encoded_val = if val.is_null() { Cbor::Null } else { encode_node_value(schema, target, val, cf, continue_on_error)? };
+                let encoded_val = if val.is_null() {
+                    Cbor::Null
+                } else {
+                    encode_node_value(schema, target, val, cf, continue_on_error)?
+                };
                 Cbor::Map(vec![(iid, encoded_val)])
             }
             ContentFormat::Yang | ContentFormat::Get | ContentFormat::Put => {
@@ -1424,7 +1686,10 @@ fn validate_entry_err(cf: ContentFormat, entry: &Json) -> CodecError {
         Json::String(_) => "String",
         Json::Object(_) => "Hash",
     };
-    err(format!("{} entry must be a map of a single instance path to its value, got {kind}", cf.upper_name()))
+    err(format!(
+        "{} entry must be a map of a single instance path to its value, got {kind}",
+        cf.upper_name()
+    ))
 }
 
 /// `cbor_seq2json`: decode a CBOR-sequence byte string into a sequence of
@@ -1437,7 +1702,11 @@ pub fn cbor_seq_to_json(schema: &Schema, bytes: &[u8], cf: ContentFormat) -> R<V
             Cbor::Map(entries) if entries.len() == 1 => {
                 let (iid, val) = &entries[0];
                 let (node, path) = decode_iid(schema, iid)?;
-                let decoded_val = if matches!(val, Cbor::Null) { Json::Null } else { decode_node_value(schema, node, val, cf)? };
+                let decoded_val = if matches!(val, Cbor::Null) {
+                    Json::Null
+                } else {
+                    decode_node_value(schema, node, val, cf)?
+                };
                 let mut obj = serde_json::Map::new();
                 obj.insert(path, decoded_val);
                 out.push(Json::Object(obj));
@@ -1446,7 +1715,13 @@ pub fn cbor_seq_to_json(schema: &Schema, bytes: &[u8], cf: ContentFormat) -> R<V
                 let (_, path) = decode_iid(schema, other)?;
                 out.push(Json::String(path));
             }
-            other => return Err(err(format!("the device sent {} as a {} response entry, which doesn't fit the expected shape", describe_cbor(other), cf.upper_name()))),
+            other => {
+                return Err(err(format!(
+                "the device sent {} as a {} response entry, which doesn't fit the expected shape",
+                describe_cbor(other),
+                cf.upper_name()
+            )))
+            }
         }
     }
     Ok(out)
@@ -1456,11 +1731,21 @@ pub fn cbor_seq_to_json(schema: &Schema, bytes: &[u8], cf: ContentFormat) -> R<V
 /// shape check is `--continue`-gated (falls back to an empty map),
 /// matching `json2cbor`'s `'module'` branch (yang-enc.rb:212-222) --
 /// `schema.root`'s own `kw` is `"module"`.
-pub fn json_to_cbor(schema: &Schema, value: &Json, cf: ContentFormat, continue_on_error: bool) -> R<Vec<u8>> {
+pub fn json_to_cbor(
+    schema: &Schema,
+    value: &Json,
+    cf: ContentFormat,
+    continue_on_error: bool,
+) -> R<Vec<u8>> {
     let cbor = lenient(
         value
             .as_object()
-            .ok_or_else(|| err(format!("a {} request needs an object (key/value fields) at the top level, got {value}", cf.upper_name())))
+            .ok_or_else(|| {
+                err(format!(
+                    "a {} request needs an object (key/value fields) at the top level, got {value}",
+                    cf.upper_name()
+                ))
+            })
             .and_then(|obj| encode_body(schema, schema.root, obj, cf, continue_on_error)),
         continue_on_error,
         || Cbor::Map(vec![]),
@@ -1474,7 +1759,10 @@ pub fn cbor_to_json(schema: &Schema, bytes: &[u8], cf: ContentFormat) -> R<Json>
         return Ok(Json::Object(serde_json::Map::new()));
     }
     let items = cbor_seq_from_bytes(bytes)?;
-    let value = items.into_iter().next().ok_or_else(|| err("could not read any CBOR value from this response"))?;
+    let value = items
+        .into_iter()
+        .next()
+        .ok_or_else(|| err("could not read any CBOR value from this response"))?;
     decode_body(schema, schema.root, &value, cf)
 }
 
@@ -1493,8 +1781,16 @@ fn base64_encode(data: &[u8]) -> String {
         let n = (b0 as u32) << 16 | (b1 as u32) << 8 | b2 as u32;
         out.push(B64_ALPHABET[(n >> 18 & 0x3F) as usize] as char);
         out.push(B64_ALPHABET[(n >> 12 & 0x3F) as usize] as char);
-        out.push(if chunk.len() > 1 { B64_ALPHABET[(n >> 6 & 0x3F) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { B64_ALPHABET[(n & 0x3F) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            B64_ALPHABET[(n >> 6 & 0x3F) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            B64_ALPHABET[(n & 0x3F) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -1510,11 +1806,21 @@ fn base64_decode(s: &str) -> R<Vec<u8>> {
             _ => None,
         }
     }
-    let clean: Vec<u8> = s.bytes().filter(|&b| b != b'=' && !b.is_ascii_whitespace()).collect();
+    let clean: Vec<u8> = s
+        .bytes()
+        .filter(|&b| b != b'=' && !b.is_ascii_whitespace())
+        .collect();
     let mut out = Vec::with_capacity(clean.len() * 3 / 4);
     for chunk in clean.chunks(4) {
-        let vals: Vec<u32> = chunk.iter().map(|&c| val(c)).collect::<Option<Vec<_>>>().ok_or_else(|| err(format!("{s:?} is not valid base64-encoded text")))?;
-        let n = vals.iter().enumerate().fold(0u32, |acc, (i, &v)| acc | (v << (18 - 6 * i)));
+        let vals: Vec<u32> = chunk
+            .iter()
+            .map(|&c| val(c))
+            .collect::<Option<Vec<_>>>()
+            .ok_or_else(|| err(format!("{s:?} is not valid base64-encoded text")))?;
+        let n = vals
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (i, &v)| acc | (v << (18 - 6 * i)));
         out.push((n >> 16) as u8);
         if vals.len() > 2 {
             out.push((n >> 8) as u8);
@@ -1533,7 +1839,16 @@ mod tests {
 
     #[test]
     fn base64_round_trips() {
-        for data in [&b""[..], b"f", b"fo", b"foo", b"foob", b"fooba", b"foobar", b"\x00\xff\x10"] {
+        for data in [
+            &b""[..],
+            b"f",
+            b"fo",
+            b"foo",
+            b"foob",
+            b"fooba",
+            b"foobar",
+            b"\x00\xff\x10",
+        ] {
             let enc = base64_encode(data);
             assert_eq!(base64_decode(&enc).unwrap(), data);
         }
@@ -1560,7 +1875,13 @@ mod tests {
     #[test]
     fn rejects_a_non_map_array_entry() {
         let schema = empty_schema();
-        let err = json_seq_to_cbor(&schema, &[Json::Array(vec![Json::String("/some/path".into())])], ContentFormat::Ipatch, false).unwrap_err();
+        let err = json_seq_to_cbor(
+            &schema,
+            &[Json::Array(vec![Json::String("/some/path".into())])],
+            ContentFormat::Ipatch,
+            false,
+        )
+        .unwrap_err();
         assert!(err.0.contains("IPATCH"), "{}", err.0);
         assert!(err.0.contains("got array"), "{}", err.0);
     }
@@ -1568,7 +1889,13 @@ mod tests {
     #[test]
     fn rejects_a_scalar_entry() {
         let schema = empty_schema();
-        let err = json_seq_to_cbor(&schema, &[Json::String("/some/path".into())], ContentFormat::Post, false).unwrap_err();
+        let err = json_seq_to_cbor(
+            &schema,
+            &[Json::String("/some/path".into())],
+            ContentFormat::Post,
+            false,
+        )
+        .unwrap_err();
         assert!(err.0.contains("POST"), "{}", err.0);
         assert!(err.0.contains("got String"), "{}", err.0);
     }
@@ -1576,7 +1903,8 @@ mod tests {
     #[test]
     fn rejects_a_null_entry() {
         let schema = empty_schema();
-        let err = json_seq_to_cbor(&schema, &[Json::Null], ContentFormat::Ipatch, false).unwrap_err();
+        let err =
+            json_seq_to_cbor(&schema, &[Json::Null], ContentFormat::Ipatch, false).unwrap_err();
         assert!(err.0.contains("got null"), "{}", err.0);
     }
 
@@ -1586,7 +1914,8 @@ mod tests {
         let mut map = serde_json::Map::new();
         map.insert("/a".to_string(), Json::from(1));
         map.insert("/b".to_string(), Json::from(2));
-        let err = json_seq_to_cbor(&schema, &[Json::Object(map)], ContentFormat::Ipatch, false).unwrap_err();
+        let err = json_seq_to_cbor(&schema, &[Json::Object(map)], ContentFormat::Ipatch, false)
+            .unwrap_err();
         assert!(err.0.contains("exactly one key/value pair"), "{}", err.0);
         assert!(err.0.contains("got 2"), "{}", err.0);
         assert!(err.0.contains("/a") && err.0.contains("/b"), "{}", err.0);
@@ -1595,7 +1924,13 @@ mod tests {
     #[test]
     fn rejects_an_empty_map() {
         let schema = empty_schema();
-        let err = json_seq_to_cbor(&schema, &[Json::Object(serde_json::Map::new())], ContentFormat::Fetch, false).unwrap_err();
+        let err = json_seq_to_cbor(
+            &schema,
+            &[Json::Object(serde_json::Map::new())],
+            ContentFormat::Fetch,
+            false,
+        )
+        .unwrap_err();
         assert!(err.0.contains("got 0"), "{}", err.0);
     }
 
@@ -1606,13 +1941,34 @@ mod tests {
     fn alarm_state_type() -> TypeDef {
         let mut ty = TypeDef::new(Builtin::Bits);
         ty.bits = vec![
-            Bit { name: "unknown".into(), position: 0 },
-            Bit { name: "under-repair".into(), position: 1 },
-            Bit { name: "critical".into(), position: 2 },
-            Bit { name: "major".into(), position: 3 },
-            Bit { name: "minor".into(), position: 4 },
-            Bit { name: "warning".into(), position: 8 },
-            Bit { name: "indeterminate".into(), position: 128 },
+            Bit {
+                name: "unknown".into(),
+                position: 0,
+            },
+            Bit {
+                name: "under-repair".into(),
+                position: 1,
+            },
+            Bit {
+                name: "critical".into(),
+                position: 2,
+            },
+            Bit {
+                name: "major".into(),
+                position: 3,
+            },
+            Bit {
+                name: "minor".into(),
+                position: 4,
+            },
+            Bit {
+                name: "warning".into(),
+                position: 8,
+            },
+            Bit {
+                name: "indeterminate".into(),
+                position: 128,
+            },
         ];
         ty
     }
@@ -1621,25 +1977,61 @@ mod tests {
     fn bits_sparse_encoding_matches_ruby_spec_exact_bytes() {
         let ty = alarm_state_type();
         assert_eq!(
-            encode_bits(&ty, &Json::String("warning critical indeterminate".into()), false).unwrap(),
-            Cbor::Array(vec![Cbor::Bytes(vec![0x04, 0x01]), Cbor::from(14), Cbor::Bytes(vec![0x01])])
+            encode_bits(
+                &ty,
+                &Json::String("warning critical indeterminate".into()),
+                false
+            )
+            .unwrap(),
+            Cbor::Array(vec![
+                Cbor::Bytes(vec![0x04, 0x01]),
+                Cbor::from(14),
+                Cbor::Bytes(vec![0x01])
+            ])
         );
-        assert_eq!(encode_bits(&ty, &Json::String("indeterminate".into()), false).unwrap(), Cbor::Array(vec![Cbor::from(16), Cbor::Bytes(vec![0x01])]));
-        assert_eq!(encode_bits(&ty, &Json::String("".into()), false).unwrap(), Cbor::Array(vec![]));
+        assert_eq!(
+            encode_bits(&ty, &Json::String("indeterminate".into()), false).unwrap(),
+            Cbor::Array(vec![Cbor::from(16), Cbor::Bytes(vec![0x01])])
+        );
+        assert_eq!(
+            encode_bits(&ty, &Json::String("".into()), false).unwrap(),
+            Cbor::Array(vec![])
+        );
     }
 
     #[test]
     fn bits_dense_encoding_is_a_plain_bytestring() {
         let ty = alarm_state_type();
-        assert_eq!(encode_bits(&ty, &Json::String("critical under-repair".into()), false).unwrap(), Cbor::Bytes(vec![0x06]));
+        assert_eq!(
+            encode_bits(&ty, &Json::String("critical under-repair".into()), false).unwrap(),
+            Cbor::Bytes(vec![0x06])
+        );
     }
 
     #[test]
     fn bits_decode_is_the_exact_inverse() {
         let ty = alarm_state_type();
-        assert_eq!(decode_bits(&ty, &Cbor::Array(vec![Cbor::Bytes(vec![0x04, 0x01]), Cbor::from(14), Cbor::Bytes(vec![0x01])]), false).unwrap(), Json::String("critical warning indeterminate".into()));
-        assert_eq!(decode_bits(&ty, &Cbor::Bytes(vec![0x06]), false).unwrap(), Json::String("under-repair critical".into()));
-        assert_eq!(decode_bits(&ty, &Cbor::Array(vec![]), false).unwrap(), Json::String("".into()));
+        assert_eq!(
+            decode_bits(
+                &ty,
+                &Cbor::Array(vec![
+                    Cbor::Bytes(vec![0x04, 0x01]),
+                    Cbor::from(14),
+                    Cbor::Bytes(vec![0x01])
+                ]),
+                false
+            )
+            .unwrap(),
+            Json::String("critical warning indeterminate".into())
+        );
+        assert_eq!(
+            decode_bits(&ty, &Cbor::Bytes(vec![0x06]), false).unwrap(),
+            Json::String("under-repair critical".into())
+        );
+        assert_eq!(
+            decode_bits(&ty, &Cbor::Array(vec![]), false).unwrap(),
+            Json::String("".into())
+        );
     }
 
     // Ported from yang-enc_spec.rb's decimal64 examples: fraction-digits
@@ -1650,17 +2042,68 @@ mod tests {
     fn decimal64_exponent_is_always_fraction_digits() {
         let mut ty = TypeDef::new(Builtin::Decimal64);
         ty.fraction_digits = Some(2);
-        assert_eq!(encode_decimal64(&ty, &Json::String("2.57".into()), false).unwrap(), Cbor::Tag(4, Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(257)]))));
-        assert_eq!(encode_decimal64(&ty, &Json::String("25.7".into()), false).unwrap(), Cbor::Tag(4, Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(2570)]))));
-        assert_eq!(encode_decimal64(&ty, &Json::String("257".into()), false).unwrap(), Cbor::Tag(4, Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(25700)]))));
+        assert_eq!(
+            encode_decimal64(&ty, &Json::String("2.57".into()), false).unwrap(),
+            Cbor::Tag(
+                4,
+                Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(257)]))
+            )
+        );
+        assert_eq!(
+            encode_decimal64(&ty, &Json::String("25.7".into()), false).unwrap(),
+            Cbor::Tag(
+                4,
+                Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(2570)]))
+            )
+        );
+        assert_eq!(
+            encode_decimal64(&ty, &Json::String("257".into()), false).unwrap(),
+            Cbor::Tag(
+                4,
+                Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(25700)]))
+            )
+        );
     }
 
     #[test]
     fn decimal64_decode_always_shows_a_decimal_point() {
         let ty = TypeDef::new(Builtin::Decimal64);
-        assert_eq!(decode_decimal64(&ty, &Cbor::Tag(4, Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(257)]))), false).unwrap(), Json::String("2.57".into()));
-        assert_eq!(decode_decimal64(&ty, &Cbor::Tag(4, Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(25700)]))), false).unwrap(), Json::String("257.0".into()));
-        assert_eq!(decode_decimal64(&ty, &Cbor::Tag(4, Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(0)]))), false).unwrap(), Json::String("0.0".into()));
+        assert_eq!(
+            decode_decimal64(
+                &ty,
+                &Cbor::Tag(
+                    4,
+                    Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(257)]))
+                ),
+                false
+            )
+            .unwrap(),
+            Json::String("2.57".into())
+        );
+        assert_eq!(
+            decode_decimal64(
+                &ty,
+                &Cbor::Tag(
+                    4,
+                    Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(25700)]))
+                ),
+                false
+            )
+            .unwrap(),
+            Json::String("257.0".into())
+        );
+        assert_eq!(
+            decode_decimal64(
+                &ty,
+                &Cbor::Tag(
+                    4,
+                    Box::new(Cbor::Array(vec![Cbor::from(-2), Cbor::from(0)]))
+                ),
+                false
+            )
+            .unwrap(),
+            Json::String("0.0".into())
+        );
     }
 
     // -- native validation / `--continue` leniency --------------------
@@ -1734,11 +2177,14 @@ mod tests {
                 {"namespace": "data", "identifier": "/test:box/setting", "sid": 1009}
             ]
         }"#;
-        crate::schema::build(&[yang.to_string()], &[sid.to_string()]).expect("validation test schema builds")
+        crate::schema::build(&[yang.to_string()], &[sid.to_string()])
+            .expect("validation test schema builds")
     }
 
     fn box_node(schema: &Schema) -> NodeId {
-        schema.find_child(schema.root, "test:box").expect("test:box exists")
+        schema
+            .find_child(schema.root, "test:box")
+            .expect("test:box exists")
     }
 
     /// A minimally-valid `box` body: just the one mandatory field.
@@ -1755,12 +2201,26 @@ mod tests {
         let mut obj = box_obj();
         obj.insert("level".to_string(), Json::from(300));
 
-        let e = encode_node_value(&schema, box_id, &Json::Object(obj.clone()), ContentFormat::Put, false).unwrap_err();
+        let e = encode_node_value(
+            &schema,
+            box_id,
+            &Json::Object(obj.clone()),
+            ContentFormat::Put,
+            false,
+        )
+        .unwrap_err();
         assert!(e.0.contains("300"), "{}", e.0);
         assert!(e.0.contains("between 0 and 10"), "{}", e.0);
 
         // Continuing: the request still encodes (degraded, but present).
-        assert!(encode_node_value(&schema, box_id, &Json::Object(obj), ContentFormat::Put, true).is_ok());
+        assert!(encode_node_value(
+            &schema,
+            box_id,
+            &Json::Object(obj),
+            ContentFormat::Put,
+            true
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1770,11 +2230,25 @@ mod tests {
         let mut obj = box_obj();
         obj.insert("mode".to_string(), Json::String("ABC".into()));
 
-        let e = encode_node_value(&schema, box_id, &Json::Object(obj.clone()), ContentFormat::Put, false).unwrap_err();
+        let e = encode_node_value(
+            &schema,
+            box_id,
+            &Json::Object(obj.clone()),
+            ContentFormat::Put,
+            false,
+        )
+        .unwrap_err();
         assert!(e.0.contains("ABC"), "{}", e.0);
         assert!(e.0.contains("[a-z]+"), "{}", e.0);
 
-        assert!(encode_node_value(&schema, box_id, &Json::Object(obj), ContentFormat::Put, true).is_ok());
+        assert!(encode_node_value(
+            &schema,
+            box_id,
+            &Json::Object(obj),
+            ContentFormat::Put,
+            true
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1784,7 +2258,14 @@ mod tests {
         let mut obj = box_obj();
         obj.insert("mode".to_string(), Json::String("toolong".into()));
 
-        let e = encode_node_value(&schema, box_id, &Json::Object(obj), ContentFormat::Put, false).unwrap_err();
+        let e = encode_node_value(
+            &schema,
+            box_id,
+            &Json::Object(obj),
+            ContentFormat::Put,
+            false,
+        )
+        .unwrap_err();
         assert!(e.0.contains("7 character"), "{}", e.0);
         assert!(e.0.contains("between 1 and 4"), "{}", e.0);
     }
@@ -1796,14 +2277,31 @@ mod tests {
         let mut obj = box_obj();
         obj.insert("nope".to_string(), Json::from(1));
 
-        let e = encode_node_value(&schema, box_id, &Json::Object(obj.clone()), ContentFormat::Put, false).unwrap_err();
+        let e = encode_node_value(
+            &schema,
+            box_id,
+            &Json::Object(obj.clone()),
+            ContentFormat::Put,
+            false,
+        )
+        .unwrap_err();
         assert!(e.0.contains("\"nope\""), "{}", e.0);
         assert!(e.0.contains("not a valid field"), "{}", e.0);
 
-        let cbor = encode_node_value(&schema, box_id, &Json::Object(obj), ContentFormat::Put, true).unwrap();
+        let cbor = encode_node_value(
+            &schema,
+            box_id,
+            &Json::Object(obj),
+            ContentFormat::Put,
+            true,
+        )
+        .unwrap();
         let decoded = decode_node_value(&schema, box_id, &cbor, ContentFormat::Put).unwrap();
         let decoded_obj = decoded.as_object().unwrap();
-        assert!(!decoded_obj.contains_key("nope"), "unknown field should have been dropped, got {decoded:?}");
+        assert!(
+            !decoded_obj.contains_key("nope"),
+            "unknown field should have been dropped, got {decoded:?}"
+        );
         assert!(decoded_obj.contains_key("level"));
     }
 
@@ -1813,13 +2311,31 @@ mod tests {
         let box_id = box_node(&schema);
         let obj = serde_json::Map::new(); // no "level" at all
 
-        let e = encode_node_value(&schema, box_id, &Json::Object(obj.clone()), ContentFormat::Put, false).unwrap_err();
+        let e = encode_node_value(
+            &schema,
+            box_id,
+            &Json::Object(obj.clone()),
+            ContentFormat::Put,
+            false,
+        )
+        .unwrap_err();
         assert!(e.0.contains("\"level\""), "{}", e.0);
         assert!(e.0.contains("required"), "{}", e.0);
 
-        let cbor = encode_node_value(&schema, box_id, &Json::Object(obj), ContentFormat::Put, true).unwrap();
+        let cbor = encode_node_value(
+            &schema,
+            box_id,
+            &Json::Object(obj),
+            ContentFormat::Put,
+            true,
+        )
+        .unwrap();
         let decoded = decode_node_value(&schema, box_id, &cbor, ContentFormat::Put).unwrap();
-        assert_eq!(decoded, Json::Object(serde_json::Map::new()), "the missing field should simply stay absent, not appear as null or a default");
+        assert_eq!(
+            decoded,
+            Json::Object(serde_json::Map::new()),
+            "the missing field should simply stay absent, not appear as null or a default"
+        );
     }
 
     #[test]
@@ -1831,11 +2347,25 @@ mod tests {
         let mut obj = box_obj();
         obj.insert("item".to_string(), Json::Array(vec![Json::Object(item)]));
 
-        let e = encode_node_value(&schema, box_id, &Json::Object(obj.clone()), ContentFormat::Put, false).unwrap_err();
+        let e = encode_node_value(
+            &schema,
+            box_id,
+            &Json::Object(obj.clone()),
+            ContentFormat::Put,
+            false,
+        )
+        .unwrap_err();
         assert!(e.0.contains("\"id\""), "{}", e.0);
         assert!(e.0.contains("key of this list"), "{}", e.0);
 
-        assert!(encode_node_value(&schema, box_id, &Json::Object(obj), ContentFormat::Put, true).is_ok());
+        assert!(encode_node_value(
+            &schema,
+            box_id,
+            &Json::Object(obj),
+            ContentFormat::Put,
+            true
+        )
+        .is_ok());
     }
 
     #[test]
@@ -1845,15 +2375,32 @@ mod tests {
         let mut obj = box_obj();
         obj.insert("level".to_string(), Json::String("not-a-number".into()));
 
-        let e = encode_node_value(&schema, box_id, &Json::Object(obj.clone()), ContentFormat::Put, false).unwrap_err();
+        let e = encode_node_value(
+            &schema,
+            box_id,
+            &Json::Object(obj.clone()),
+            ContentFormat::Put,
+            false,
+        )
+        .unwrap_err();
         assert!(e.0.contains("expected a whole number"), "{}", e.0);
 
-        let cbor = encode_node_value(&schema, box_id, &Json::Object(obj), ContentFormat::Put, true).unwrap();
+        let cbor = encode_node_value(
+            &schema,
+            box_id,
+            &Json::Object(obj),
+            ContentFormat::Put,
+            true,
+        )
+        .unwrap();
         // Degraded: the raw string made it onto the wire verbatim (delta-
         // SID 1 == level's SID 1002 minus box's own SID 1001), not a
         // properly-typed integer.
         let map = cbor.as_map().expect("still a CBOR map");
-        let (_, level_cbor) = map.iter().find(|(k, _)| cbor_as_i128(k) == Some(1)).expect("level's entry is present");
+        let (_, level_cbor) = map
+            .iter()
+            .find(|(k, _)| cbor_as_i128(k) == Some(1))
+            .expect("level's entry is present");
         assert_eq!(level_cbor, &Cbor::Text("not-a-number".to_string()));
     }
 
@@ -1864,11 +2411,25 @@ mod tests {
         let mut obj = box_obj();
         obj.insert("armed".to_string(), Json::Bool(true)); // wrong shape
 
-        let e = encode_node_value(&schema, box_id, &Json::Object(obj.clone()), ContentFormat::Put, false).unwrap_err();
+        let e = encode_node_value(
+            &schema,
+            box_id,
+            &Json::Object(obj.clone()),
+            ContentFormat::Put,
+            false,
+        )
+        .unwrap_err();
         assert!(e.0.contains("[null]"), "{}", e.0);
 
         obj.insert("armed".to_string(), Json::Array(vec![Json::Null])); // correct shape
-        assert!(encode_node_value(&schema, box_id, &Json::Object(obj), ContentFormat::Put, false).is_ok());
+        assert!(encode_node_value(
+            &schema,
+            box_id,
+            &Json::Object(obj),
+            ContentFormat::Put,
+            false
+        )
+        .is_ok());
     }
 
     // -- structural shape checks (container -> object, list -> array,
@@ -1881,26 +2442,36 @@ mod tests {
         let schema = validation_test_schema();
         let box_id = box_node(&schema);
 
-        let e = encode_node_value(&schema, box_id, &Json::from(5), ContentFormat::Put, false).unwrap_err();
+        let e = encode_node_value(&schema, box_id, &Json::from(5), ContentFormat::Put, false)
+            .unwrap_err();
         assert!(e.0.contains("needs an object"), "{}", e.0);
 
         // Continuing: `box` itself becomes an empty map -- matches
         // Ruby's own `result = {}` fallback, and the *same* shortcut it
         // takes: `encode_body`'s own missing-required-field check is
         // never reached here, since there's no body to check fields of.
-        assert_eq!(encode_node_value(&schema, box_id, &Json::from(5), ContentFormat::Put, true).unwrap(), Cbor::Map(vec![]));
+        assert_eq!(
+            encode_node_value(&schema, box_id, &Json::from(5), ContentFormat::Put, true).unwrap(),
+            Cbor::Map(vec![])
+        );
     }
 
     #[test]
     fn list_shape_mismatch_hard_fails_without_continue_and_is_empty_with_it() {
         let schema = validation_test_schema();
         let box_id = box_node(&schema);
-        let item_id = schema.find_child(box_id, "item").expect("test:box/item exists");
+        let item_id = schema
+            .find_child(box_id, "item")
+            .expect("test:box/item exists");
 
-        let e = encode_node_value(&schema, item_id, &Json::from(5), ContentFormat::Put, false).unwrap_err();
+        let e = encode_node_value(&schema, item_id, &Json::from(5), ContentFormat::Put, false)
+            .unwrap_err();
         assert!(e.0.contains("needs a list"), "{}", e.0);
 
-        assert_eq!(encode_node_value(&schema, item_id, &Json::from(5), ContentFormat::Put, true).unwrap(), Cbor::Array(vec![]));
+        assert_eq!(
+            encode_node_value(&schema, item_id, &Json::from(5), ContentFormat::Put, true).unwrap(),
+            Cbor::Array(vec![])
+        );
     }
 
     #[test]
@@ -1912,10 +2483,16 @@ mod tests {
         // policy (see `encode_node_value`'s doc comment).
         let schema = validation_test_schema();
         let box_id = box_node(&schema);
-        let tag_id = schema.find_child(box_id, "tag").expect("test:box/tag exists");
+        let tag_id = schema
+            .find_child(box_id, "tag")
+            .expect("test:box/tag exists");
 
-        assert!(encode_node_value(&schema, tag_id, &Json::from(5), ContentFormat::Put, false).is_err());
-        assert!(encode_node_value(&schema, tag_id, &Json::from(5), ContentFormat::Put, true).is_err());
+        assert!(
+            encode_node_value(&schema, tag_id, &Json::from(5), ContentFormat::Put, false).is_err()
+        );
+        assert!(
+            encode_node_value(&schema, tag_id, &Json::from(5), ContentFormat::Put, true).is_err()
+        );
     }
 
     #[test]
@@ -1927,20 +2504,45 @@ mod tests {
         let mut obj = box_obj();
         obj.insert("setting".to_string(), Json::String("nope".into()));
 
-        let e = encode_node_value(&schema, box_id, &Json::Object(obj.clone()), ContentFormat::Put, false).unwrap_err();
+        let e = encode_node_value(
+            &schema,
+            box_id,
+            &Json::Object(obj.clone()),
+            ContentFormat::Put,
+            false,
+        )
+        .unwrap_err();
         assert!(e.0.contains("\"nope\""), "{}", e.0);
         assert!(e.0.contains("boolean"), "{}", e.0);
         assert!(e.0.contains("uint8"), "{}", e.0);
         // The old message named an internal TypeId (a bare integer) --
         // never let one leak back in.
-        assert!(!e.0.contains("type 0") && !e.0.contains("type 1"), "should not mention an internal type id: {}", e.0);
+        assert!(
+            !e.0.contains("type 0") && !e.0.contains("type 1"),
+            "should not mention an internal type id: {}",
+            e.0
+        );
 
         // A value that *does* match a member still degrades sensibly
         // under --continue if that member's own constraints reject it
         // (300 doesn't fit uint8 0..10).
         obj.insert("setting".to_string(), Json::from(300));
-        let e2 = encode_node_value(&schema, box_id, &Json::Object(obj.clone()), ContentFormat::Put, false).unwrap_err();
+        let e2 = encode_node_value(
+            &schema,
+            box_id,
+            &Json::Object(obj.clone()),
+            ContentFormat::Put,
+            false,
+        )
+        .unwrap_err();
         assert!(e2.0.contains("between 0 and 10"), "{}", e2.0);
-        assert!(encode_node_value(&schema, box_id, &Json::Object(obj), ContentFormat::Put, true).is_ok());
+        assert!(encode_node_value(
+            &schema,
+            box_id,
+            &Json::Object(obj),
+            ContentFormat::Put,
+            true
+        )
+        .is_ok());
     }
 }

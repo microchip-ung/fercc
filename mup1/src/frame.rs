@@ -245,7 +245,10 @@ impl Decoder {
             }
             decoded.push(b);
         }
-        self.frames.push_back(Frame { type_byte, data: decoded });
+        self.frames.push_back(Frame {
+            type_byte,
+            data: decoded,
+        });
         self.raw.truncate(self.raw_head);
         self.state = State::PostFrame;
     }
@@ -287,7 +290,11 @@ impl Decoder {
             }
             if self.checksum_ok() {
                 self.resolve_success();
-                return InjectStatus { frame_ready: true, checksum_error: false, buffer_full: false };
+                return InjectStatus {
+                    frame_ready: true,
+                    checksum_error: false,
+                    buffer_full: false,
+                };
             }
             self.resolve_raw();
             return self.status(true, false);
@@ -380,7 +387,9 @@ impl Decoder {
         if open_len != self.open_len_at_last_tick {
             self.open_len_at_last_tick = open_len;
             self.time_of_last_progress = now_ms;
-        } else if open_len > 0 && now_ms.saturating_sub(self.time_of_last_progress) >= self.timeout_ms {
+        } else if open_len > 0
+            && now_ms.saturating_sub(self.time_of_last_progress) >= self.timeout_ms
+        {
             self.resolve_raw();
         }
         self.status(false, false)
@@ -395,7 +404,10 @@ impl Decoder {
         if self.raw_head > 0 {
             let data: Vec<u8> = self.raw.drain(0..self.raw_head).collect();
             self.raw_head = 0;
-            return Some(Frame { type_byte: TYPE_RAW, data });
+            return Some(Frame {
+                type_byte: TYPE_RAW,
+                data,
+            });
         }
         None
     }
@@ -412,7 +424,10 @@ mod tests {
         for &b in &wire {
             last = dec.inject(b);
         }
-        assert!(last.frame_ready, "expected a ready frame after full wire bytes");
+        assert!(
+            last.frame_ready,
+            "expected a ready frame after full wire bytes"
+        );
         let f = dec.get().expect("a frame");
         assert!(dec.get().is_none(), "exactly one frame expected");
         f
@@ -448,7 +463,10 @@ mod tests {
     fn escapes_every_special_byte_and_round_trips() {
         let data = [SOF, EOF, ESC, 0x00, 0xFF, 0x41];
         let wire = encode(ChecksumType::Internet, b'Z', &data);
-        assert!(wire.len() > 2 + data.len(), "some escaping must have occurred");
+        assert!(
+            wire.len() > 2 + data.len(),
+            "some escaping must have occurred"
+        );
         let f = roundtrip(ChecksumType::Internet, b'Z', &data);
         assert_eq!(f.data, data);
     }
@@ -548,7 +566,10 @@ mod tests {
         }
         let f = dec.get().unwrap();
         assert_eq!(f.type_byte, b'A');
-        assert!(dec.get().is_none(), "trailer must not surface as raw content");
+        assert!(
+            dec.get().is_none(),
+            "trailer must not surface as raw content"
+        );
     }
 
     #[test]

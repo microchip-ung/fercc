@@ -89,8 +89,10 @@ pub fn load_workspace(repo_root: &Path) -> R<CatalogFiles> {
     let cfg_path = repo_root.join("support/scripts/gen-cc-nodes.yaml");
     let yang_dir = repo_root.join("docs/sw_refs/yang");
 
-    let cfg_text = fs::read_to_string(&cfg_path).map_err(|e| err(format!("reading {}: {e}", cfg_path.display())))?;
-    let cfg: GenCcNodesCfg = serde_yml::from_str(&cfg_text).map_err(|e| err(format!("parsing {}: {e}", cfg_path.display())))?;
+    let cfg_text = fs::read_to_string(&cfg_path)
+        .map_err(|e| err(format!("reading {}: {e}", cfg_path.display())))?;
+    let cfg: GenCcNodesCfg = serde_yml::from_str(&cfg_text)
+        .map_err(|e| err(format!("parsing {}: {e}", cfg_path.display())))?;
 
     let mut yang = Vec::with_capacity(cfg.sid_files.len());
     let mut sid = Vec::with_capacity(cfg.sid_files.len());
@@ -98,8 +100,14 @@ pub fn load_workspace(repo_root: &Path) -> R<CatalogFiles> {
         let sid_path = yang_dir.join(entry);
         let yang_name = format!("{}.yang", entry.split('@').next().unwrap_or(entry));
         let yang_path = yang_dir.join(&yang_name);
-        sid.push(fs::read_to_string(&sid_path).map_err(|e| err(format!("reading {}: {e}", sid_path.display())))?);
-        yang.push(fs::read_to_string(&yang_path).map_err(|e| err(format!("reading {}: {e}", yang_path.display())))?);
+        sid.push(
+            fs::read_to_string(&sid_path)
+                .map_err(|e| err(format!("reading {}: {e}", sid_path.display())))?,
+        );
+        yang.push(
+            fs::read_to_string(&yang_path)
+                .map_err(|e| err(format!("reading {}: {e}", yang_path.display())))?,
+        );
     }
     Ok(CatalogFiles { yang, sid })
 }
@@ -127,10 +135,18 @@ pub fn load_from_dir(dir: &Path) -> R<CatalogFiles> {
 /// `curl` default (see the module doc comment for the contract it must
 /// satisfy). Only the download is skipped on a repeat run (`dest_dir`
 /// already populated) -- the schema itself is always rebuilt fresh.
-pub fn download_and_extract(checksum: &str, dest_dir: &Path, fetcher: Option<&str>, verbose: bool) -> R<()> {
+pub fn download_and_extract(
+    checksum: &str,
+    dest_dir: &Path,
+    fetcher: Option<&str>,
+    verbose: bool,
+) -> R<()> {
     if dest_dir.join(".complete").is_file() {
         if verbose {
-            eprintln!("catalog for {checksum} already downloaded at {}", dest_dir.display());
+            eprintln!(
+                "catalog for {checksum} already downloaded at {}",
+                dest_dir.display()
+            );
         }
         return Ok(());
     }
@@ -149,7 +165,9 @@ pub fn download_and_extract(checksum: &str, dest_dir: &Path, fetcher: Option<&st
 fn extract_tarball(bytes: &[u8], dest_dir: &Path) -> R<()> {
     let gz = flate2::read::GzDecoder::new(bytes);
     let mut archive = tar::Archive::new(gz);
-    archive.unpack(dest_dir).map_err(|e| err(format!("extracting the catalog tarball: {e}")))
+    archive
+        .unpack(dest_dir)
+        .map_err(|e| err(format!("extracting the catalog tarball: {e}")))
 }
 
 /// The built-in default: try each known mirror in turn with a plain
@@ -188,17 +206,26 @@ fn run_external_fetcher(command: &str, checksum: &str, verbose: bool) -> R<Vec<u
 }
 
 fn run_command_capturing_stdout(program: &str, args: &[&str]) -> R<Vec<u8>> {
-    let output = std::process::Command::new(program).args(args).output().map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            err(format!("the '{program}' command isn't available on this system"))
-        } else {
-            err(format!("couldn't run '{program}': {e}"))
-        }
-    })?;
+    let output = std::process::Command::new(program)
+        .args(args)
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                err(format!(
+                    "the '{program}' command isn't available on this system"
+                ))
+            } else {
+                err(format!("couldn't run '{program}': {e}"))
+            }
+        })?;
     if output.status.success() {
         Ok(output.stdout)
     } else {
-        Err(err(format!("'{program}' exited with {} -- {}", output.status, String::from_utf8_lossy(&output.stderr).trim())))
+        Err(err(format!(
+            "'{program}' exited with {} -- {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        )))
     }
 }
 
@@ -208,12 +235,15 @@ mod tests {
 
     #[cfg(unix)]
     fn test_data_dir() -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("test-data")
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("test-data")
     }
 
     #[cfg(unix)]
     fn unique_path(name: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!("fercc-catalog-test-{}-{name}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("fercc-catalog-test-{}-{name}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         let _ = fs::remove_file(&path);
         path
@@ -221,7 +251,8 @@ mod tests {
 
     #[test]
     fn nonexistent_fetcher_command_gives_a_clear_error() {
-        let err = run_command_capturing_stdout("this-program-does-not-exist-anywhere", &[]).unwrap_err();
+        let err =
+            run_command_capturing_stdout("this-program-does-not-exist-anywhere", &[]).unwrap_err();
         assert!(err.to_string().contains("isn't available"), "{err}");
     }
 
@@ -235,7 +266,8 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_failing_command_reports_its_stderr() {
-        let err = run_command_capturing_stdout("sh", &["-c", "echo it broke >&2; exit 3"]).unwrap_err();
+        let err =
+            run_command_capturing_stdout("sh", &["-c", "echo it broke >&2; exit 3"]).unwrap_err();
         assert!(err.to_string().contains("it broke"), "{err}");
     }
 
@@ -254,7 +286,8 @@ mod tests {
             // exec the script; without it we get ETXTBSY on Linux in CI.
             use std::io::Write;
             let mut f = fs::File::create(&script_path).unwrap();
-            f.write_all(format!("#!/bin/sh\nexec cat '{}'\n", tarball.display()).as_bytes()).unwrap();
+            f.write_all(format!("#!/bin/sh\nexec cat '{}'\n", tarball.display()).as_bytes())
+                .unwrap();
             f.sync_all().unwrap();
         }
         let mut perms = fs::metadata(&script_path).unwrap().permissions();
@@ -262,7 +295,13 @@ mod tests {
         fs::set_permissions(&script_path, perms).unwrap();
 
         let dest_dir = unique_path("dest");
-        download_and_extract("ignored-checksum", &dest_dir, Some(script_path.to_str().unwrap()), false).unwrap();
+        download_and_extract(
+            "ignored-checksum",
+            &dest_dir,
+            Some(script_path.to_str().unwrap()),
+            false,
+        )
+        .unwrap();
 
         let files = load_from_dir(&dest_dir).unwrap();
         assert!(!files.yang.is_empty());
@@ -272,7 +311,13 @@ mod tests {
         // A repeat call must be short-circuited by the `.complete`
         // sentinel before ever invoking the fetcher again -- point at
         // a command that would fail loudly if it were actually run.
-        download_and_extract("ignored-checksum", &dest_dir, Some("this-program-does-not-exist-anywhere"), false).unwrap();
+        download_and_extract(
+            "ignored-checksum",
+            &dest_dir,
+            Some("this-program-does-not-exist-anywhere"),
+            false,
+        )
+        .unwrap();
 
         let _ = fs::remove_dir_all(&dest_dir);
         let _ = fs::remove_file(&script_path);

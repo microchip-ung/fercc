@@ -90,7 +90,11 @@ impl TcpTransport {
 impl Read for TcpTransport {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         match self.stream.read(buf) {
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => Ok(0),
+            Err(e)
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
+            {
+                Ok(0)
+            }
             other => other,
         }
     }
@@ -123,11 +127,17 @@ pub fn open_device(device: &str, baud_rate: u32) -> io::Result<Box<dyn Transport
 }
 
 fn split_host_port(s: &str) -> io::Result<(&str, u16)> {
-    let (host, port_str) = s
-        .rsplit_once(':')
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, format!("{s:?} isn't in the form host:port (e.g. localhost:10001)")))?;
-    let port: u16 = port_str
-        .parse()
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, format!("{s:?} doesn't have a valid port number after the ':' (e.g. localhost:10001)")))?;
+    let (host, port_str) = s.rsplit_once(':').ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{s:?} isn't in the form host:port (e.g. localhost:10001)"),
+        )
+    })?;
+    let port: u16 = port_str.parse().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{s:?} doesn't have a valid port number after the ':' (e.g. localhost:10001)"),
+        )
+    })?;
     Ok((host, port))
 }

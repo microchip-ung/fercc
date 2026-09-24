@@ -29,6 +29,17 @@ The binary is then at `target/release/fercc`. Alternatively,
 mentioned above; everything else has no runtime dependencies beyond the
 operating system itself.
 
+## Developing
+
+After cloning, point git at this repo's committed hooks so `cargo fmt`
+formatting is checked before each commit:
+
+```
+git config core.hooksPath .githooks
+```
+
+This is a one-time, per-clone step (git does not do this automatically).
+
 ## Usage
 
 ```

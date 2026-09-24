@@ -43,11 +43,21 @@ use serde_json::{Map, Value as Json};
 use crate::codec::all_identity_bases;
 use crate::schema::{Builtin, NodeId, Schema, TypeId};
 
-const DATA_NODES: &[&str] = &["container", "leaf", "leaf-list", "list", "anydata", "anyxml"];
+const DATA_NODES: &[&str] = &[
+    "container",
+    "leaf",
+    "leaf-list",
+    "list",
+    "anydata",
+    "anyxml",
+];
 
 fn dedup_preserve_order(items: Vec<String>) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
-    items.into_iter().filter(|s| seen.insert(s.clone())).collect()
+    items
+        .into_iter()
+        .filter(|s| seen.insert(s.clone()))
+        .collect()
 }
 
 fn json_strings(items: impl IntoIterator<Item = String>) -> Json {
@@ -77,7 +87,11 @@ fn num(v: i128) -> Json {
     } else if let Ok(u) = u64::try_from(v) {
         Json::Number(u.into())
     } else {
-        Json::Number(if v > 0 { i64::MAX.into() } else { i64::MIN.into() })
+        Json::Number(if v > 0 {
+            i64::MAX.into()
+        } else {
+            i64::MIN.into()
+        })
     }
 }
 
@@ -95,10 +109,16 @@ pub fn to_json_schema(schema: &Schema, node: NodeId, content_format: &str) -> Js
             continue;
         }
         if DATA_NODES.contains(&child.kw.as_str()) {
-            properties.insert(child.name.clone(), to_json_schema(schema, child_id, content_format));
+            properties.insert(
+                child.name.clone(),
+                to_json_schema(schema, child_id, content_format),
+            );
         }
         if child.kw == "input" || child.kw == "output" {
-            properties.insert(child.kw.clone(), to_json_schema(schema, child_id, content_format));
+            properties.insert(
+                child.kw.clone(),
+                to_json_schema(schema, child_id, content_format),
+            );
         }
         if child.mandatory {
             required.push(child.name.clone());
@@ -109,7 +129,10 @@ pub fn to_json_schema(schema: &Schema, node: NodeId, content_format: &str) -> Js
         "module" => {
             let mut m = Map::new();
             m.insert("title".into(), Json::String(n.name.clone()));
-            m.insert("$schema".into(), Json::String("http://json-schema.org/draft-07/schema#".into()));
+            m.insert(
+                "$schema".into(),
+                Json::String("http://json-schema.org/draft-07/schema#".into()),
+            );
             m.insert("type".into(), Json::String("object".into()));
             m.insert("additionalProperties".into(), Json::Bool(false));
             m.insert("properties".into(), Json::Object(properties));
@@ -135,7 +158,10 @@ pub fn to_json_schema(schema: &Schema, node: NodeId, content_format: &str) -> Js
         "leaf-list" => {
             let mut m = Map::new();
             m.insert("type".into(), Json::String("array".into()));
-            m.insert("items".into(), type2schema(schema, n.type_id.expect("leaf-list without a type")));
+            m.insert(
+                "items".into(),
+                type2schema(schema, n.type_id.expect("leaf-list without a type")),
+            );
             if n.config {
                 m.insert("uniqueItems".into(), Json::Bool(true));
             }
@@ -165,7 +191,10 @@ pub fn to_json_schema(schema: &Schema, node: NodeId, content_format: &str) -> Js
                 bare.insert("required".into(), json_strings(keys_and_required));
                 bare.insert("properties".into(), Json::Object(properties));
                 let mut one_of = Map::new();
-                one_of.insert("oneOf".into(), Json::Array(vec![Json::Object(list_schema), Json::Object(bare)]));
+                one_of.insert(
+                    "oneOf".into(),
+                    Json::Array(vec![Json::Object(list_schema), Json::Object(bare)]),
+                );
                 Json::Object(one_of)
             } else {
                 Json::Object(list_schema)
@@ -191,7 +220,13 @@ pub fn to_json_schema(schema: &Schema, node: NodeId, content_format: &str) -> Js
                 // (yang-enc.rb:1095-1096) -- an inconsistency in the
                 // reference, replicated rather than "fixed", per this
                 // port's own fidelity goal.
-                let required: Vec<String> = n.children.iter().map(|&c| schema.node(c)).filter(|c| c.mandatory).map(|c| c.name.clone()).collect();
+                let required: Vec<String> = n
+                    .children
+                    .iter()
+                    .map(|&c| schema.node(c))
+                    .filter(|c| c.mandatory)
+                    .map(|c| c.name.clone())
+                    .collect();
                 if !required.is_empty() {
                     m.insert("required".into(), json_strings(required));
                 }
@@ -200,9 +235,21 @@ pub fn to_json_schema(schema: &Schema, node: NodeId, content_format: &str) -> Js
         }
 
         "action" | "rpc" => {
-            let input_node = n.children.iter().copied().find(|&c| schema.node(c).kw == "input").expect("action/rpc always has a synthesized input node");
-            let output_node = n.children.iter().copied().find(|&c| schema.node(c).kw == "output").expect("action/rpc always has a synthesized output node");
-            if schema.node(input_node).children.is_empty() && schema.node(output_node).children.is_empty() {
+            let input_node = n
+                .children
+                .iter()
+                .copied()
+                .find(|&c| schema.node(c).kw == "input")
+                .expect("action/rpc always has a synthesized input node");
+            let output_node = n
+                .children
+                .iter()
+                .copied()
+                .find(|&c| schema.node(c).kw == "output")
+                .expect("action/rpc always has a synthesized output node");
+            if schema.node(input_node).children.is_empty()
+                && schema.node(output_node).children.is_empty()
+            {
                 let mut m = Map::new();
                 m.insert("type".into(), Json::String("null".into()));
                 Json::Object(m)
@@ -214,7 +261,10 @@ pub fn to_json_schema(schema: &Schema, node: NodeId, content_format: &str) -> Js
                 let mut null = Map::new();
                 null.insert("type".into(), Json::String("null".into()));
                 let mut one_of = Map::new();
-                one_of.insert("oneOf".into(), Json::Array(vec![Json::Object(null), Json::Object(obj)]));
+                one_of.insert(
+                    "oneOf".into(),
+                    Json::Array(vec![Json::Object(null), Json::Object(obj)]),
+                );
                 Json::Object(one_of)
             }
         }
@@ -239,7 +289,12 @@ pub fn to_json_schema(schema: &Schema, node: NodeId, content_format: &str) -> Js
 fn type2schema(schema: &Schema, type_id: TypeId) -> Json {
     let t = schema.ty(type_id);
     match t.builtin {
-        Builtin::Int8 | Builtin::Int16 | Builtin::Int32 | Builtin::Uint8 | Builtin::Uint16 | Builtin::Uint32 => {
+        Builtin::Int8
+        | Builtin::Int16
+        | Builtin::Int32
+        | Builtin::Uint8
+        | Builtin::Uint16
+        | Builtin::Uint32 => {
             let mut m = Map::new();
             m.insert("type".into(), Json::String("integer".into()));
             m.insert(
@@ -271,7 +326,10 @@ fn type2schema(schema: &Schema, type_id: TypeId) -> Json {
             let fd = t.fraction_digits.unwrap_or(0);
             let mut m = Map::new();
             m.insert("type".into(), Json::String("string".into()));
-            m.insert("pattern".into(), Json::String(format!("^(\\+|-)?\\d*(\\.\\d{{0,{fd}}})?$")));
+            m.insert(
+                "pattern".into(),
+                Json::String(format!("^(\\+|-)?\\d*(\\.\\d{{0,{fd}}})?$")),
+            );
             Json::Object(m)
         }
 
@@ -283,13 +341,24 @@ fn type2schema(schema: &Schema, type_id: TypeId) -> Json {
 
         Builtin::Union => {
             let mut m = Map::new();
-            m.insert("anyOf".into(), Json::Array(t.union_members.iter().map(|&member| type2schema(schema, member)).collect()));
+            m.insert(
+                "anyOf".into(),
+                Json::Array(
+                    t.union_members
+                        .iter()
+                        .map(|&member| type2schema(schema, member))
+                        .collect(),
+                ),
+            );
             Json::Object(m)
         }
 
         Builtin::Enumeration => {
             let mut m = Map::new();
-            m.insert("enum".into(), json_strings(t.enums.iter().map(|e| e.name.clone())));
+            m.insert(
+                "enum".into(),
+                json_strings(t.enums.iter().map(|e| e.name.clone())),
+            );
             Json::Object(m)
         }
 
@@ -330,16 +399,29 @@ fn type2schema(schema: &Schema, type_id: TypeId) -> Json {
 
         // See RFC 7951 section 6.5.
         Builtin::Bits => {
-            let words = format!("({})", t.bits.iter().map(|b| b.name.as_str()).collect::<Vec<_>>().join("|"));
+            let words = format!(
+                "({})",
+                t.bits
+                    .iter()
+                    .map(|b| b.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join("|")
+            );
             let mut m = Map::new();
             m.insert("type".into(), Json::String("string".into()));
-            m.insert("pattern".into(), Json::String(format!("^{words}?(\\s{words})*$")));
+            m.insert(
+                "pattern".into(),
+                Json::String(format!("^{words}?(\\s{words})*$")),
+            );
             Json::Object(m)
         }
 
         Builtin::Leafref => {
             let target = t.leafref_target.expect("leafref with an unresolved target");
-            let target_type = schema.node(target).type_id.expect("leafref target without a type");
+            let target_type = schema
+                .node(target)
+                .type_id
+                .expect("leafref target without a type");
             type2schema(schema, target_type)
         }
 

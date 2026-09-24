@@ -37,7 +37,9 @@ use yang::json_schema::to_json_schema;
 use yang::schema::Schema;
 
 fn test_data_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("test-data")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("test-data")
 }
 
 fn schema() -> Schema {
@@ -80,12 +82,18 @@ fn diff(path: &str, ruby: &Json, rust: &Json, out: &mut Vec<Diff>) {
         (Json::Object(a), Json::Object(b)) => {
             for k in a.keys() {
                 if !b.contains_key(k) {
-                    out.push(Diff { path: format!("{path}/{k}"), detail: "missing in rust".to_string() });
+                    out.push(Diff {
+                        path: format!("{path}/{k}"),
+                        detail: "missing in rust".to_string(),
+                    });
                 }
             }
             for k in b.keys() {
                 if !a.contains_key(k) {
-                    out.push(Diff { path: format!("{path}/{k}"), detail: "extra in rust".to_string() });
+                    out.push(Diff {
+                        path: format!("{path}/{k}"),
+                        detail: "extra in rust".to_string(),
+                    });
                 }
             }
             for (k, av) in a {
@@ -110,7 +118,10 @@ fn diff(path: &str, ruby: &Json, rust: &Json, out: &mut Vec<Diff>) {
                     });
                 }
             } else if a.len() != b.len() {
-                out.push(Diff { path: path.to_string(), detail: format!("array length {} vs {}", a.len(), b.len()) });
+                out.push(Diff {
+                    path: path.to_string(),
+                    detail: format!("array length {} vs {}", a.len(), b.len()),
+                });
             } else {
                 for (i, (av, bv)) in a.iter().zip(b).enumerate() {
                     diff(&format!("{path}/{i}"), av, bv, out);
@@ -118,7 +129,10 @@ fn diff(path: &str, ruby: &Json, rust: &Json, out: &mut Vec<Diff>) {
             }
         }
         (a, b) if a != b => {
-            out.push(Diff { path: path.to_string(), detail: format!("{a} != {b}") });
+            out.push(Diff {
+                path: path.to_string(),
+                detail: format!("{a} != {b}"),
+            });
         }
         _ => {}
     }
@@ -142,18 +156,27 @@ fn matches_real_yang_enc_schema_output_modulo_documented_gaps() {
     let schema = schema();
     let rust_schema = to_json_schema(&schema, schema.root, "yang");
 
-    let reference_text = fs::read_to_string(test_data_dir().join("yang-enc-schema-reference.json")).expect("read captured yang-enc schema reference");
-    let ruby_schema: Json = serde_json::from_str(&reference_text).expect("parse captured yang-enc schema reference");
+    let reference_text = fs::read_to_string(test_data_dir().join("yang-enc-schema-reference.json"))
+        .expect("read captured yang-enc schema reference");
+    let ruby_schema: Json =
+        serde_json::from_str(&reference_text).expect("parse captured yang-enc schema reference");
 
     let mut diffs = Vec::new();
     diff("", &ruby_schema, &rust_schema, &mut diffs);
 
-    let unexpected: Vec<&Diff> = diffs.iter().filter(|d| !ALLOWED_GAPS.contains(&d.path.as_str())).collect();
+    let unexpected: Vec<&Diff> = diffs
+        .iter()
+        .filter(|d| !ALLOWED_GAPS.contains(&d.path.as_str()))
+        .collect();
     assert!(
         unexpected.is_empty(),
         "{} unexpected difference(s) from the real yang-enc schema output:\n{}",
         unexpected.len(),
-        unexpected.iter().map(|d| format!("  {}: {}", d.path, d.detail)).collect::<Vec<_>>().join("\n")
+        unexpected
+            .iter()
+            .map(|d| format!("  {}: {}", d.path, d.detail))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 
     // The allow-list is re-checked every run too: a gap that's since

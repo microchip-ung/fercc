@@ -39,7 +39,10 @@ mod tests {
 
     fn hex(s: &str) -> Vec<u8> {
         assert_eq!(s.len() % 2, 0);
-        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     /// Decode the whole buffer as exactly one item, asserting nothing is
@@ -117,7 +120,10 @@ mod tests {
     #[test]
     fn arrays_and_maps() {
         roundtrip("80", Value::Array(vec![]));
-        roundtrip("83010203", Value::Array(vec![Value::from(1u8), Value::from(2u8), Value::from(3u8)]));
+        roundtrip(
+            "83010203",
+            Value::Array(vec![Value::from(1u8), Value::from(2u8), Value::from(3u8)]),
+        );
         roundtrip(
             "8301820203820405",
             Value::Array(vec![
@@ -127,12 +133,21 @@ mod tests {
             ]),
         );
         roundtrip("a0", Value::Map(vec![]));
-        roundtrip("a201020304", Value::Map(vec![(Value::from(1u8), Value::from(2u8)), (Value::from(3u8), Value::from(4u8))]));
+        roundtrip(
+            "a201020304",
+            Value::Map(vec![
+                (Value::from(1u8), Value::from(2u8)),
+                (Value::from(3u8), Value::from(4u8)),
+            ]),
+        );
         roundtrip(
             "a26161016162820203",
             Value::Map(vec![
                 (Value::Text("a".to_string()), Value::from(1u8)),
-                (Value::Text("b".to_string()), Value::Array(vec![Value::from(2u8), Value::from(3u8)])),
+                (
+                    Value::Text("b".to_string()),
+                    Value::Array(vec![Value::from(2u8), Value::from(3u8)]),
+                ),
             ]),
         );
     }
@@ -141,8 +156,14 @@ mod tests {
 
     #[test]
     fn tags() {
-        roundtrip("c11a514b67b0", Value::Tag(1, Box::new(Value::from(1_363_896_240u32))));
-        assert_eq!(decode_one(&hex("c074323031332d30332d32315432303a30343a30305a")), Value::Tag(0, Box::new(Value::Text("2013-03-21T20:04:00Z".to_string()))));
+        roundtrip(
+            "c11a514b67b0",
+            Value::Tag(1, Box::new(Value::from(1_363_896_240u32))),
+        );
+        assert_eq!(
+            decode_one(&hex("c074323031332d30332d32315432303a30343a30305a")),
+            Value::Tag(0, Box::new(Value::Text("2013-03-21T20:04:00Z".to_string())))
+        );
     }
 
     // --- booleans, null, undefined ---
@@ -175,12 +196,18 @@ mod tests {
 
     #[test]
     fn indefinite_length_byte_string() {
-        assert_eq!(decode_one(&hex("5f42010243030405ff")), Value::Bytes(vec![1, 2, 3, 4, 5]));
+        assert_eq!(
+            decode_one(&hex("5f42010243030405ff")),
+            Value::Bytes(vec![1, 2, 3, 4, 5])
+        );
     }
 
     #[test]
     fn indefinite_length_text_string() {
-        assert_eq!(decode_one(&hex("7f657374726561646d696e67ff")), Value::Text("streaming".to_string()));
+        assert_eq!(
+            decode_one(&hex("7f657374726561646d696e67ff")),
+            Value::Text("streaming".to_string())
+        );
     }
 
     #[test]
@@ -207,7 +234,10 @@ mod tests {
             decode_one(&hex("bf61610161629f0203ffff")),
             Value::Map(vec![
                 (Value::Text("a".to_string()), Value::from(1u8)),
-                (Value::Text("b".to_string()), Value::Array(vec![Value::from(2u8), Value::from(3u8)])),
+                (
+                    Value::Text("b".to_string()),
+                    Value::Array(vec![Value::from(2u8), Value::from(3u8)])
+                ),
             ])
         );
     }
@@ -287,7 +317,10 @@ mod tests {
         assert_eq!(Value::Integer(5).as_text(), None);
         assert_eq!(Value::Bytes(vec![1, 2]).as_bytes(), Some(&[1u8, 2u8][..]));
         assert_eq!(Value::Bool(true).as_bool(), Some(true));
-        assert_eq!(Value::Array(vec![Value::from(1u8)]).as_array(), Some(&[Value::from(1u8)][..]));
+        assert_eq!(
+            Value::Array(vec![Value::from(1u8)]).as_array(),
+            Some(&[Value::from(1u8)][..])
+        );
         assert_eq!(
             Value::Map(vec![(Value::from(1u8), Value::from(2u8))]).as_map(),
             Some(&[(Value::from(1u8), Value::from(2u8))][..])

@@ -34,7 +34,22 @@ fn main() {
         }
     }
     println!("{}/{} parsed successfully", total - failed, total);
-    for kw in ["container", "leaf", "list", "leaf-list", "choice", "case", "typedef", "grouping", "uses", "augment", "identity", "rpc", "action", "notification"] {
+    for kw in [
+        "container",
+        "leaf",
+        "list",
+        "leaf-list",
+        "choice",
+        "case",
+        "typedef",
+        "grouping",
+        "uses",
+        "augment",
+        "identity",
+        "rpc",
+        "action",
+        "notification",
+    ] {
         println!("{:>14}: {}", kw, counts.get(kw).unwrap_or(&0));
     }
     if failed > 0 {

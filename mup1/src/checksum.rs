@@ -121,7 +121,11 @@ const fn build_crc32_table() -> [u32; 256] {
         let mut c = i as u32;
         let mut j = 0;
         while j < 8 {
-            c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
             j += 1;
         }
         table[i] = c;
@@ -166,7 +170,10 @@ fn base128_encode(x: u32) -> [u8; 5] {
 /// (the C source's decode table is a 256-entry sparse array; deriving it
 /// avoids a second chance to mistranscribe one of the 128 mappings).
 fn base128_decode_digit(byte: u8) -> Option<u8> {
-    BASE128_ENCODE.iter().position(|&b| b == byte).map(|i| i as u8)
+    BASE128_ENCODE
+        .iter()
+        .position(|&b| b == byte)
+        .map(|i| i as u8)
 }
 
 /// Decode a 5-byte base-128 checksum back into the 32-bit CRC it encodes.

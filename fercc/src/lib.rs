@@ -51,7 +51,9 @@ pub fn run() -> Result<(), String> {
         .clone()
         .or_else(|| topology::device_from(&topology))
         .ok_or("No device given -- pass -d <device> (e.g. -d /dev/ttyACM0 or -d termhub://host:port), or reserve an Easytest topology")?;
-    let method = opts.method.clone().ok_or("No method given -- pass -m <method> (one of: fetch, ipatch, get, put, post, delete)")?;
+    let method = opts.method.clone().ok_or(
+        "No method given -- pass -m <method> (one of: fetch, ipatch, get, put, post, delete)",
+    )?;
 
     let checksum_type = match opts.checksum_type.as_str() {
         "crc32" => ChecksumType::Crc32,
@@ -63,7 +65,8 @@ pub fn run() -> Result<(), String> {
         eprintln!("device: {device}");
     }
 
-    let transport = mup1::open_device(&device, opts.baudrate).map_err(|e| format!("opening device {device}: {e}"))?;
+    let transport = mup1::open_device(&device, opts.baudrate)
+        .map_err(|e| format!("opening device {device}: {e}"))?;
     let mup1_client = Mup1Client::new(transport, checksum_type);
     let mut coap = CoapClient::new(mup1_client);
 
@@ -96,10 +99,22 @@ pub fn run() -> Result<(), String> {
         eprintln!("URL: {url}");
     }
 
-    let output_data = coap_method_run(&mut coap, &schema, input_data.as_ref(), &url, &method, opts.continue_on_error, opts.verbose)?;
+    let output_data = coap_method_run(
+        &mut coap,
+        &schema,
+        input_data.as_ref(),
+        &url,
+        &method,
+        opts.continue_on_error,
+        opts.verbose,
+    )?;
 
     if let Some(output) = output_data {
-        io::write_output(&output, opts.output.as_deref(), opts.output_format.as_deref())?;
+        io::write_output(
+            &output,
+            opts.output.as_deref(),
+            opts.output_format.as_deref(),
+        )?;
     }
     io::flush_stdout();
     Ok(())
@@ -119,7 +134,11 @@ pub fn load_workspace_schema(verbose: bool) -> Result<Schema, String> {
     yang::schema::build(&files.yang, &files.sid).map_err(|e| e.to_string())
 }
 
-fn load_downloaded_schema(coap: &mut CoapClient, catalog_fetcher: Option<&str>, verbose: bool) -> Result<Schema, String> {
+fn load_downloaded_schema(
+    coap: &mut CoapClient,
+    catalog_fetcher: Option<&str>,
+    verbose: bool,
+) -> Result<Schema, String> {
     let checksum = fetch_yang_lib_checksum_from_dut(coap, verbose)?;
     if verbose {
         eprintln!("YANG Lib checksum in DUT: {checksum}");
@@ -135,7 +154,8 @@ fn load_downloaded_schema(coap: &mut CoapClient, catalog_fetcher: Option<&str>, 
     // subdirectory must not collide with that name.
     let catalog_dir = cache_dir.join("catalog");
     std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
-    yang::catalog::download_and_extract(&checksum, &catalog_dir, catalog_fetcher, verbose).map_err(|e| e.to_string())?;
+    yang::catalog::download_and_extract(&checksum, &catalog_dir, catalog_fetcher, verbose)
+        .map_err(|e| e.to_string())?;
     let files = yang::catalog::load_from_dir(&catalog_dir).map_err(|e| e.to_string())?;
     yang::schema::build(&files.yang, &files.sid).map_err(|e| e.to_string())
 }
@@ -174,7 +194,10 @@ pub fn partition_catalog_files(files: &[String]) -> (Vec<String>, Vec<String>, V
 /// (yang-schema.rb:27-30).
 pub fn build_explicit_schema(yangs: &[String], sids: &[String]) -> Result<Schema, String> {
     let read_all = |paths: &[String]| -> Result<Vec<String>, String> {
-        paths.iter().map(|p| std::fs::read_to_string(p).map_err(|e| format!("reading {p}: {e}"))).collect()
+        paths
+            .iter()
+            .map(|p| std::fs::read_to_string(p).map_err(|e| format!("reading {p}: {e}")))
+            .collect()
     };
     let yang_sources = read_all(yangs)?;
     let sid_sources = read_all(sids)?;
@@ -186,7 +209,9 @@ fn read_data_file_or_stdin_text(data_file: Option<&str>) -> Result<String, Strin
         Some(path) => std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}")),
         None => {
             let mut text = String::new();
-            std::io::stdin().read_to_string(&mut text).map_err(|e| format!("reading stdin: {e}"))?;
+            std::io::stdin()
+                .read_to_string(&mut text)
+                .map_err(|e| format!("reading stdin: {e}"))?;
             Ok(text)
         }
     }
@@ -197,7 +222,9 @@ fn read_data_file_or_stdin_bytes(data_file: Option<&str>) -> Result<Vec<u8>, Str
         Some(path) => std::fs::read(path).map_err(|e| format!("reading {path}: {e}")),
         None => {
             let mut bytes = Vec::new();
-            std::io::stdin().read_to_end(&mut bytes).map_err(|e| format!("reading stdin: {e}"))?;
+            std::io::stdin()
+                .read_to_end(&mut bytes)
+                .map_err(|e| format!("reading stdin: {e}"))?;
             Ok(bytes)
         }
     }
@@ -246,45 +273,79 @@ pub enum ConvOutput {
 /// STDIN/STDOUT I/O -- mirrors `main`'s `'conv'` dispatch (yang-enc.rb:
 /// 145-168). Direct, subprocess-free unit testing lives in
 /// `fercc/tests/conv_validation.rs`.
-pub fn convert(schema: &Schema, input_format: &str, output_format: &str, cf: ContentFormat, continue_on_error: bool, input: ConvInput) -> Result<ConvOutput, String> {
-    let is_sequence = matches!(cf, ContentFormat::Fetch | ContentFormat::Ipatch | ContentFormat::Post);
+pub fn convert(
+    schema: &Schema,
+    input_format: &str,
+    output_format: &str,
+    cf: ContentFormat,
+    continue_on_error: bool,
+    input: ConvInput,
+) -> Result<ConvOutput, String> {
+    let is_sequence = matches!(
+        cf,
+        ContentFormat::Fetch | ContentFormat::Ipatch | ContentFormat::Post
+    );
     let text = || match input {
         ConvInput::Text(t) => t,
-        ConvInput::Bytes(_) => panic!("convert: {input_format:?} input needs ConvInput::Text, got Bytes"),
+        ConvInput::Bytes(_) => {
+            panic!("convert: {input_format:?} input needs ConvInput::Text, got Bytes")
+        }
     };
     let bytes = || match input {
         ConvInput::Bytes(b) => b,
-        ConvInput::Text(_) => panic!("convert: {input_format:?} input needs ConvInput::Bytes, got Text"),
+        ConvInput::Text(_) => {
+            panic!("convert: {input_format:?} input needs ConvInput::Bytes, got Text")
+        }
     };
 
     match (input_format, output_format) {
         ("json", "cbor") | ("yaml", "cbor") => {
-            let format = if input_format == "json" { io::Format::Json } else { io::Format::Yaml };
+            let format = if input_format == "json" {
+                io::Format::Json
+            } else {
+                io::Format::Yaml
+            };
             let value = io::parse(text(), format)?;
             let cbor_bytes = if is_sequence {
                 let items = value.as_array().ok_or("a fetch/ipatch/post payload must be a YAML/JSON list at the top level, not a single value")?;
-                codec::json_seq_to_cbor(schema, items, cf, continue_on_error).map_err(|e| e.to_string())?
+                codec::json_seq_to_cbor(schema, items, cf, continue_on_error)
+                    .map_err(|e| e.to_string())?
             } else {
-                codec::json_to_cbor(schema, &value, cf, continue_on_error).map_err(|e| e.to_string())?
+                codec::json_to_cbor(schema, &value, cf, continue_on_error)
+                    .map_err(|e| e.to_string())?
             };
             Ok(ConvOutput::Bytes(cbor_bytes))
         }
         ("cbor", "json") | ("cbor", "yaml") => {
             let decoded = if is_sequence {
-                Json::Array(codec::cbor_seq_to_json(schema, bytes(), cf).map_err(|e| e.to_string())?)
+                Json::Array(
+                    codec::cbor_seq_to_json(schema, bytes(), cf).map_err(|e| e.to_string())?,
+                )
             } else {
                 codec::cbor_to_json(schema, bytes(), cf).map_err(|e| e.to_string())?
             };
-            let format = if output_format == "json" { io::Format::Json } else { io::Format::Yaml };
+            let format = if output_format == "json" {
+                io::Format::Json
+            } else {
+                io::Format::Yaml
+            };
             Ok(ConvOutput::Text(io::render(&decoded, format)?))
         }
         ("json", "yaml") | ("yaml", "yaml") => {
-            let format = if input_format == "json" { io::Format::Json } else { io::Format::Yaml };
+            let format = if input_format == "json" {
+                io::Format::Json
+            } else {
+                io::Format::Yaml
+            };
             let value = io::parse(text(), format)?;
             Ok(ConvOutput::Text(io::render(&value, io::Format::Yaml)?))
         }
         ("yaml", "json") | ("json", "json") => {
-            let format = if input_format == "json" { io::Format::Json } else { io::Format::Yaml };
+            let format = if input_format == "json" {
+                io::Format::Json
+            } else {
+                io::Format::Yaml
+            };
             let value = io::parse(text(), format)?;
             Ok(ConvOutput::Text(io::render(&value, io::Format::Json)?))
         }
@@ -304,7 +365,11 @@ pub fn convert(schema: &Schema, input_format: &str, output_format: &str, cf: Con
 fn run_conv(args: &opts::ConvArgs) -> Result<(), String> {
     let (yangs, sids, rest) = partition_catalog_files(&args.files);
     if rest.len() > 1 {
-        return Err(format!("expected at most one data file on the command line, got {}: {}", rest.len(), rest.join(", ")));
+        return Err(format!(
+            "expected at most one data file on the command line, got {}: {}",
+            rest.len(),
+            rest.join(", ")
+        ));
     }
     let data_file = rest.first().map(String::as_str);
 
@@ -323,7 +388,14 @@ fn run_conv(args: &opts::ConvArgs) -> Result<(), String> {
         ConvInput::Text(&read_data_file_or_stdin_text(data_file)?)
     };
 
-    match convert(&schema, &args.input_format, &args.output_format, cf, args.continue_on_error, input)? {
+    match convert(
+        &schema,
+        &args.input_format,
+        &args.output_format,
+        cf,
+        args.continue_on_error,
+        input,
+    )? {
         ConvOutput::Bytes(b) => std::io::stdout().write_all(&b).map_err(|e| e.to_string()),
         ConvOutput::Text(s) => {
             print_normalized(&s);
@@ -337,12 +409,21 @@ fn run_conv(args: &opts::ConvArgs) -> Result<(), String> {
 fn run_schema(args: &opts::SchemaArgs) -> Result<(), String> {
     let (yangs, sids, rest) = partition_catalog_files(&args.files);
     if !rest.is_empty() {
-        return Err(format!("schema doesn't take a data file -- unexpected argument(s): {}", rest.join(", ")));
+        return Err(format!(
+            "schema doesn't take a data file -- unexpected argument(s): {}",
+            rest.join(", ")
+        ));
     }
     if !sids.is_empty() {
-        return Err(".sid files aren't needed for a JSON Schema -- pass only .yang files".to_string());
+        return Err(
+            ".sid files aren't needed for a JSON Schema -- pass only .yang files".to_string(),
+        );
     }
-    let schema = if yangs.is_empty() { load_workspace_schema(false)? } else { build_explicit_schema(&yangs, &[])? };
+    let schema = if yangs.is_empty() {
+        load_workspace_schema(false)?
+    } else {
+        build_explicit_schema(&yangs, &[])?
+    };
     let value = yang::json_schema::to_json_schema(&schema, schema.root, "yang");
     print_normalized(&serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?);
     Ok(())
@@ -352,10 +433,15 @@ fn run_schema(args: &opts::SchemaArgs) -> Result<(), String> {
 /// whose request payload is a *bare* SID (not a sequence -- the schema
 /// isn't loaded yet, so this bypasses the codec entirely), returning the
 /// 16-byte checksum as a lowercase hex string.
-fn fetch_yang_lib_checksum_from_dut(coap: &mut CoapClient, verbose: bool) -> Result<String, String> {
+fn fetch_yang_lib_checksum_from_dut(
+    coap: &mut CoapClient,
+    verbose: bool,
+) -> Result<String, String> {
     let req = cbor::to_vec(&cbor::Value::from(SID_CHECKSUM));
 
-    let resp = coap.fetch("c", &req, |f| print_other_frame(&f)).map_err(|e| e.to_string())?;
+    let resp = coap
+        .fetch("c", &req, |f| print_other_frame(&f))
+        .map_err(|e| e.to_string())?;
     if resp.code_class != 2 || resp.code_detail != 5 {
         return Err(format!(
             "couldn't get the device's YANG-library checksum (got CoAP response {}.{:02} instead of the expected 2.05) -- is this really a VelocityDRIVE-SP device?",
@@ -363,10 +449,17 @@ fn fetch_yang_lib_checksum_from_dut(coap: &mut CoapClient, verbose: bool) -> Res
         ));
     }
     let mut pos = 0;
-    let value = cbor::from_slice(resp.payload.as_slice(), &mut pos).map_err(|e| format!("the device's checksum response could not be decoded as CBOR: {e}"))?;
-    let map = value.as_map().ok_or("the device's checksum response was malformed (expected a CBOR map)")?;
-    let (_, val) = map.first().ok_or("the device's checksum response was empty")?;
-    let bytes = val.as_bytes().ok_or("the device's checksum response was malformed (expected raw bytes)")?;
+    let value = cbor::from_slice(resp.payload.as_slice(), &mut pos)
+        .map_err(|e| format!("the device's checksum response could not be decoded as CBOR: {e}"))?;
+    let map = value
+        .as_map()
+        .ok_or("the device's checksum response was malformed (expected a CBOR map)")?;
+    let (_, val) = map
+        .first()
+        .ok_or("the device's checksum response was empty")?;
+    let bytes = val
+        .as_bytes()
+        .ok_or("the device's checksum response was malformed (expected raw bytes)")?;
     let hex = bytes.iter().map(|b| format!("{b:02x}")).collect();
     if verbose {
         eprintln!("checksum bytes decoded ok");
@@ -379,7 +472,9 @@ fn url_with_query_params(base: &str, query: &[String], method: &str) -> Result<S
         return Ok(base.to_string());
     }
     if method != "fetch" && method != "get" {
-        return Err(format!("-q/--query only works with fetch and get, not {method}"));
+        return Err(format!(
+            "-q/--query only works with fetch and get, not {method}"
+        ));
     }
     Ok(format!("{base}?{}", query.join("&")))
 }
@@ -396,8 +491,12 @@ fn print_other_frame(f: &mup1::Frame) {
                 println!("CON: {trimmed:?}");
             }
         }
-        t if t == mup1::frame_type::TRACE => println!("TRACE: {:?}", String::from_utf8_lossy(&f.data)),
-        t if t == mup1::frame_type::ANNOUNCE => println!("ANNOUNCE: {:?}", String::from_utf8_lossy(&f.data)),
+        t if t == mup1::frame_type::TRACE => {
+            println!("TRACE: {:?}", String::from_utf8_lossy(&f.data))
+        }
+        t if t == mup1::frame_type::ANNOUNCE => {
+            println!("ANNOUNCE: {:?}", String::from_utf8_lossy(&f.data))
+        }
         _ => {}
     }
 }
@@ -427,34 +526,73 @@ fn coap_method_run(
     // rather than assuming its own success shape unconditionally.
     let (resp, success_format): (Response, ContentFormat) = match method {
         "fetch" => {
-            let items = input_data.and_then(Json::as_array).ok_or("fetch needs a YAML/JSON list as input, not a single value")?;
+            let items = input_data
+                .and_then(Json::as_array)
+                .ok_or("fetch needs a YAML/JSON list as input, not a single value")?;
             let items = normalize_fetch_request_items(items);
-            let cbor_req = codec::json_seq_to_cbor(schema, &items, ContentFormat::Fetch, continue_on_error).map_err(|e| e.to_string())?;
-            (coap.fetch(url, &cbor_req, on_other).map_err(|e| e.to_string())?, ContentFormat::Fetch)
+            let cbor_req =
+                codec::json_seq_to_cbor(schema, &items, ContentFormat::Fetch, continue_on_error)
+                    .map_err(|e| e.to_string())?;
+            (
+                coap.fetch(url, &cbor_req, on_other)
+                    .map_err(|e| e.to_string())?,
+                ContentFormat::Fetch,
+            )
         }
         "ipatch" => {
-            let items = input_data.and_then(Json::as_array).ok_or("ipatch needs a YAML/JSON list as input, not a single value")?;
-            let cbor_req = codec::json_seq_to_cbor(schema, items, ContentFormat::Ipatch, continue_on_error).map_err(|e| e.to_string())?;
-            (coap.ipatch(url, &cbor_req, on_other).map_err(|e| e.to_string())?, ContentFormat::Ipatch)
+            let items = input_data
+                .and_then(Json::as_array)
+                .ok_or("ipatch needs a YAML/JSON list as input, not a single value")?;
+            let cbor_req =
+                codec::json_seq_to_cbor(schema, items, ContentFormat::Ipatch, continue_on_error)
+                    .map_err(|e| e.to_string())?;
+            (
+                coap.ipatch(url, &cbor_req, on_other)
+                    .map_err(|e| e.to_string())?,
+                ContentFormat::Ipatch,
+            )
         }
-        "get" => (coap.get(url, on_other).map_err(|e| e.to_string())?, ContentFormat::Get),
+        "get" => (
+            coap.get(url, on_other).map_err(|e| e.to_string())?,
+            ContentFormat::Get,
+        ),
         "put" => {
-            let obj = input_data.ok_or("put needs a YAML/JSON object (key/value fields) as input")?;
-            let cbor_req = codec::json_to_cbor(schema, obj, ContentFormat::Put, continue_on_error).map_err(|e| e.to_string())?;
-            (coap.put(url, &cbor_req, on_other).map_err(|e| e.to_string())?, ContentFormat::Put)
+            let obj =
+                input_data.ok_or("put needs a YAML/JSON object (key/value fields) as input")?;
+            let cbor_req = codec::json_to_cbor(schema, obj, ContentFormat::Put, continue_on_error)
+                .map_err(|e| e.to_string())?;
+            (
+                coap.put(url, &cbor_req, on_other)
+                    .map_err(|e| e.to_string())?,
+                ContentFormat::Put,
+            )
         }
         "post" => {
-            let items = input_data.and_then(Json::as_array).ok_or("post needs a YAML/JSON list as input, not a single value")?;
-            let cbor_req = codec::json_seq_to_cbor(schema, items, ContentFormat::Post, continue_on_error).map_err(|e| e.to_string())?;
-            (coap.post(url, &cbor_req, on_other).map_err(|e| e.to_string())?, ContentFormat::Post)
+            let items = input_data
+                .and_then(Json::as_array)
+                .ok_or("post needs a YAML/JSON list as input, not a single value")?;
+            let cbor_req =
+                codec::json_seq_to_cbor(schema, items, ContentFormat::Post, continue_on_error)
+                    .map_err(|e| e.to_string())?;
+            (
+                coap.post(url, &cbor_req, on_other)
+                    .map_err(|e| e.to_string())?,
+                ContentFormat::Post,
+            )
         }
-        "delete" => (coap.delete(url, on_other).map_err(|e| e.to_string())?, ContentFormat::Yang),
+        "delete" => (
+            coap.delete(url, on_other).map_err(|e| e.to_string())?,
+            ContentFormat::Yang,
+        ),
         other => return Err(format!("CoAP method {other} not implemented!")),
     };
     let output = decode_response_payload(schema, &resp, success_format);
 
     if resp.code_class != 2 {
-        println!("ERROR: response code {}.{:02}", resp.code_class, resp.code_detail);
+        println!(
+            "ERROR: response code {}.{:02}",
+            resp.code_class, resp.code_detail
+        );
     }
     if verbose {
         eprintln!("response: {}.{:02}", resp.code_class, resp.code_detail);
@@ -514,13 +652,18 @@ fn normalize_fetch_request_items(items: &[Json]) -> Vec<Json> {
 /// decodes any non-empty iPATCH response payload as `'yang'`
 /// unconditionally, regardless of response code, `mup1cc:213-216` --
 /// this port intentionally does not replicate that.)
-fn decode_response_payload(schema: &Schema, resp: &Response, success_format: ContentFormat) -> Option<Json> {
+fn decode_response_payload(
+    schema: &Schema,
+    resp: &Response,
+    success_format: ContentFormat,
+) -> Option<Json> {
     if resp.payload.is_empty() {
         return None;
     }
     let is_success = resp.code_class == 2;
     let is_bad_request = resp.code_class == 4 && resp.code_detail == 0;
-    let always_bodiless_on_success = matches!(success_format, ContentFormat::Put | ContentFormat::Ipatch);
+    let always_bodiless_on_success =
+        matches!(success_format, ContentFormat::Put | ContentFormat::Ipatch);
     if (is_success && always_bodiless_on_success) || (!is_success && !is_bad_request) {
         return Some(Json::String(format!(
             "<{} bytes, response code {}.{:02} has no defined body shape>",
@@ -537,7 +680,10 @@ fn decode_response_payload(schema: &Schema, resp: &Response, success_format: Con
         Some(141) | Some(142) => ContentFormat::Fetch,
         _ => success_format,
     };
-    let is_sequence = matches!(effective_format, ContentFormat::Fetch | ContentFormat::Ipatch | ContentFormat::Post);
+    let is_sequence = matches!(
+        effective_format,
+        ContentFormat::Fetch | ContentFormat::Ipatch | ContentFormat::Post
+    );
     let decoded = if is_sequence {
         codec::cbor_seq_to_json(schema, &resp.payload, effective_format)
     } else {
@@ -552,6 +698,9 @@ fn decode_response_payload(schema: &Schema, resp: &Response, success_format: Con
         // diagnostic information (e.g. "unknown SID N" usually means
         // the loaded YANG catalog doesn't match the device's firmware
         // version), so report it rather than discarding it.
-        Err(e) => Some(Json::String(format!("<could not decode {}-byte response payload: {e}>", resp.payload.len()))),
+        Err(e) => Some(Json::String(format!(
+            "<could not decode {}-byte response payload: {e}>",
+            resp.payload.len()
+        ))),
     }
 }

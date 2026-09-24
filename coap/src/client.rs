@@ -16,7 +16,9 @@ use std::time::{Duration, Instant};
 
 use mup1::{frame_type, Frame, Mup1Client};
 
-use crate::message::{self, Block, Method, MsgType, ParsedMessage, RequestParams, RESPONSE_CONTINUE};
+use crate::message::{
+    self, Block, Method, MsgType, ParsedMessage, RequestParams, RESPONSE_CONTINUE,
+};
 
 /// Default CoAP block size in bytes (SZX=4), matching
 /// `Et::Handler::Coap::DEFAULT_BLOCK_SIZE` and `COAP_BLOCK_SZX` in
@@ -56,7 +58,10 @@ impl From<std::io::Error> for CoapError {
 impl std::fmt::Display for CoapError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            CoapError::Timeout => write!(f, "CoAP request timed out (no ACK after {MAX_RETRANSMIT} retransmits)"),
+            CoapError::Timeout => write!(
+                f,
+                "CoAP request timed out (no ACK after {MAX_RETRANSMIT} retransmits)"
+            ),
             CoapError::Io(e) => write!(f, "I/O error: {e}"),
             CoapError::Protocol(msg) => write!(f, "protocol error: {msg}"),
         }
@@ -141,14 +146,24 @@ impl Client {
         // would let a slow/retransmitted reply to one invocation's
         // request spuriously match a *later* invocation's first request
         // of the same value.
-        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
             ^ (std::process::id() as u128);
-        Self { mup1, msg_id: seed as u16, token: (seed >> 16) as u8, block_size: DEFAULT_BLOCK_SIZE }
+        Self {
+            mup1,
+            msg_id: seed as u16,
+            token: (seed >> 16) as u8,
+            block_size: DEFAULT_BLOCK_SIZE,
+        }
     }
 
     /// Must be a power of two between 16 and 1024 (RFC 7959 SZX 0-6).
     pub fn set_block_size(&mut self, size: u32) -> Result<(), CoapError> {
-        Block::szx_for_size(size).ok_or(CoapError::Protocol("block size must be a power of two, 16..=1024"))?;
+        Block::szx_for_size(size).ok_or(CoapError::Protocol(
+            "block size must be a power of two, 16..=1024",
+        ))?;
         self.block_size = size;
         Ok(())
     }
@@ -162,7 +177,11 @@ impl Client {
         accept: Option<u16>,
         req_payload: &[u8],
     ) -> std::io::Result<()> {
-        let effective_payload: &[u8] = if session.req_payload_cleared { &[] } else { req_payload };
+        let effective_payload: &[u8] = if session.req_payload_cleared {
+            &[]
+        } else {
+            req_payload
+        };
         let block1_block_size = 1u32 << (session.block1_szx as u32 + 4);
         let mut block1_opt = None;
         let mut chunk: &[u8] = &[];
@@ -190,7 +209,11 @@ impl Client {
             content_format,
             accept,
             block1: block1_opt,
-            block2: Block { num: session.block2_num, more: false, szx: session.block2_szx },
+            block2: Block {
+                num: session.block2_num,
+                more: false,
+                szx: session.block2_szx,
+            },
             payload: chunk,
         };
         let wire = message::encode_request(&params);
@@ -242,7 +265,9 @@ impl Client {
                 let session_ref = &mut session;
                 self.mup1.poll(|f| match f.type_byte {
                     t if t == frame_type::COAP_LOWER || t == frame_type::COAP_UPPER => {
-                        let Ok(parsed) = message::parse(&f.data) else { return };
+                        let Ok(parsed) = message::parse(&f.data) else {
+                            return;
+                        };
                         if parsed.msg_id != session_ref.msg_id {
                             return; // stale/duplicate reply for a prior frame in this exchange
                         }
