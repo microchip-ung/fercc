@@ -239,6 +239,7 @@ pub struct Node {
     /// substatement's text, verbatim, no further processing).
     pub description: Option<String>,
     pub status: Option<Status>,
+    pub default: Option<String>,
 }
 
 impl Node {
@@ -448,6 +449,7 @@ impl<'a> Builder<'a> {
             owner_module,
             description: None,
             status: None,
+            default: None,
         });
         if let Some(p) = parent {
             self.nodes[p].children.push(id);
@@ -674,6 +676,10 @@ impl<'a> Builder<'a> {
             }
         } else if s.keyword != "input" && s.keyword != "output" {
             self.nodes[node].status = Some(Status::Current);
+        }
+
+        if let Some(default) = s.sub("default") {
+            self.nodes[node].default = Some(default.arg_str().to_string());
         }
 
         match s.keyword.as_str() {
@@ -1271,6 +1277,7 @@ impl<'a> Builder<'a> {
             owner_module: src.owner_module.clone(),
             description: src.description.clone(),
             status: src.status,
+            default: src.default.clone(),
         });
         if let Some(p) = new_parent {
             self.nodes[p].children.push(new_id);
