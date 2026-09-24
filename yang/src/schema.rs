@@ -40,6 +40,13 @@ const SCHEMA_NODE_KEYWORDS: &[&str] = &[
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    Current,
+    Deprecated,
+    Obsolete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Builtin {
     Binary,
     Bits,
@@ -231,6 +238,7 @@ pub struct Node {
     /// `get_description`, yang-utils.rb:549-555: the first `description`
     /// substatement's text, verbatim, no further processing).
     pub description: Option<String>,
+    pub status: Option<Status>,
 }
 
 impl Node {
@@ -439,6 +447,7 @@ impl<'a> Builder<'a> {
             sid: None,
             owner_module,
             description: None,
+            status: None,
         });
         if let Some(p) = parent {
             self.nodes[p].children.push(id);
@@ -656,6 +665,17 @@ impl<'a> Builder<'a> {
             self.nodes[node].description = Some(d.arg_str().to_string());
         }
 
+        if let Some(st) = s.sub("status") {
+            self.nodes[node].status = match st.arg_str() {
+                "current" => Some(Status::Current),
+                "deprecated" => Some(Status::Deprecated),
+                "obsolete" => Some(Status::Obsolete),
+                other => return Err(err(format!("unknown status {other:?}"))),
+            }
+        } else if s.keyword != "input" && s.keyword != "output" {
+            self.nodes[node].status = Some(Status::Current);
+        }
+
         match s.keyword.as_str() {
             "leaf" | "leaf-list" => {
                 if let Some(t) = s.sub("type") {
@@ -725,6 +745,12 @@ impl<'a> Builder<'a> {
                     Some(choice_node),
                 );
                 self.interpret_one(resolve, naming, s, case_id)?;
+                // Implicit case statements should have the same "status" as the data node it represents.
+                let child_id = self.nodes[case_id]
+                    .children
+                    .first()
+                    .expect("implicit case must have a child");
+                self.nodes[case_id].status = self.nodes[*child_id].status;
             } else {
                 self.interpret_one(resolve, naming, s, choice_node)?;
             }
@@ -1244,6 +1270,7 @@ impl<'a> Builder<'a> {
             sid: src.sid,
             owner_module: src.owner_module.clone(),
             description: src.description.clone(),
+            status: src.status,
         });
         if let Some(p) = new_parent {
             self.nodes[p].children.push(new_id);
@@ -1285,5 +1312,135 @@ impl<'a> Builder<'a> {
         for &c in &self.nodes[node].children {
             self.index_sids(c, out);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_defaults_to_current_when_unstated() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              container bar {
+                leaf baz {
+                  type string;
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let bar = schema.find_child(schema.root, "foo:bar").unwrap();
+        assert_eq!(schema.node(bar).status, Some(Status::Current));
+        let baz = schema.find_child(bar, "baz").unwrap();
+        assert_eq!(schema.node(baz).status, Some(Status::Current));
+    }
+
+    #[test]
+    fn status_is_read_from_an_explicit_statement() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              container bar {
+                status deprecated;
+                leaf baz {
+                  status obsolete;
+                  type string;
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let bar = schema.find_child(schema.root, "foo:bar").unwrap();
+        assert_eq!(schema.node(bar).status, Some(Status::Deprecated));
+        let baz = schema.find_child(bar, "baz").unwrap();
+        assert_eq!(schema.node(baz).status, Some(Status::Obsolete));
+    }
+
+    #[test]
+    fn an_unrecognized_status_value_is_a_schema_error() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              leaf bar {
+                status future-proofed;
+                type string;
+              }
+            }
+        "#;
+        let err = build(&[src.to_string()], &[]).err().unwrap();
+        assert!(err.0.contains("future-proofed"), "{}", err.0);
+    }
+
+    #[test]
+    fn an_implicit_case_copies_its_wrapped_childs_status() {
+        // `leaf sub` has no explicit `case` wrapper (RFC 7950 7.9.2), so
+        // interpret_choice_body synthesizes one -- it must copy `sub`'s
+        // own status, not default to Current on its own.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              container bar {
+                choice pick {
+                  leaf sub {
+                    status deprecated;
+                    type string;
+                  }
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        // choice/case are spliced out of the flattened root tree, so walk
+        // the unflattened per-module tree to see the synthesized case node.
+        let module_root = schema.module_root["foo"];
+        let bar = schema.find_child(module_root, "foo:bar").unwrap();
+        let pick = schema.find_child(bar, "pick").unwrap();
+        assert_eq!(schema.node(pick).kw, "choice");
+        let implicit_case = schema.find_child(pick, "sub").unwrap();
+        assert_eq!(schema.node(implicit_case).kw, "case");
+        assert_eq!(schema.node(implicit_case).status, Some(Status::Deprecated));
+        let sub = schema.find_child(implicit_case, "sub").unwrap();
+        assert_eq!(schema.node(sub).status, Some(Status::Deprecated));
+    }
+
+    #[test]
+    fn input_and_output_have_no_status_at_all() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              rpc bar {
+                input {
+                  leaf x {
+                    type string;
+                  }
+                }
+                output {
+                  leaf y {
+                    type string;
+                  }
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let module_root = schema.module_root["foo"];
+        let bar = schema.find_child(module_root, "foo:bar").unwrap();
+        let input = schema.find_child(bar, "input").unwrap();
+        let output = schema.find_child(bar, "output").unwrap();
+        assert_eq!(schema.node(input).status, None);
+        assert_eq!(schema.node(output).status, None);
     }
 }
