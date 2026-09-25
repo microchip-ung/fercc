@@ -251,14 +251,18 @@ impl Node {
     }
 }
 
+pub struct Module {
+    pub name: String,
+    pub sid: Option<i64>,
+    pub root_nodes: Vec<NodeId>,
+}
+
 pub struct Schema {
     pub nodes: Vec<Node>,
     pub types: Vec<TypeDef>,
     pub identities: Vec<Identity>,
     pub identity_by_module_name: HashMap<(String, String), IdentityId>,
-    /// Each module's own (un-flattened) top-level schema root, keyed by
-    /// module name -- used for augment-target and SID resolution.
-    pub module_root: HashMap<String, NodeId>,
+    pub module_root: HashMap<String, Module>,
     /// The synthetic flattened data-tree-schema root (choice/case elided),
     /// used by the codec. `sid == Some(0)`.
     pub root: NodeId,
@@ -339,7 +343,7 @@ impl ModuleCtx {
     }
 }
 
-pub struct Builder<'a> {
+struct Builder<'a> {
     raw_modules: HashMap<String, &'a Stmt>,
     contexts: HashMap<String, ModuleCtx>,
     defs: Definitions<'a>,
@@ -350,7 +354,7 @@ pub struct Builder<'a> {
     types: Vec<TypeDef>,
     identities: Vec<Identity>,
     identity_by_module_name: HashMap<(String, String), IdentityId>,
-    module_root: HashMap<String, NodeId>,
+    module_root: HashMap<String, Module>,
     yang_data_roots: HashMap<String, NodeId>,
     leafref_pending: Vec<TypeId>,
 }
@@ -434,6 +438,7 @@ impl<'a> Builder<'a> {
         name: String,
         owner_module: String,
         parent: Option<NodeId>,
+        detached: bool,
     ) -> NodeId {
         let id = self.nodes.len();
         self.nodes.push(Node {
@@ -446,13 +451,20 @@ impl<'a> Builder<'a> {
             type_id: None,
             keys: Vec::new(),
             sid: None,
-            owner_module,
+            owner_module: owner_module.clone(),
             description: None,
             status: None,
             default: None,
         });
-        if let Some(p) = parent {
-            self.nodes[p].children.push(id);
+        if !detached {
+            if let Some(p) = parent {
+                self.nodes[p].children.push(id);
+            } else {
+                let module = self.module_root.get_mut(&owner_module).unwrap_or_else(|| {
+                    panic!("module {owner_module:?} must exist before creating a node in it")
+                });
+                module.root_nodes.push(id);
+            }
         }
         id
     }
@@ -508,11 +520,15 @@ impl<'a> Builder<'a> {
             }
         }
 
-        let root = self.new_node("module", name.to_string(), name.to_string(), None);
-        self.module_root.insert(name.to_string(), root);
+        let module = Module {
+            name: name.to_string(),
+            sid: None,
+            root_nodes: Vec::new(),
+        };
+        self.module_root.insert(name.to_string(), module);
 
         let ctx_name = name.to_string();
-        self.interpret_children(&ctx_name, &ctx_name, &raw.subs, root)?;
+        self.interpret_children(&ctx_name, &ctx_name, &raw.subs, None)?;
 
         self.built.insert(name.to_string());
         self.building.remove(name);
@@ -569,7 +585,7 @@ impl<'a> Builder<'a> {
         resolve: &str,
         naming: &str,
         stmts: &[Stmt],
-        parent: NodeId,
+        parent: Option<NodeId>,
     ) -> R<()> {
         for s in stmts {
             self.interpret_one(resolve, naming, s, parent)?;
@@ -577,7 +593,13 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
-    fn interpret_one(&mut self, resolve: &str, naming: &str, s: &Stmt, parent: NodeId) -> R<()> {
+    fn interpret_one(
+        &mut self,
+        resolve: &str,
+        naming: &str,
+        s: &Stmt,
+        parent: Option<NodeId>,
+    ) -> R<()> {
         if s.prefix.is_some() {
             self.interpret_extension(naming, s, parent)?;
             return Ok(());
@@ -599,7 +621,7 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
-    fn interpret_extension(&mut self, naming: &str, s: &Stmt, _parent: NodeId) -> R<()> {
+    fn interpret_extension(&mut self, naming: &str, s: &Stmt, _parent: Option<NodeId>) -> R<()> {
         // Only the RFC 8040 `rc:yang-data` extension is handled (matches
         // yang-utils.rb): must contain exactly one container, promoted to
         // a top-level root node named "module:<container's own name>" --
@@ -611,8 +633,8 @@ impl<'a> Builder<'a> {
         if s.keyword == "yang-data" {
             if let Some(container) = s.sub("container") {
                 let name = format!("{naming}:{}", container.arg_str());
-                let root = self.new_node("container", name.clone(), naming.to_string(), None);
-                self.interpret_children(naming, naming, &container.subs, root)?;
+                let root = self.new_node("container", name.clone(), naming.to_string(), None, true);
+                self.interpret_children(naming, naming, &container.subs, Some(root))?;
                 // `rc:yang-data` roots aren't children of their module's
                 // node (they're "not part of the datastore" -- see
                 // finish()'s comment -- so must stay out of module_root's
@@ -637,9 +659,9 @@ impl<'a> Builder<'a> {
         resolve: &str,
         naming: &str,
         s: &Stmt,
-        parent: NodeId,
+        parent: Option<NodeId>,
     ) -> R<()> {
-        let is_top = self.nodes[parent].kw == "module";
+        let is_top = parent.is_none();
         // input/output are the only schema-node statements RFC 7950 gives
         // no argument to (there's always at most one of each per
         // rpc/action) -- use the keyword itself as the name.
@@ -653,7 +675,7 @@ impl<'a> Builder<'a> {
             local.to_string()
         };
 
-        let node = self.new_node(&s.keyword, name, naming.to_string(), Some(parent));
+        let node = self.new_node(&s.keyword, name, naming.to_string(), parent, false);
 
         if let Some(cfg) = s.sub("config") {
             self.nodes[node].config = cfg.arg_str() == "true";
@@ -700,7 +722,13 @@ impl<'a> Builder<'a> {
             }
             "rpc" | "action" => {
                 if s.sub("input").is_none() {
-                    self.new_node("input", "input".to_string(), naming.to_string(), Some(node));
+                    self.new_node(
+                        "input",
+                        "input".to_string(),
+                        naming.to_string(),
+                        Some(node),
+                        false,
+                    );
                 }
                 if s.sub("output").is_none() {
                     self.new_node(
@@ -708,6 +736,7 @@ impl<'a> Builder<'a> {
                         "output".to_string(),
                         naming.to_string(),
                         Some(node),
+                        false,
                     );
                 }
             }
@@ -717,7 +746,7 @@ impl<'a> Builder<'a> {
         if s.keyword == "choice" {
             self.interpret_choice_body(resolve, naming, &s.subs, node)?;
         } else {
-            self.interpret_children(resolve, naming, &s.subs, node)?;
+            self.interpret_children(resolve, naming, &s.subs, Some(node))?;
         }
         Ok(())
     }
@@ -749,8 +778,9 @@ impl<'a> Builder<'a> {
                     s.arg_str().to_string(),
                     naming.to_string(),
                     Some(choice_node),
+                    false,
                 );
-                self.interpret_one(resolve, naming, s, case_id)?;
+                self.interpret_one(resolve, naming, s, Some(case_id))?;
                 // Implicit case statements should have the same "status" as the data node it represents.
                 let child_id = self.nodes[case_id]
                     .children
@@ -758,13 +788,19 @@ impl<'a> Builder<'a> {
                     .expect("implicit case must have a child");
                 self.nodes[case_id].status = self.nodes[*child_id].status;
             } else {
-                self.interpret_one(resolve, naming, s, choice_node)?;
+                self.interpret_one(resolve, naming, s, Some(choice_node))?;
             }
         }
         Ok(())
     }
 
-    fn interpret_uses(&mut self, resolve: &str, naming: &str, s: &Stmt, parent: NodeId) -> R<()> {
+    fn interpret_uses(
+        &mut self,
+        resolve: &str,
+        naming: &str,
+        s: &Stmt,
+        parent: Option<NodeId>,
+    ) -> R<()> {
         let (def_module, local) = self.split_qualified(resolve, s.arg_str())?;
         let raw = *self
             .defs
@@ -792,7 +828,7 @@ impl<'a> Builder<'a> {
         // resolves and is named in `resolve`/`naming` unchanged, not
         // `def_module`.
         for aug in s.subs_of("augment") {
-            self.interpret_augment(resolve, naming, aug, parent, Some(parent))?;
+            self.interpret_augment(resolve, naming, aug, parent, parent)?;
         }
         Ok(())
     }
@@ -808,7 +844,7 @@ impl<'a> Builder<'a> {
         resolve: &str,
         naming: &str,
         s: &Stmt,
-        _use_site: NodeId,
+        _use_site: Option<NodeId>,
         relative_root: Option<NodeId>,
     ) -> R<()> {
         let path = s.arg_str();
@@ -832,7 +868,7 @@ impl<'a> Builder<'a> {
                 continue;
             }
             let before = self.nodes[target].children.len();
-            self.interpret_one(resolve, naming, child_stmt, target)?;
+            self.interpret_one(resolve, naming, child_stmt, Some(target))?;
             // Namespace fixup (RFC 7950 4.2.8/7.17): a node augmented in
             // from a different module than the target's module is named
             // in the *augmenting* module's namespace.
@@ -882,12 +918,12 @@ impl<'a> Builder<'a> {
                     "first segment {first:?} of SID data identifier {path:?} has no module prefix"
                 ))
             })?;
-            let dst_root = *self.module_root.get(dst_module).ok_or_else(|| {
+            let module = self.module_root.get(dst_module).ok_or_else(|| {
                 err(format!(
                     "unknown module {dst_module:?} in SID data identifier {path:?}"
                 ))
             })?;
-            self.find_by_local(dst_root, first_local).ok_or_else(|| {
+            self.find_in_module(module, first_local).ok_or_else(|| {
                 err(format!(
                     "target segment {first_local:?} not found in module {dst_module:?} ({path:?})"
                 ))
@@ -900,6 +936,15 @@ impl<'a> Builder<'a> {
                 .ok_or_else(|| err(format!("target segment {seg:?} not found ({path:?})")))?;
         }
         Ok(cur)
+    }
+
+    fn find_in_module(&self, module: &Module, local: &str) -> Option<NodeId> {
+        for root in &module.root_nodes {
+            if self.nodes[*root].local_name() == local {
+                return Some(*root);
+            }
+        }
+        None
     }
 
     fn find_by_local(&self, parent: NodeId, local: &str) -> Option<NodeId> {
@@ -918,11 +963,11 @@ impl<'a> Builder<'a> {
             .next()
             .ok_or_else(|| err(format!("empty schema-node-id {path:?}")))?;
         let (dst_module, first_local) = self.split_qualified(current_module, first)?;
-        let dst_root = *self
+        let module = self
             .module_root
             .get(&dst_module)
             .ok_or_else(|| err(format!("unknown target module {dst_module:?} in {path:?}")))?;
-        let mut cur = self.find_by_local(dst_root, first_local).ok_or_else(|| {
+        let mut cur = self.find_in_module(module, first_local).ok_or_else(|| {
             err(format!(
                 "target segment {first_local:?} not found in module {dst_module:?} ({path:?})"
             ))
@@ -1091,6 +1136,11 @@ impl<'a> Builder<'a> {
     fn remove_node(&mut self, target: NodeId) {
         if let Some(p) = self.nodes[target].parent {
             self.nodes[p].children.retain(|&c| c != target);
+        } else {
+            let owner_module = self.nodes[target].owner_module.clone();
+            if let Some(module) = self.module_root.get_mut(&owner_module) {
+                module.root_nodes.retain(|&c| c != target);
+            }
         }
     }
 
@@ -1164,8 +1214,8 @@ impl<'a> Builder<'a> {
         for item in &f.items {
             match item.namespace {
                 Namespace::Module => {
-                    if let Some(&root) = self.module_root.get(&item.identifier) {
-                        self.nodes[root].sid = Some(item.sid);
+                    if let Some(module) = self.module_root.get_mut(&item.identifier) {
+                        module.sid = Some(item.sid);
                     }
                 }
                 Namespace::Identity => {
@@ -1204,25 +1254,26 @@ impl<'a> Builder<'a> {
             "data-tree-schema".to_string(),
             String::new(),
             None,
+            true,
         );
         self.nodes[root].sid = Some(0);
 
-        let module_roots: Vec<NodeId> = self.module_root.values().copied().collect();
-        for m_root in module_roots {
-            let top_children = self.nodes[m_root].children.clone();
-            for child in top_children {
-                // flatten_clone already appends the new node to `root`'s
-                // children itself (needed so a spliced choice/case can
-                // contribute more than one).
-                self.flatten_clone(child, Some(root));
-            }
+        let all_root_nodes: Vec<NodeId> = self
+            .module_root
+            .values()
+            .flat_map(|m| m.root_nodes.iter().copied())
+            .collect();
+        for child in all_root_nodes {
+            // flatten_clone already appends the new node to `root`'s
+            // children itself (needed so a spliced choice/case can
+            // contribute more than one).
+            self.flatten_clone(child, Some(root));
         }
 
         let mut sid_index = HashMap::new();
         self.index_sids(root, &mut sid_index);
         // `rc:yang-data` roots (e.g. `ietf-coreconf:error`) are
-        // deliberately not children of `root` -- a whole-tree GET/PUT
-        // must not enumerate them as if they were real datastore paths --
+        // deliberately not children of `root`
         // but their SIDs are still real wire values (a device error
         // response is addressed by exactly these SIDs), so index each
         // one's subtree separately rather than via the `root` walk.
@@ -1309,7 +1360,7 @@ impl<'a> Builder<'a> {
         // An empty choice/case with no data-node children at all (legal
         // but useless); create nothing and let callers treat this as
         // absent. Only reached for genuinely empty choices.
-        self.new_node("case", String::new(), String::new(), parent)
+        self.new_node("case", String::new(), String::new(), parent, true)
     }
 
     fn index_sids(&self, node: NodeId, out: &mut HashMap<i64, NodeId>) {
@@ -1410,8 +1461,12 @@ mod tests {
         let schema = build(&[src.to_string()], &[]).unwrap();
         // choice/case are spliced out of the flattened root tree, so walk
         // the unflattened per-module tree to see the synthesized case node.
-        let module_root = schema.module_root["foo"];
-        let bar = schema.find_child(module_root, "foo:bar").unwrap();
+        let module = &schema.module_root["foo"];
+        let bar = *module
+            .root_nodes
+            .iter()
+            .find(|&&id| schema.node(id).name == "foo:bar")
+            .unwrap();
         let pick = schema.find_child(bar, "pick").unwrap();
         assert_eq!(schema.node(pick).kw, "choice");
         let implicit_case = schema.find_child(pick, "sub").unwrap();
@@ -1443,11 +1498,95 @@ mod tests {
             }
         "#;
         let schema = build(&[src.to_string()], &[]).unwrap();
-        let module_root = schema.module_root["foo"];
-        let bar = schema.find_child(module_root, "foo:bar").unwrap();
+        let module = &schema.module_root["foo"];
+        let bar = *module
+            .root_nodes
+            .iter()
+            .find(|&&id| schema.node(id).name == "foo:bar")
+            .unwrap();
         let input = schema.find_child(bar, "input").unwrap();
         let output = schema.find_child(bar, "output").unwrap();
         assert_eq!(schema.node(input).status, None);
         assert_eq!(schema.node(output).status, None);
+    }
+
+    #[test]
+    fn top_level_uses_with_augment_reaches_module_root_nodes() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              grouping g {
+                container c {
+                  leaf existing {
+                    type string;
+                  }
+                }
+              }
+
+              uses g {
+                augment "c" {
+                  leaf x {
+                    type string;
+                  }
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let module = &schema.module_root["foo"];
+        let c = *module
+            .root_nodes
+            .iter()
+            .find(|&&id| schema.node(id).name == "foo:c")
+            .unwrap();
+        let x = schema.find_child(c, "x");
+        assert!(x.is_some());
+    }
+
+    #[test]
+    fn nested_uses_with_augment_resolves_relative_to_the_use_site() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              grouping g {
+                container c {
+                  leaf existing {
+                    type string;
+                  }
+                }
+              }
+
+              container outer {
+                container decoy {
+                  container c {
+                    leaf wrong-one {
+                      type string;
+                    }
+                  }
+                }
+                uses g {
+                  augment "c" {
+                    leaf x {
+                      type string;
+                    }
+                  }
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let outer = schema.find_child(schema.root, "foo:outer").unwrap();
+        let c = schema.find_child(outer, "c").unwrap();
+        let x = schema.find_child(c, "x");
+        assert!(x.is_some());
+
+        let decoy = schema.find_child(outer, "decoy").unwrap();
+        let decoy_c = schema.find_child(decoy, "c").unwrap();
+        let decoy_x = schema.find_child(decoy_c, "x");
+        assert!(decoy_x.is_none());
     }
 }
