@@ -19,9 +19,9 @@ use std::collections::HashMap;
 use crate::parser::{self, Stmt};
 use crate::sid::{self, Namespace};
 
-pub type NodeId = usize;
-pub type TypeId = usize;
-pub type IdentityId = usize;
+type NodeId = usize;
+type TypeId = usize;
+type IdentityId = usize;
 
 const SCHEMA_NODE_KEYWORDS: &[&str] = &[
     "container",
@@ -114,17 +114,19 @@ pub struct EnumVal {
 
 #[derive(Debug, Clone)]
 pub struct TypeDef {
+    name: Option<String>,
+    module: Option<String>,
     pub builtin: Builtin,
     pub fraction_digits: Option<u8>,
     pub bits: Vec<Bit>,
     pub enums: Vec<EnumVal>,
-    pub identity_bases: Vec<IdentityId>,
+    identity_bases: Vec<IdentityId>,
     /// The module that declared this identityref usage -- an unprefixed
     /// identity value name is disambiguated against this module.
     pub source_module: Option<String>,
     pub leafref_path: Option<String>,
-    pub leafref_target: Option<NodeId>,
-    pub union_members: Vec<TypeId>,
+    leafref_target: Option<NodeId>,
+    union_members: Vec<TypeId>,
     /// `range` restrictions (int8/16/32/64, uint8/16/32/64) or `length`
     /// restrictions (string, binary) -- one underlying field for both,
     /// mirroring `Type#ranges`/`Type#length` in yang-utils.rb (`length` is
@@ -144,6 +146,8 @@ pub struct TypeDef {
 impl TypeDef {
     pub(crate) fn new(builtin: Builtin) -> Self {
         Self {
+            name: None,
+            module: None,
             builtin,
             fraction_digits: None,
             bits: Vec::new(),
@@ -211,8 +215,8 @@ fn restrict_range(prev: &[(i128, i128)], spec: &str) -> Vec<(i128, i128)> {
 pub struct Identity {
     pub name: String,
     pub module: String,
-    pub base: Vec<IdentityId>,
-    pub derived: Vec<IdentityId>,
+    base: Vec<IdentityId>,
+    derived: Vec<IdentityId>,
     pub sid: Option<i64>,
 }
 
@@ -224,11 +228,11 @@ pub struct Node {
     /// boundary, bare `local` name otherwise. IID/schema-node-id path
     /// segments must match this exactly.
     pub name: String,
-    pub parent: Option<NodeId>,
-    pub children: Vec<NodeId>,
+    parent: Option<NodeId>,
+    children: Vec<NodeId>,
     pub config: bool,
     pub mandatory: bool,
-    pub type_id: Option<TypeId>,
+    type_id: Option<TypeId>,
     /// List keys, in schema-declared order (not necessarily input order).
     pub keys: Vec<String>,
     pub sid: Option<i64>,
@@ -254,52 +258,289 @@ impl Node {
 pub struct Module {
     pub name: String,
     pub sid: Option<i64>,
-    pub root_nodes: Vec<NodeId>,
+    root_nodes: Vec<NodeId>,
+}
+
+#[derive(Clone, Copy)]
+pub struct ModuleRef<'a> {
+    schema: &'a Schema,
+    module: &'a Module,
+}
+
+impl<'a> std::ops::Deref for ModuleRef<'a> {
+    type Target = Module;
+    fn deref(&self) -> &Module {
+        self.module
+    }
+}
+
+impl<'a> ModuleRef<'a> {
+    pub fn root_nodes(&self) -> impl Iterator<Item = NodeRef<'a>> + 'a {
+        let schema = self.schema;
+        self.module
+            .root_nodes
+            .iter()
+            .map(move |&id| schema.node_ref(id))
+    }
 }
 
 pub struct Schema {
-    pub nodes: Vec<Node>,
-    pub types: Vec<TypeDef>,
-    pub identities: Vec<Identity>,
-    pub identity_by_module_name: HashMap<(String, String), IdentityId>,
-    pub module_root: HashMap<String, Module>,
+    nodes: Vec<Node>,
+    types: Vec<TypeDef>,
+    identities: Vec<Identity>,
+    module_root: HashMap<String, Module>,
+    yang_data_roots: HashMap<String, NodeId>,
     /// The synthetic flattened data-tree-schema root (choice/case elided),
     /// used by the codec. `sid == Some(0)`.
-    pub root: NodeId,
+    root: NodeId,
     /// Absolute SID -> node in the flattened tree, for FETCH/decode.
-    pub sid_index: HashMap<i64, NodeId>,
+    sid_index: HashMap<i64, NodeId>,
 }
 
-impl Schema {
-    pub fn node(&self, id: NodeId) -> &Node {
-        &self.nodes[id]
-    }
-    pub fn ty(&self, id: TypeId) -> &TypeDef {
-        &self.types[id]
-    }
-    pub fn identity(&self, id: IdentityId) -> &Identity {
-        &self.identities[id]
-    }
+#[derive(Clone, Copy)]
+pub struct NodeRef<'a> {
+    schema: &'a Schema,
+    id: NodeId,
+}
 
-    pub fn find_child(&self, parent: NodeId, name: &str) -> Option<NodeId> {
-        self.nodes[parent]
+impl<'a> std::ops::Deref for NodeRef<'a> {
+    type Target = Node;
+    fn deref(&self) -> &Node {
+        &self.schema.nodes[self.id]
+    }
+}
+
+impl<'a> NodeRef<'a> {
+    pub fn children(&self) -> impl Iterator<Item = NodeRef<'a>> + 'a {
+        let schema = self.schema;
+        schema.nodes[self.id]
             .children
             .iter()
-            .copied()
-            .find(|&c| self.nodes[c].name == name)
+            .map(move |&c| NodeRef { schema, id: c })
     }
 
-    /// All identities transitively derived from `base` (including `base`
+    pub fn parent(&self) -> Option<NodeRef<'a>> {
+        let schema = self.schema;
+        schema.nodes[self.id]
+            .parent
+            .map(|p| NodeRef { schema, id: p })
+    }
+
+    pub fn find_child(&self, name: &str) -> Option<NodeRef<'a>> {
+        self.children().find(|c| c.name == name)
+    }
+
+    pub fn ty(&self) -> Option<TypeRef<'a>> {
+        let schema = self.schema;
+        schema.nodes[self.id]
+            .type_id
+            .map(|id| TypeRef { schema, id })
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct TypeRef<'a> {
+    schema: &'a Schema,
+    id: TypeId,
+}
+
+impl<'a> std::ops::Deref for TypeRef<'a> {
+    type Target = TypeDef;
+    fn deref(&self) -> &TypeDef {
+        &self.schema.types[self.id]
+    }
+}
+
+impl<'a> TypeRef<'a> {
+    pub fn union_members(&self) -> impl Iterator<Item = TypeRef<'a>> + 'a {
+        let schema = self.schema;
+        schema.types[self.id]
+            .union_members
+            .iter()
+            .map(move |&id| TypeRef { schema, id })
+    }
+
+    pub fn identity_bases(&self) -> impl Iterator<Item = IdentityRef<'a>> + 'a {
+        let schema = self.schema;
+        schema.types[self.id]
+            .identity_bases
+            .iter()
+            .map(move |&id| IdentityRef { schema, id })
+    }
+
+    pub fn leafref_target(&self) -> Option<NodeRef<'a>> {
+        let schema = self.schema;
+        schema.types[self.id]
+            .leafref_target
+            .map(|id| NodeRef { schema, id })
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct IdentityRef<'a> {
+    schema: &'a Schema,
+    id: IdentityId,
+}
+
+impl<'a> std::ops::Deref for IdentityRef<'a> {
+    type Target = Identity;
+    fn deref(&self) -> &Identity {
+        &self.schema.identities[self.id]
+    }
+}
+
+impl<'a> PartialEq for IdentityRef<'a> {
+    fn eq(&self, other: &Self) -> bool {
+        std::ptr::eq(self.schema, other.schema) && self.id == other.id
+    }
+}
+impl<'a> Eq for IdentityRef<'a> {}
+impl<'a> std::hash::Hash for IdentityRef<'a> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        (self.schema as *const Schema).hash(state);
+        self.id.hash(state);
+    }
+}
+
+impl<'a> IdentityRef<'a> {
+    pub fn base(&self) -> impl Iterator<Item = IdentityRef<'a>> + 'a {
+        let schema = self.schema;
+        schema.identities[self.id]
+            .base
+            .iter()
+            .map(move |&id| IdentityRef { schema, id })
+    }
+
+    pub fn derived(&self) -> impl Iterator<Item = IdentityRef<'a>> + 'a {
+        let schema = self.schema;
+        schema.identities[self.id]
+            .derived
+            .iter()
+            .map(move |&id| IdentityRef { schema, id })
+    }
+
+    /// All identities transitively derived from this one (including
     /// itself), mirroring `Identity#derived_from`.
-    pub fn derived_from(&self, base: IdentityId) -> std::collections::HashSet<IdentityId> {
+    pub fn derived_from(&self) -> std::collections::HashSet<IdentityRef<'a>> {
         let mut out = std::collections::HashSet::new();
-        let mut stack = vec![base];
+        let mut stack = vec![*self];
         while let Some(id) = stack.pop() {
             if out.insert(id) {
-                stack.extend(self.identities[id].derived.iter().copied());
+                stack.extend(id.derived());
             }
         }
         out
+    }
+}
+
+fn find_child_by_local_raw(nodes: &[Node], parent: NodeId, local: &str) -> Option<NodeId> {
+    nodes[parent]
+        .children
+        .iter()
+        .copied()
+        .find(|&c| nodes[c].local_name() == local)
+}
+
+fn descend_by_local<'s>(
+    nodes: &[Node],
+    start: NodeId,
+    segs: impl Iterator<Item = &'s str>,
+) -> Option<NodeId> {
+    let mut cur = start;
+    for seg in segs {
+        let local = seg.rsplit_once(':').map(|(_, n)| n).unwrap_or(seg);
+        cur = find_child_by_local_raw(nodes, cur, local)?;
+    }
+    Some(cur)
+}
+
+fn resolve_schema_path(
+    nodes: &[Node],
+    module_root: &HashMap<String, Module>,
+    yang_data_roots: &HashMap<String, NodeId>,
+    path: &str,
+) -> Option<NodeId> {
+    let mut segs = path.split('/').filter(|s| !s.is_empty());
+    let first = segs.next()?;
+    let first_node = if let Some(&root) = yang_data_roots.get(first) {
+        root
+    } else {
+        let (module_name, first_local) = first.split_once(':')?;
+        let module = module_root.get(module_name)?;
+        module
+            .root_nodes
+            .iter()
+            .copied()
+            .find(|&id| nodes[id].local_name() == first_local)?
+    };
+    descend_by_local(nodes, first_node, segs)
+}
+
+impl Schema {
+    fn node_ref(&self, id: NodeId) -> NodeRef<'_> {
+        NodeRef { schema: self, id }
+    }
+
+    /// The synthetic flattened data-tree-schema root (choice/case elided)
+    /// -- every real datastore node is reachable from here via
+    /// `children()`.
+    pub fn root(&self) -> NodeRef<'_> {
+        self.node_ref(self.root)
+    }
+
+    pub fn node_by_sid(&self, sid: i64) -> Option<NodeRef<'_>> {
+        self.sid_index.get(&sid).map(|&id| self.node_ref(id))
+    }
+
+    pub fn identity_by_sid(&self, sid: i64) -> Option<IdentityRef<'_>> {
+        self.identities
+            .iter()
+            .position(|i| i.sid == Some(sid))
+            .map(|id| IdentityRef { schema: self, id })
+    }
+
+    pub fn identity_by_name(&self, module: &str, name: &str) -> Option<IdentityRef<'_>> {
+        self.identities
+            .iter()
+            .position(|i| i.module == module && i.name == name)
+            .map(|id| IdentityRef { schema: self, id })
+    }
+
+    pub fn typedef_by_name(&self, module: &str, name: &str) -> Option<TypeRef<'_>> {
+        self.types
+            .iter()
+            .position(|t| t.module.as_deref() == Some(module) && t.name.as_deref() == Some(name))
+            .map(|id| TypeRef { schema: self, id })
+    }
+
+    pub fn module_by_name(&self, name: &str) -> Option<ModuleRef<'_>> {
+        self.module_root.get(name).map(|module| ModuleRef {
+            schema: self,
+            module,
+        })
+    }
+
+    pub fn module_by_sid(&self, sid: i64) -> Option<ModuleRef<'_>> {
+        self.module_root
+            .values()
+            .find(|m| m.sid == Some(sid))
+            .map(|module| ModuleRef {
+                schema: self,
+                module,
+            })
+    }
+
+    pub fn node_by_schema_path(&self, path: &str) -> Option<NodeRef<'_>> {
+        let id = resolve_schema_path(&self.nodes, &self.module_root, &self.yang_data_roots, path)?;
+        Some(self.node_ref(id))
+    }
+
+    pub fn node_by_data_path(&self, path: &str) -> Option<NodeRef<'_>> {
+        let mut segs = path.split('/').filter(|s| !s.is_empty());
+        let first = segs.next()?;
+        let first_node = self.root().find_child(first)?;
+        let id = descend_by_local(&self.nodes, first_node.id, segs)?;
+        Some(self.node_ref(id))
     }
 }
 
@@ -354,6 +595,7 @@ struct Builder<'a> {
     types: Vec<TypeDef>,
     identities: Vec<Identity>,
     identity_by_module_name: HashMap<(String, String), IdentityId>,
+    typedef_cache: HashMap<(String, String), TypeId>,
     module_root: HashMap<String, Module>,
     yang_data_roots: HashMap<String, NodeId>,
     leafref_pending: Vec<TypeId>,
@@ -410,6 +652,7 @@ pub fn build(yang_sources: &[String], sid_sources: &[String]) -> R<Schema> {
         types: Vec::new(),
         identities: Vec::new(),
         identity_by_module_name: HashMap::new(),
+        typedef_cache: HashMap::new(),
         module_root: HashMap::new(),
         yang_data_roots: HashMap::new(),
         leafref_pending: Vec::new(),
@@ -903,48 +1146,21 @@ impl<'a> Builder<'a> {
     /// directly -- there's no per-file alias context to translate
     /// through.
     fn resolve_sid_data_identifier(&self, path: &str) -> R<NodeId> {
-        let mut segs = path.split('/').filter(|s| !s.is_empty());
-        let first = segs
-            .next()
-            .ok_or_else(|| err(format!("empty SID data identifier {path:?}")))?;
-        // An `rc:yang-data` root (e.g. "/ietf-coreconf:error") is matched
-        // by its full qualified name directly -- it has no module-root
-        // parent to descend from (see interpret_extension).
-        let mut cur = if let Some(&root) = self.yang_data_roots.get(first) {
-            root
-        } else {
-            let (dst_module, first_local) = first.split_once(':').ok_or_else(|| {
+        resolve_schema_path(&self.nodes, &self.module_root, &self.yang_data_roots, path).ok_or_else(
+            || {
                 err(format!(
-                    "first segment {first:?} of SID data identifier {path:?} has no module prefix"
+                    "target segment not found in SID data identifier {path:?}"
                 ))
-            })?;
-            let module = self.module_root.get(dst_module).ok_or_else(|| {
-                err(format!(
-                    "unknown module {dst_module:?} in SID data identifier {path:?}"
-                ))
-            })?;
-            self.find_in_module(module, first_local).ok_or_else(|| {
-                err(format!(
-                    "target segment {first_local:?} not found in module {dst_module:?} ({path:?})"
-                ))
-            })?
-        };
-        for seg in segs {
-            let local = seg.rsplit_once(':').map(|(_, n)| n).unwrap_or(seg);
-            cur = self
-                .find_by_local(cur, local)
-                .ok_or_else(|| err(format!("target segment {seg:?} not found ({path:?})")))?;
-        }
-        Ok(cur)
+            },
+        )
     }
 
     fn find_in_module(&self, module: &Module, local: &str) -> Option<NodeId> {
-        for root in &module.root_nodes {
-            if self.nodes[*root].local_name() == local {
-                return Some(*root);
-            }
-        }
-        None
+        module
+            .root_nodes
+            .iter()
+            .copied()
+            .find(|&id| self.nodes[id].local_name() == local)
     }
 
     fn find_by_local(&self, parent: NodeId, local: &str) -> Option<NodeId> {
@@ -989,29 +1205,50 @@ impl<'a> Builder<'a> {
         id
     }
 
+    fn resolve_typedef(&mut self, def_module: &str, local: &str) -> R<TypeId> {
+        let key = (def_module.to_string(), local.to_string());
+        if let Some(&id) = self.typedef_cache.get(&key) {
+            return Ok(id);
+        }
+        let raw = *self.defs.typedefs.get(&key).ok_or_else(|| {
+            err(format!(
+                "typedef {local:?} not found in module {def_module:?}"
+            ))
+        })?;
+        let base = raw
+            .sub("type")
+            .ok_or_else(|| err(format!("typedef {local:?} has no type")))?;
+        let base_id = self.interpret_type(def_module, base)?;
+        let mut ty = self.types[base_id].clone();
+        ty.name = Some(local.to_string());
+        ty.module = Some(def_module.to_string());
+        let id = self.new_type(ty);
+        self.typedef_cache.insert(key, id);
+        Ok(id)
+    }
+
     fn interpret_type(&mut self, module: &str, t: &Stmt) -> R<TypeId> {
         let name = t.arg_str();
         let mut ty = if let Some(builtin) = Builtin::from_name(name) {
             self.interpret_builtin_type(module, builtin, t)?
         } else {
-            // typedef: interpret its base type, then derive from it -- a
-            // clone, not the same TypeId, since this same typedef can be
-            // used (and independently further restricted) at more than
-            // one site. Mirrors `inner.derive(typedef['name'])`
-            // (yang-utils.rb:324): the base's already-resolved
-            // ranges/patterns carry forward as the starting point for
-            // this level's own restrictions below.
+            // typedef reference: clone the typedef's own canonical
+            // resolution -- a clone, not the same TypeId, since this
+            // same typedef can be used (and independently further
+            // restricted) at more than one site. Mirrors
+            // `inner.derive(typedef['name'])` (yang-utils.rb:324): the
+            // canonical entry's already-resolved ranges/patterns carry
+            // forward as the starting point for this level's own
+            // restrictions below. `name`/`module` are cleared on the
+            // clone -- only the canonical entry `resolve_typedef` cached
+            // may ever claim to *be* this typedef; this one is a
+            // use-site-specific derivative of it.
             let (def_module, local) = self.split_qualified(module, name)?;
-            let raw = *self
-                .defs
-                .typedefs
-                .get(&(def_module.clone(), local.to_string()))
-                .ok_or_else(|| err(format!("typedef {name:?} not found (used from {module})")))?;
-            let base = raw
-                .sub("type")
-                .ok_or_else(|| err(format!("typedef {name:?} has no type")))?;
-            let base_id = self.interpret_type(&def_module, base)?;
-            self.types[base_id].clone()
+            let canonical_id = self.resolve_typedef(&def_module, local)?;
+            let mut ty = self.types[canonical_id].clone();
+            ty.name = None;
+            ty.module = None;
+            ty
         };
 
         // Apply this type statement's own range/length/pattern
@@ -1286,8 +1523,8 @@ impl<'a> Builder<'a> {
             nodes: self.nodes,
             types: self.types,
             identities: self.identities,
-            identity_by_module_name: self.identity_by_module_name,
             module_root: self.module_root,
+            yang_data_roots: self.yang_data_roots,
             root,
             sid_index,
         })
@@ -1392,10 +1629,10 @@ mod tests {
             }
         "#;
         let schema = build(&[src.to_string()], &[]).unwrap();
-        let bar = schema.find_child(schema.root, "foo:bar").unwrap();
-        assert_eq!(schema.node(bar).status, Some(Status::Current));
-        let baz = schema.find_child(bar, "baz").unwrap();
-        assert_eq!(schema.node(baz).status, Some(Status::Current));
+        let bar = schema.root().find_child("foo:bar").unwrap();
+        assert_eq!(bar.status, Some(Status::Current));
+        let baz = bar.find_child("baz").unwrap();
+        assert_eq!(baz.status, Some(Status::Current));
     }
 
     #[test]
@@ -1415,10 +1652,10 @@ mod tests {
             }
         "#;
         let schema = build(&[src.to_string()], &[]).unwrap();
-        let bar = schema.find_child(schema.root, "foo:bar").unwrap();
-        assert_eq!(schema.node(bar).status, Some(Status::Deprecated));
-        let baz = schema.find_child(bar, "baz").unwrap();
-        assert_eq!(schema.node(baz).status, Some(Status::Obsolete));
+        let bar = schema.root().find_child("foo:bar").unwrap();
+        assert_eq!(bar.status, Some(Status::Deprecated));
+        let baz = bar.find_child("baz").unwrap();
+        assert_eq!(baz.status, Some(Status::Obsolete));
     }
 
     #[test]
@@ -1459,21 +1696,16 @@ mod tests {
             }
         "#;
         let schema = build(&[src.to_string()], &[]).unwrap();
-        // choice/case are spliced out of the flattened root tree, so walk
-        // the unflattened per-module tree to see the synthesized case node.
-        let module = &schema.module_root["foo"];
-        let bar = *module
-            .root_nodes
-            .iter()
-            .find(|&&id| schema.node(id).name == "foo:bar")
-            .unwrap();
-        let pick = schema.find_child(bar, "pick").unwrap();
-        assert_eq!(schema.node(pick).kw, "choice");
-        let implicit_case = schema.find_child(pick, "sub").unwrap();
-        assert_eq!(schema.node(implicit_case).kw, "case");
-        assert_eq!(schema.node(implicit_case).status, Some(Status::Deprecated));
-        let sub = schema.find_child(implicit_case, "sub").unwrap();
-        assert_eq!(schema.node(sub).status, Some(Status::Deprecated));
+        // choice/case are spliced out of the flattened data-node-path
+        // tree, so resolve via schema-node-path to see the synthesized
+        // case node.
+        let pick = schema.node_by_schema_path("/foo:bar/pick").unwrap();
+        assert_eq!(pick.kw, "choice");
+        let implicit_case = schema.node_by_schema_path("/foo:bar/pick/sub").unwrap();
+        assert_eq!(implicit_case.kw, "case");
+        assert_eq!(implicit_case.status, Some(Status::Deprecated));
+        let sub = implicit_case.find_child("sub").unwrap();
+        assert_eq!(sub.status, Some(Status::Deprecated));
     }
 
     #[test]
@@ -1498,16 +1730,10 @@ mod tests {
             }
         "#;
         let schema = build(&[src.to_string()], &[]).unwrap();
-        let module = &schema.module_root["foo"];
-        let bar = *module
-            .root_nodes
-            .iter()
-            .find(|&&id| schema.node(id).name == "foo:bar")
-            .unwrap();
-        let input = schema.find_child(bar, "input").unwrap();
-        let output = schema.find_child(bar, "output").unwrap();
-        assert_eq!(schema.node(input).status, None);
-        assert_eq!(schema.node(output).status, None);
+        let input = schema.node_by_schema_path("/foo:bar/input").unwrap();
+        let output = schema.node_by_schema_path("/foo:bar/output").unwrap();
+        assert_eq!(input.status, None);
+        assert_eq!(output.status, None);
     }
 
     #[test]
@@ -1535,14 +1761,7 @@ mod tests {
             }
         "#;
         let schema = build(&[src.to_string()], &[]).unwrap();
-        let module = &schema.module_root["foo"];
-        let c = *module
-            .root_nodes
-            .iter()
-            .find(|&&id| schema.node(id).name == "foo:c")
-            .unwrap();
-        let x = schema.find_child(c, "x");
-        assert!(x.is_some());
+        assert!(schema.node_by_data_path("/foo:c/x").is_some());
     }
 
     #[test]
@@ -1579,14 +1798,280 @@ mod tests {
             }
         "#;
         let schema = build(&[src.to_string()], &[]).unwrap();
-        let outer = schema.find_child(schema.root, "foo:outer").unwrap();
-        let c = schema.find_child(outer, "c").unwrap();
-        let x = schema.find_child(c, "x");
+        let outer = schema.root().find_child("foo:outer").unwrap();
+        let c = outer.find_child("c").unwrap();
+        let x = c.find_child("x");
         assert!(x.is_some());
 
-        let decoy = schema.find_child(outer, "decoy").unwrap();
-        let decoy_c = schema.find_child(decoy, "c").unwrap();
-        let decoy_x = schema.find_child(decoy_c, "x");
+        let decoy = outer.find_child("decoy").unwrap();
+        let decoy_c = decoy.find_child("c").unwrap();
+        let decoy_x = decoy_c.find_child("x");
         assert!(decoy_x.is_none());
+    }
+
+    #[test]
+    fn identity_by_name_finds_a_declared_identity() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              identity animal;
+              identity dog {
+                base animal;
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let animal = schema.identity_by_name("foo", "animal").unwrap();
+        assert_eq!(animal.name, "animal");
+        let dog = schema.identity_by_name("foo", "dog").unwrap();
+        assert_eq!(dog.base().count(), 1);
+        assert_eq!(dog.base().next().unwrap().name, "animal");
+        assert!(schema.identity_by_name("foo", "no-such-identity").is_none());
+    }
+
+    #[test]
+    fn module_by_sid_finds_a_module_with_an_attached_sid() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+            }
+        "#;
+        let sid = r#"{
+            "module-name": "foo",
+            "module-revision": "2026-01-01",
+            "items": [
+                {"namespace": "module", "identifier": "foo", "sid": 5000}
+            ]
+        }"#;
+        let schema = build(&[src.to_string()], &[sid.to_string()]).unwrap();
+        let module = schema.module_by_sid(5000).unwrap();
+        assert_eq!(module.name, "foo");
+        assert!(schema.module_by_sid(9999).is_none());
+    }
+
+    #[test]
+    fn module_root_nodes_lists_its_own_top_level_nodes_in_order() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              leaf a {
+                type string;
+              }
+              leaf b {
+                type string;
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let module = schema.module_by_name("foo").unwrap();
+        let names: Vec<String> = module
+            .root_nodes()
+            .map(|n| n.local_name().to_string())
+            .collect();
+        assert_eq!(names, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn typedef_by_name_finds_the_canonical_unrestricted_resolution() {
+        // Two leaves reference the same typedef, one narrowing it further
+        // with its own `range` -- typedef_by_name must still return the
+        // typedef's own declared (unrestricted) type, not either use
+        // site's clone.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              typedef percent {
+                type uint8 {
+                  range "0..100";
+                }
+              }
+
+              container bar {
+                leaf wide {
+                  type percent;
+                }
+                leaf narrow {
+                  type percent {
+                    range "0..50";
+                  }
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let percent = schema.typedef_by_name("foo", "percent").unwrap();
+        assert_eq!(percent.ranges, vec![(0, 100)]);
+
+        let bar = schema.root().find_child("foo:bar").unwrap();
+        let narrow = bar.find_child("narrow").unwrap();
+        let narrow_ty = narrow.ty().unwrap();
+        assert_eq!(narrow_ty.ranges, vec![(0, 50)]);
+
+        // The narrowed use site must not have clobbered the canonical
+        // entry `typedef_by_name` returns.
+        let percent_again = schema.typedef_by_name("foo", "percent").unwrap();
+        assert_eq!(percent_again.ranges, vec![(0, 100)]);
+    }
+
+    #[test]
+    fn typedef_by_name_is_none_for_an_inline_type_or_unknown_name() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              leaf bar {
+                type string;
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        assert!(schema.typedef_by_name("foo", "string").is_none());
+        assert!(schema.typedef_by_name("foo", "no-such-typedef").is_none());
+    }
+
+    #[test]
+    fn node_by_schema_path_sees_choice_case_but_node_by_data_path_does_not() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              container bar {
+                choice pick {
+                  case picked {
+                    leaf sub {
+                      type string;
+                    }
+                  }
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+
+        let via_schema_path = schema
+            .node_by_schema_path("/foo:bar/pick/picked/sub")
+            .unwrap();
+        assert_eq!(via_schema_path.kw, "leaf");
+
+        assert!(schema.node_by_schema_path("/foo:bar/pick").is_some());
+        assert_eq!(
+            schema.node_by_schema_path("/foo:bar/pick").unwrap().kw,
+            "choice"
+        );
+        assert!(schema.node_by_schema_path("/foo:bar/pick/picked").is_some());
+        assert_eq!(
+            schema
+                .node_by_schema_path("/foo:bar/pick/picked")
+                .unwrap()
+                .kw,
+            "case"
+        );
+
+        // The same leaf is reachable by data-node-path with the choice
+        // and case segments simply absent -- and naming either of them
+        // finds nothing at all, since both were spliced out of the
+        // flattened tree.
+        let via_data_path = schema.node_by_data_path("/foo:bar/sub").unwrap();
+        assert_eq!(via_data_path.kw, "leaf");
+        assert!(schema
+            .node_by_data_path("/foo:bar/pick/picked/sub")
+            .is_none());
+        assert!(schema.node_by_data_path("/foo:bar/pick").is_none());
+        assert!(schema.node_by_data_path("/foo:bar/picked").is_none());
+    }
+
+    #[test]
+    fn node_by_schema_path_disambiguates_the_first_segment_by_module() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              container shared {
+                leaf x {
+                  type string;
+                }
+              }
+            }
+        "#;
+        let src2 = r#"
+            module bar {
+              namespace "urn:bar";
+              prefix b;
+
+              container shared {
+                leaf y {
+                  type string;
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string(), src2.to_string()], &[]).unwrap();
+
+        let foo_shared = schema.node_by_schema_path("/foo:shared").unwrap();
+        assert!(foo_shared.find_child("x").is_some());
+        assert!(foo_shared.find_child("y").is_none());
+
+        let bar_shared = schema.node_by_schema_path("/bar:shared").unwrap();
+        assert!(bar_shared.find_child("y").is_some());
+        assert!(bar_shared.find_child("x").is_none());
+
+        assert!(schema.node_by_data_path("/foo:shared/x").is_some());
+        assert!(schema.node_by_data_path("/bar:shared/y").is_some());
+        assert!(schema.node_by_data_path("/foo:shared/y").is_none());
+    }
+
+    #[test]
+    fn node_by_schema_path_finds_a_yang_data_root_by_its_full_qualified_name() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              rc:yang-data coreconf-error {
+                container error {
+                  leaf message {
+                    type string;
+                  }
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let error_root = schema.node_by_schema_path("/foo:error").unwrap();
+        assert_eq!(error_root.kw, "container");
+        assert!(error_root.find_child("message").is_some());
+
+        // Not part of the datastore, so unreachable via a data-node-path.
+        assert!(schema.node_by_data_path("/foo:error").is_none());
+    }
+
+    #[test]
+    fn node_by_schema_path_and_node_by_data_path_return_none_for_unknown_paths() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              leaf bar {
+                type string;
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        assert!(schema.node_by_schema_path("/foo:no-such-node").is_none());
+        assert!(schema.node_by_schema_path("/no-such-module:bar").is_none());
+        assert!(schema.node_by_data_path("/foo:no-such-node").is_none());
+        assert!(schema.node_by_schema_path("").is_none());
+        assert!(schema.node_by_data_path("").is_none());
     }
 }

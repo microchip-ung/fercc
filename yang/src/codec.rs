@@ -10,7 +10,7 @@
 use cbor::Value as Cbor;
 use serde_json::Value as Json;
 
-use crate::schema::{Builtin, IdentityId, Node, NodeId, Schema, TypeDef, TypeId};
+use crate::schema::{Builtin, IdentityRef, Node, NodeRef, Schema, TypeDef, TypeRef};
 
 #[derive(Debug)]
 pub struct CodecError(pub String);
@@ -82,16 +82,15 @@ impl ContentFormat {
 /// encoding (only needed for union-member dispatch heuristics below;
 /// `type_to_cbor`/`type_to_json` themselves already delegate leafref
 /// directly).
-fn resolved_builtin(schema: &Schema, type_id: TypeId) -> (Builtin, TypeId) {
-    let ty = schema.ty(type_id);
+fn resolved_type<'a>(ty: TypeRef<'a>) -> TypeRef<'a> {
     if ty.builtin == Builtin::Leafref {
-        if let Some(target) = ty.leafref_target {
-            if let Some(t) = schema.node(target).type_id {
-                return resolved_builtin(schema, t);
+        if let Some(target) = ty.leafref_target() {
+            if let Some(t) = target.ty() {
+                return resolved_type(t);
             }
         }
     }
-    (ty.builtin, type_id)
+    ty
 }
 
 fn json_number_to_i128(value: &Json) -> Option<i128> {
@@ -131,10 +130,9 @@ fn builtin_yang_name(b: Builtin) -> &'static str {
 /// The plain-YANG-name list of a union's member types, resolving past
 /// any `leafref` member to what it actually targets -- "leafref" on its
 /// own would tell a reader nothing about what value is actually wanted.
-fn union_member_kinds(schema: &Schema, ty: &TypeDef) -> String {
-    ty.union_members
-        .iter()
-        .map(|&m| builtin_yang_name(resolved_builtin(schema, m).0))
+fn union_member_kinds(ty: TypeRef<'_>) -> String {
+    ty.union_members()
+        .map(|m| builtin_yang_name(resolved_type(m).builtin))
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -232,20 +230,19 @@ fn matches_all_patterns(s: &str, patterns: &[String]) -> R<bool> {
 /// (yang-enc.rb:275-387).
 pub fn type_to_cbor(
     schema: &Schema,
-    type_id: TypeId,
+    ty: TypeRef<'_>,
     value: &Json,
     in_union: bool,
     continue_on_error: bool,
 ) -> R<Cbor> {
     lenient(
-        type_to_cbor_checked(schema, type_id, value, in_union),
+        type_to_cbor_checked(schema, ty, value, in_union),
         continue_on_error,
         || json_to_cbor_generic(value),
     )
 }
 
-fn type_to_cbor_checked(schema: &Schema, type_id: TypeId, value: &Json, in_union: bool) -> R<Cbor> {
-    let ty = schema.ty(type_id);
+fn type_to_cbor_checked(schema: &Schema, ty: TypeRef<'_>, value: &Json, in_union: bool) -> R<Cbor> {
     match ty.builtin {
         Builtin::Int8 | Builtin::Int16 | Builtin::Int32 | Builtin::Uint8 | Builtin::Uint16 | Builtin::Uint32 => {
             let n = json_number_to_i128(value).ok_or_else(|| err(format!("expected a whole number here, got {value}")))? as i64;
@@ -302,15 +299,15 @@ fn type_to_cbor_checked(schema: &Schema, type_id: TypeId, value: &Json, in_union
                 "this field has no value of its own -- it's just present or absent, so it must be written as [null] (a one-item list containing null), got {other}"
             ))),
         },
-        Builtin::Decimal64 => encode_decimal64(ty, value, in_union),
-        Builtin::Enumeration => encode_enum(ty, value, in_union),
-        Builtin::Bits => encode_bits(ty, value, in_union),
-        Builtin::Identityref => encode_identityref(schema, ty, value, in_union),
+        Builtin::Decimal64 => encode_decimal64(&ty, value, in_union),
+        Builtin::Enumeration => encode_enum(&ty, value, in_union),
+        Builtin::Bits => encode_bits(&ty, value, in_union),
+        Builtin::Identityref => encode_identityref(ty, value, in_union),
         Builtin::InstanceIdentifier => {
             let s = value.as_str().ok_or_else(|| err(format!("expected a path (as text) pointing to another node, got {value}")))?;
             resolve_iid(schema, s).map(|(_, cbor)| cbor)
         }
-        Builtin::Leafref => match ty.leafref_target.and_then(|t| schema.node(t).type_id) {
+        Builtin::Leafref => match ty.leafref_target().and_then(|t| t.ty()) {
             Some(target_type) => type_to_cbor_checked(schema, target_type, value, in_union),
             // Unresolved (e.g. a relative leafref, not exercised in this
             // catalog): fall back to passthrough so encoding still
@@ -318,8 +315,8 @@ fn type_to_cbor_checked(schema: &Schema, type_id: TypeId, value: &Json, in_union
             None => Ok(json_to_cbor_generic(value)),
         },
         Builtin::Union => {
-            let member = pick_union_member_for_json(schema, ty, value)
-                .ok_or_else(|| err(format!("{value} does not match any of the allowed types here: {}", union_member_kinds(schema, ty))))?;
+            let member = pick_union_member_for_json(ty, value)
+                .ok_or_else(|| err(format!("{value} does not match any of the allowed types here: {}", union_member_kinds(ty))))?;
             type_to_cbor_checked(schema, member, value, true)
         }
     }
@@ -363,9 +360,8 @@ fn json_to_cbor_generic(value: &Json) -> Cbor {
     }
 }
 
-/// Decode CBOR back to a JSON value for `type_id`.
-pub fn type_to_json(schema: &Schema, type_id: TypeId, value: &Cbor, in_union: bool) -> R<Json> {
-    let ty = schema.ty(type_id);
+/// Decode CBOR back to a JSON value for `ty`.
+pub fn type_to_json(schema: &Schema, ty: TypeRef<'_>, value: &Cbor, in_union: bool) -> R<Json> {
     match ty.builtin {
         Builtin::Int8
         | Builtin::Int16
@@ -402,21 +398,21 @@ pub fn type_to_json(schema: &Schema, type_id: TypeId, value: &Cbor, in_union: bo
             Ok(Json::String(base64_encode(bytes)))
         }
         Builtin::Empty => Ok(Json::Array(vec![Json::Null])),
-        Builtin::Decimal64 => decode_decimal64(ty, value, in_union),
-        Builtin::Enumeration => decode_enum(ty, value, in_union),
-        Builtin::Bits => decode_bits(ty, value, in_union),
-        Builtin::Identityref => decode_identityref(schema, ty, value, in_union),
+        Builtin::Decimal64 => decode_decimal64(&ty, value, in_union),
+        Builtin::Enumeration => decode_enum(&ty, value, in_union),
+        Builtin::Bits => decode_bits(&ty, value, in_union),
+        Builtin::Identityref => decode_identityref(schema, value, in_union),
         Builtin::InstanceIdentifier => cbor_to_iid_string(schema, value).map(Json::String),
-        Builtin::Leafref => match ty.leafref_target.and_then(|t| schema.node(t).type_id) {
+        Builtin::Leafref => match ty.leafref_target().and_then(|t| t.ty()) {
             Some(target_type) => type_to_json(schema, target_type, value, in_union),
             None => cbor_scalar_passthrough_to_json(value),
         },
         Builtin::Union => {
-            let member = pick_union_member_for_cbor(schema, ty, value).ok_or_else(|| {
+            let member = pick_union_member_for_cbor(ty, value).ok_or_else(|| {
                 err(format!(
                     "the device sent {}, which doesn't match any of this field's allowed types ({}) -- the loaded YANG catalog may not match this device's firmware",
                     describe_cbor(value),
-                    union_member_kinds(schema, ty)
+                    union_member_kinds(ty)
                 ))
             })?;
             type_to_json(schema, member, value, true)
@@ -707,41 +703,39 @@ fn decode_bits(ty: &TypeDef, value: &Cbor, in_union: bool) -> R<Json> {
 // -- identityref (RFC 9254 6.10 / RFC 9595) ------------------------------
 
 pub(crate) fn all_identity_bases(
-    schema: &Schema,
-    ty: &TypeDef,
-) -> Option<std::collections::HashSet<IdentityId>> {
-    let mut iter = ty.identity_bases.iter();
-    let first = *iter.next()?;
-    let mut set = schema.derived_from(first);
-    for &b in iter {
-        let other = schema.derived_from(b);
+    ty: TypeRef<'_>,
+) -> Option<std::collections::HashSet<IdentityRef<'_>>> {
+    let mut iter = ty.identity_bases();
+    let first = iter.next()?;
+    let mut set = first.derived_from();
+    for b in iter {
+        let other = b.derived_from();
         set.retain(|id| other.contains(id));
     }
     Some(set)
 }
 
-fn encode_identityref(schema: &Schema, ty: &TypeDef, value: &Json, in_union: bool) -> R<Cbor> {
+fn encode_identityref(ty: TypeRef<'_>, value: &Json, in_union: bool) -> R<Cbor> {
     let s = value.as_str().ok_or_else(|| {
         err(format!(
             "expected the name of one of this field's allowed values (as text), got {value}"
         ))
     })?;
-    let candidates = all_identity_bases(schema, ty).ok_or_else(|| err("this field's schema doesn't declare any allowed values at all -- this looks like a catalog problem"))?;
+    let candidates = all_identity_bases(ty).ok_or_else(|| err("this field's schema doesn't declare any allowed values at all -- this looks like a catalog problem"))?;
     let source_module = ty.source_module.as_deref().unwrap_or("");
 
-    let found = candidates.into_iter().find(|&id| {
-        let identity = schema.identity(id);
-        match s.split_once(':') {
+    let found = candidates
+        .into_iter()
+        .find(|identity| match s.split_once(':') {
             Some((m, n)) => identity.module == m && identity.name == n,
             None => identity.module == source_module && identity.name == s,
-        }
-    });
-    let id = found.ok_or_else(|| {
+        });
+    let identity = found.ok_or_else(|| {
         err(format!(
             "{s:?} is not one of the allowed values for this field"
         ))
     })?;
-    let sid = schema.identity(id).sid.ok_or_else(|| err(format!("{s:?} exists in the schema but has no SID assigned -- this looks like a catalog problem")))?;
+    let sid = identity.sid.ok_or_else(|| err(format!("{s:?} exists in the schema but has no SID assigned -- this looks like a catalog problem")))?;
     if in_union {
         Ok(Cbor::Tag(45, Box::new(Cbor::from(sid))))
     } else {
@@ -749,7 +743,7 @@ fn encode_identityref(schema: &Schema, ty: &TypeDef, value: &Json, in_union: boo
     }
 }
 
-fn decode_identityref(schema: &Schema, _ty: &TypeDef, value: &Cbor, in_union: bool) -> R<Json> {
+fn decode_identityref(schema: &Schema, value: &Cbor, in_union: bool) -> R<Json> {
     let sid = if in_union {
         match value {
             Cbor::Tag(45, inner) => cbor_as_i128(inner)
@@ -761,9 +755,7 @@ fn decode_identityref(schema: &Schema, _ty: &TypeDef, value: &Cbor, in_union: bo
             .ok_or_else(|| unexpected_value("a whole number (an identity reference)", value))?
     };
     let identity = schema
-        .identities
-        .iter()
-        .find(|i| i.sid == Some(sid as i64))
+        .identity_by_sid(sid as i64)
         .ok_or_else(|| err(format!("the device referenced identity #{sid}, which isn't in the loaded YANG catalog -- the catalog may not match this device's firmware")))?;
     // Decode always qualifies with the defining module, confirmed against
     // real device output (e.g. "ietf-routing:ipv4",
@@ -779,22 +771,21 @@ fn decode_identityref(schema: &Schema, _ty: &TypeDef, value: &Cbor, in_union: bo
 
 // -- union member dispatch (encoding-focused heuristic; see module docs) -
 
-fn pick_union_member_for_json(schema: &Schema, ty: &TypeDef, value: &Json) -> Option<TypeId> {
-    let members: Vec<TypeId> = ty.union_members.clone();
+fn pick_union_member_for_json<'a>(ty: TypeRef<'a>, value: &Json) -> Option<TypeRef<'a>> {
+    let members: Vec<TypeRef<'a>> = ty.union_members().collect();
 
     for &m in &members {
-        if resolved_builtin(schema, m).0 == Builtin::Identityref {
+        if resolved_type(m).builtin == Builtin::Identityref {
             if let Json::String(s) = value {
-                let mt = schema.ty(resolved_builtin(schema, m).1);
-                if let Some(candidates) = all_identity_bases(schema, mt) {
+                let mt = resolved_type(m);
+                if let Some(candidates) = all_identity_bases(mt) {
                     let source_module = mt.source_module.as_deref().unwrap_or("");
-                    let matches = candidates.into_iter().any(|id| {
-                        let identity = schema.identity(id);
-                        match s.split_once(':') {
+                    let matches = candidates
+                        .into_iter()
+                        .any(|identity| match s.split_once(':') {
                             Some((mm, n)) => identity.module == mm && identity.name == n,
                             None => identity.module == source_module && identity.name == s.as_str(),
-                        }
-                    });
+                        });
                     if matches {
                         return Some(m);
                     }
@@ -803,9 +794,9 @@ fn pick_union_member_for_json(schema: &Schema, ty: &TypeDef, value: &Json) -> Op
         }
     }
     for &m in &members {
-        if resolved_builtin(schema, m).0 == Builtin::Enumeration {
+        if resolved_type(m).builtin == Builtin::Enumeration {
             if let Json::String(s) = value {
-                let mt = schema.ty(resolved_builtin(schema, m).1);
+                let mt = resolved_type(m);
                 if mt.enums.iter().any(|e| &e.name == s) {
                     return Some(m);
                 }
@@ -813,14 +804,14 @@ fn pick_union_member_for_json(schema: &Schema, ty: &TypeDef, value: &Json) -> Op
         }
     }
     for &m in &members {
-        if resolved_builtin(schema, m).0 == Builtin::Bits {
+        if resolved_type(m).builtin == Builtin::Bits {
             let names: Option<Vec<&str>> = match value {
                 Json::String(s) => Some(s.split_whitespace().collect()),
                 Json::Array(items) => Some(items.iter().filter_map(|v| v.as_str()).collect()),
                 _ => None,
             };
             if let Some(names) = names {
-                let mt = schema.ty(resolved_builtin(schema, m).1);
+                let mt = resolved_type(m);
                 if !names.is_empty() && names.iter().all(|n| mt.bits.iter().any(|b| &b.name == n)) {
                     return Some(m);
                 }
@@ -828,7 +819,7 @@ fn pick_union_member_for_json(schema: &Schema, ty: &TypeDef, value: &Json) -> Op
         }
     }
     for &m in &members {
-        if resolved_builtin(schema, m).0 == Builtin::Decimal64 {
+        if resolved_type(m).builtin == Builtin::Decimal64 {
             if let Json::String(s) = value {
                 if s.trim_start_matches('-')
                     .chars()
@@ -841,7 +832,7 @@ fn pick_union_member_for_json(schema: &Schema, ty: &TypeDef, value: &Json) -> Op
         }
     }
     for &m in &members {
-        let b = resolved_builtin(schema, m).0;
+        let b = resolved_type(m).builtin;
         if b.is_64bit_int() {
             if let Json::String(s) = value {
                 let ok = if b == Builtin::Int64 {
@@ -856,7 +847,7 @@ fn pick_union_member_for_json(schema: &Schema, ty: &TypeDef, value: &Json) -> Op
         }
     }
     for &m in &members {
-        match (resolved_builtin(schema, m).0, value) {
+        match (resolved_type(m).builtin, value) {
             (Builtin::Boolean, Json::Bool(_)) => return Some(m),
             (
                 Builtin::Int8
@@ -878,7 +869,7 @@ fn pick_union_member_for_json(schema: &Schema, ty: &TypeDef, value: &Json) -> Op
     // passes, rather than whichever happens to be declared first).
     if let Some(&m) = members
         .iter()
-        .find(|&&m| resolved_builtin(schema, m).0 == Builtin::String)
+        .find(|&&m| resolved_type(m).builtin == Builtin::String)
     {
         if matches!(value, Json::String(_)) {
             return Some(m);
@@ -886,7 +877,7 @@ fn pick_union_member_for_json(schema: &Schema, ty: &TypeDef, value: &Json) -> Op
     }
     for &m in &members {
         if matches!(
-            resolved_builtin(schema, m).0,
+            resolved_type(m).builtin,
             Builtin::Binary | Builtin::InstanceIdentifier
         ) && matches!(value, Json::String(_))
         {
@@ -902,8 +893,8 @@ fn pick_union_member_for_json(schema: &Schema, ty: &TypeDef, value: &Json) -> Op
     None
 }
 
-fn pick_union_member_for_cbor(schema: &Schema, ty: &TypeDef, value: &Cbor) -> Option<TypeId> {
-    let members: Vec<TypeId> = ty.union_members.clone();
+fn pick_union_member_for_cbor<'a>(ty: TypeRef<'a>, value: &Cbor) -> Option<TypeRef<'a>> {
+    let members: Vec<TypeRef<'a>> = ty.union_members().collect();
     let tag_builtin = match value {
         Cbor::Tag(4, _) => Some(Builtin::Decimal64),
         Cbor::Tag(43, _) => Some(Builtin::Bits),
@@ -912,10 +903,7 @@ fn pick_union_member_for_cbor(schema: &Schema, ty: &TypeDef, value: &Cbor) -> Op
         _ => None,
     };
     if let Some(b) = tag_builtin {
-        if let Some(&m) = members
-            .iter()
-            .find(|&&m| resolved_builtin(schema, m).0 == b)
-        {
+        if let Some(&m) = members.iter().find(|&&m| resolved_type(m).builtin == b) {
             return Some(m);
         }
     }
@@ -926,14 +914,14 @@ fn pick_union_member_for_cbor(schema: &Schema, ty: &TypeDef, value: &Cbor) -> Op
             if !fits_32 {
                 if let Some(&m) = members
                     .iter()
-                    .find(|&&m| resolved_builtin(schema, m).0.is_64bit_int())
+                    .find(|&&m| resolved_type(m).builtin.is_64bit_int())
                 {
                     return Some(m);
                 }
             }
             members.iter().copied().find(|&m| {
                 matches!(
-                    resolved_builtin(schema, m).0,
+                    resolved_type(m).builtin,
                     Builtin::Int8
                         | Builtin::Int16
                         | Builtin::Int32
@@ -947,22 +935,22 @@ fn pick_union_member_for_cbor(schema: &Schema, ty: &TypeDef, value: &Cbor) -> Op
         }
         Cbor::Text(_) => members.iter().copied().find(|&m| {
             matches!(
-                resolved_builtin(schema, m).0,
+                resolved_type(m).builtin,
                 Builtin::String | Builtin::InstanceIdentifier
             )
         }),
         Cbor::Bytes(_) => members
             .iter()
             .copied()
-            .find(|&m| resolved_builtin(schema, m).0 == Builtin::Binary),
+            .find(|&m| resolved_type(m).builtin == Builtin::Binary),
         Cbor::Bool(_) => members
             .iter()
             .copied()
-            .find(|&m| resolved_builtin(schema, m).0 == Builtin::Boolean),
+            .find(|&m| resolved_type(m).builtin == Builtin::Boolean),
         Cbor::Null => members
             .iter()
             .copied()
-            .find(|&m| resolved_builtin(schema, m).0 == Builtin::Empty),
+            .find(|&m| resolved_type(m).builtin == Builtin::Empty),
         _ => None,
     }
     // No member's builtin kind matches this CBOR value's own kind --
@@ -1038,8 +1026,8 @@ fn parse_iid_segment(seg: &str) -> R<IidSegment<'_>> {
 /// get a native conversion; every other type (including decimal64,
 /// identityref, and plain string) is passed through as a JSON string
 /// as-is.
-fn convert_iid_key_value(schema: &Schema, type_id: TypeId, raw: &str) -> R<Json> {
-    match resolved_builtin(schema, type_id).0 {
+fn convert_iid_key_value(ty: TypeRef<'_>, raw: &str) -> R<Json> {
+    match resolved_type(ty).builtin {
         // int64/uint64 stay a JSON string -- `type_to_cbor` expects the
         // RFC 7951 64-bit string convention, not a JSON number.
         Builtin::Int64 | Builtin::Uint64 => Ok(Json::String(raw.to_string())),
@@ -1074,9 +1062,9 @@ fn convert_iid_key_value(schema: &Schema, type_id: TypeId, raw: &str) -> R<Json>
 /// Encode an instance-identifier path string to its CBOR representation
 /// (bare SID, or `[SID, key1, key2, ...]` for a list entry) and return the
 /// schema node it addresses.
-pub fn resolve_iid(schema: &Schema, path: &str) -> R<(NodeId, Cbor)> {
+pub fn resolve_iid<'a>(schema: &'a Schema, path: &str) -> R<(NodeRef<'a>, Cbor)> {
     let segs = split_outside_brackets(path);
-    let mut cur = schema.root;
+    let mut cur = schema.root();
     let mut last_sid = 0i64;
     // Keys accumulate from *every* list ancestor traversed along the
     // path, not just the final segment: a path descending into a leaf
@@ -1087,26 +1075,24 @@ pub fn resolve_iid(schema: &Schema, path: &str) -> R<(NodeId, Cbor)> {
 
     for raw_seg in segs {
         let seg = parse_iid_segment(raw_seg)?;
-        let child = schema
-            .find_child(cur, seg.name)
+        let child = cur
+            .find_child(seg.name)
             .ok_or_else(|| err(format!("\"{}\" in the path {path:?} doesn't exist in this device's YANG model -- check for a typo", seg.name)))?;
-        let node = schema.node(child);
-        let sid = node
+        let sid = child
             .sid
             .ok_or_else(|| err(format!("\"{}\" exists in the schema but has no SID assigned -- this looks like a catalog problem, not a mistake in your path", seg.name)))?;
 
         let mut ordered_keys = Vec::new();
-        if !node.keys.is_empty() {
-            for key_name in &node.keys {
+        if !child.keys.is_empty() {
+            for key_name in &child.keys {
                 if let Some((_, v)) = seg.keys.iter().find(|(k, _)| k == key_name) {
-                    let key_child = schema
-                        .find_child(child, key_name)
+                    let key_child = child
+                        .find_child(key_name)
                         .ok_or_else(|| err(format!("the key \"{key_name}\" of \"{}\" doesn't exist in this device's YANG model ({path:?})", seg.name)))?;
-                    let key_type = schema
-                        .node(key_child)
-                        .type_id
+                    let key_type = key_child
+                        .ty()
                         .ok_or_else(|| err(format!("the key \"{key_name}\" has no type in the schema -- this looks like a catalog problem")))?;
-                    let json_v = convert_iid_key_value(schema, key_type, v)?;
+                    let json_v = convert_iid_key_value(key_type, v)?;
                     // Matches Ruby's `iid2cbor` (yang-enc.rb:459-467): its
                     // own `type2cbor` call for a key value never receives
                     // `continue_on_error` at all (implicit `false`) --
@@ -1117,7 +1103,7 @@ pub fn resolve_iid(schema: &Schema, path: &str) -> R<(NodeId, Cbor)> {
                 }
             }
             for (k, _) in &seg.keys {
-                if !node.keys.iter().any(|nk| nk == k) {
+                if !child.keys.iter().any(|nk| nk == k) {
                     return Err(err(format!(
                         "\"{k}\" is not a key of the list at {path:?} -- check the key name"
                     )));
@@ -1169,28 +1155,26 @@ fn split_iid_cbor(value: &Cbor) -> R<(i64, Vec<Cbor>)> {
 /// path string (single-quoted key values, canonical form -- not
 /// necessarily byte-identical to whatever original string produced the
 /// SID, matching `iid2json`'s behavior).
-pub fn decode_iid(schema: &Schema, value: &Cbor) -> R<(NodeId, String)> {
+pub fn decode_iid<'a>(schema: &'a Schema, value: &Cbor) -> R<(NodeRef<'a>, String)> {
     let (sid, mut keys) = split_iid_cbor(value)?;
-    let node = *schema
-        .sid_index
-        .get(&sid)
+    let node = schema
+        .node_by_sid(sid)
         .ok_or_else(|| err(format!("the device referenced path identifier #{sid}, which isn't in the loaded YANG catalog -- the catalog may not match this device's firmware")))?;
     let path = node_path_string(schema, node, &mut keys)?;
     Ok((node, path))
 }
 
-fn node_path_string(schema: &Schema, node: NodeId, keys: &mut Vec<Cbor>) -> R<String> {
+fn node_path_string(schema: &Schema, node: NodeRef<'_>, keys: &mut Vec<Cbor>) -> R<String> {
     let mut chain = Vec::new();
     let mut cur = Some(node);
     while let Some(n) = cur {
         chain.push(n);
-        cur = schema.node(n).parent;
+        cur = n.parent();
     }
     chain.reverse();
 
     let mut path = String::new();
-    for &n in &chain {
-        let nd = schema.node(n);
+    for &nd in &chain {
         if nd.kw == "module" {
             continue;
         }
@@ -1201,12 +1185,11 @@ fn node_path_string(schema: &Schema, node: NodeId, keys: &mut Vec<Cbor>) -> R<St
             // the front, in the same outer-to-inner order `resolve_iid`
             // accumulates them -- not just the final target node.
             for key_name in &nd.keys {
-                let key_child = schema
-                    .find_child(n, key_name)
+                let key_child = nd
+                    .find_child(key_name)
                     .ok_or_else(|| err(format!("the list \"{}\" is missing its own key field \"{key_name}\" in the schema -- this looks like a catalog problem", nd.name)))?;
-                let key_type = schema
-                    .node(key_child)
-                    .type_id
+                let key_type = key_child
+                    .ty()
                     .ok_or_else(|| err(format!("the key \"{key_name}\" has no type in the schema -- this looks like a catalog problem")))?;
                 if keys.is_empty() {
                     break;
@@ -1246,43 +1229,42 @@ fn node_display_name(node: &Node) -> &str {
     }
 }
 
-fn effective_delta_base(schema: &Schema, node: NodeId) -> i64 {
-    let n = schema.node(node);
-    if n.kw == "input" || n.kw == "output" {
-        if let Some(parent) = n.parent {
-            if IMPLICIT_INPUT_OUTPUT_BASE.contains(&schema.node(parent).kw.as_str()) {
-                if let Some(sid) = schema.node(parent).sid {
+fn effective_delta_base(node: NodeRef<'_>) -> i64 {
+    if node.kw == "input" || node.kw == "output" {
+        if let Some(parent) = node.parent() {
+            if IMPLICIT_INPUT_OUTPUT_BASE.contains(&parent.kw.as_str()) {
+                if let Some(sid) = parent.sid {
                     return sid;
                 }
             }
         }
     }
-    n.sid.unwrap_or(0)
+    node.sid.unwrap_or(0)
 }
 
 fn encode_leaf_value(
     schema: &Schema,
-    node: &Node,
+    node: NodeRef<'_>,
     value: &Json,
     continue_on_error: bool,
 ) -> R<Cbor> {
-    let type_id = node.type_id.ok_or_else(|| {
+    let ty = node.ty().ok_or_else(|| {
         err(format!(
             "\"{}\" has no type defined in the schema -- this looks like a catalog problem",
             node.name
         ))
     })?;
-    type_to_cbor(schema, type_id, value, false, continue_on_error)
+    type_to_cbor(schema, ty, value, false, continue_on_error)
 }
 
-fn decode_leaf_value(schema: &Schema, node: &Node, value: &Cbor) -> R<Json> {
-    let type_id = node.type_id.ok_or_else(|| {
+fn decode_leaf_value(schema: &Schema, node: NodeRef<'_>, value: &Cbor) -> R<Json> {
+    let ty = node.ty().ok_or_else(|| {
         err(format!(
             "\"{}\" has no type defined in the schema -- this looks like a catalog problem",
             node.name
         ))
     })?;
-    type_to_json(schema, type_id, value, false)
+    type_to_json(schema, ty, value, false)
 }
 
 /// Encode one container's (or one list entry's, or one rpc input/output's)
@@ -1301,13 +1283,12 @@ fn decode_leaf_value(schema: &Schema, node: &Node, value: &Cbor) -> R<Json> {
 /// `--continue` softens.
 fn encode_body(
     schema: &Schema,
-    scope: NodeId,
+    scope: NodeRef<'_>,
     obj: &serde_json::Map<String, Json>,
     cf: ContentFormat,
     continue_on_error: bool,
 ) -> R<Cbor> {
-    let base = effective_delta_base(schema, scope);
-    let scope_node = schema.node(scope);
+    let base = effective_delta_base(scope);
     // Matches `json2cbor_hash` (support/yang-enc/yang-enc.rb:176-191)
     // exactly: map entries come out in the *input* JSON/YAML object's own
     // key order, full stop -- not schema declaration order, not ascending
@@ -1321,12 +1302,11 @@ fn encode_body(
     // rule).
     let mut entries = Vec::new();
     for (key, val) in obj {
-        let found = schema
-            .find_child(scope, key)
-            .ok_or_else(|| err(format!("{key:?} is not a valid field inside {} -- check for a typo or the wrong nesting", node_display_name(scope_node))))
+        let found = scope
+            .find_child(key)
+            .ok_or_else(|| err(format!("{key:?} is not a valid field inside {} -- check for a typo or the wrong nesting", node_display_name(&scope))))
             .and_then(|child| {
-                schema
-                    .node(child)
+                child
                     .sid
                     .map(|sid| (child, sid))
                     .ok_or_else(|| err(format!("{key:?} exists in the schema but has no SID assigned -- this looks like a catalog/schema problem, not a mistake in your data")))
@@ -1342,12 +1322,11 @@ fn encode_body(
     // `list` node -- one of its own keys) but absent from `obj`.
     // Operational-state (`config false`) children are never required for
     // an ipatch/put request, matching `to_json_schema`'s own filter.
-    for &child in &scope_node.children {
-        let c = schema.node(child);
+    for c in scope.children() {
         if matches!(cf, ContentFormat::Ipatch | ContentFormat::Put) && !c.config {
             continue;
         }
-        let is_key = scope_node.keys.iter().any(|k| k == c.local_name());
+        let is_key = scope.keys.iter().any(|k| k == c.local_name());
         if (c.mandatory || is_key) && !obj.contains_key(&c.name) {
             let why = if is_key {
                 "it's a key of this list -- every entry needs one"
@@ -1358,7 +1337,7 @@ fn encode_body(
                 Err(err(format!(
                     "{:?} is missing from {} ({why})",
                     c.name,
-                    node_display_name(scope_node)
+                    node_display_name(&scope)
                 ))),
                 continue_on_error,
                 || (),
@@ -1369,12 +1348,12 @@ fn encode_body(
     Ok(Cbor::Map(entries))
 }
 
-fn decode_body(schema: &Schema, scope: NodeId, value: &Cbor, cf: ContentFormat) -> R<Json> {
-    let base = effective_delta_base(schema, scope);
+fn decode_body(schema: &Schema, scope: NodeRef<'_>, value: &Cbor, cf: ContentFormat) -> R<Json> {
+    let base = effective_delta_base(scope);
     let map = value.as_map().ok_or_else(|| {
         err(format!(
             "expected a set of fields for {}, but the device sent {}",
-            node_display_name(schema.node(scope)),
+            node_display_name(&scope),
             describe_cbor(value)
         ))
     })?;
@@ -1383,13 +1362,13 @@ fn decode_body(schema: &Schema, scope: NodeId, value: &Cbor, cf: ContentFormat) 
         let delta = cbor_as_i128(k)
             .ok_or_else(|| err("the device sent a field whose identifier isn't a valid number"))?
             as i64;
-        let child = *schema.sid_index.get(&(delta + base)).ok_or_else(|| {
+        let child = schema.node_by_sid(delta + base).ok_or_else(|| {
             err(format!(
                 "the device sent field #{}, which isn't in the loaded YANG catalog -- the catalog may not match this device's firmware",
                 delta + base
             ))
         })?;
-        let name = schema.node(child).name.clone();
+        let name = child.name.clone();
         obj.insert(name, decode_node_value(schema, child, v, cf)?);
     }
     Ok(Json::Object(obj))
@@ -1408,26 +1387,25 @@ fn decode_body(schema: &Schema, scope: NodeId, value: &Cbor, cf: ContentFormat) 
 /// missing feature.
 pub fn encode_node_value(
     schema: &Schema,
-    node: NodeId,
+    node: NodeRef<'_>,
     value: &Json,
     cf: ContentFormat,
     continue_on_error: bool,
 ) -> R<Cbor> {
-    let n = schema.node(node);
-    match n.kw.as_str() {
-        "leaf" => encode_leaf_value(schema, n, value, continue_on_error),
+    match node.kw.as_str() {
+        "leaf" => encode_leaf_value(schema, node, value, continue_on_error),
         "leaf-list" => {
-            let items = value.as_array().ok_or_else(|| err(format!("\"{}\" needs a list of values, got {value}", node_display_name(n))))?;
+            let items = value.as_array().ok_or_else(|| err(format!("\"{}\" needs a list of values, got {value}", node_display_name(&node))))?;
             let mut out = Vec::with_capacity(items.len());
             for item in items {
-                out.push(encode_leaf_value(schema, n, item, continue_on_error)?);
+                out.push(encode_leaf_value(schema, node, item, continue_on_error)?);
             }
             Ok(Cbor::Array(out))
         }
         "container" | "input" | "output" => lenient(
             value
                 .as_object()
-                .ok_or_else(|| err(format!("\"{}\" needs an object (key/value fields), got {value}", node_display_name(n))))
+                .ok_or_else(|| err(format!("\"{}\" needs an object (key/value fields), got {value}", node_display_name(&node))))
                 .and_then(|obj| encode_body(schema, node, obj, cf, continue_on_error)),
             continue_on_error,
             || Cbor::Map(vec![]),
@@ -1437,7 +1415,7 @@ pub fn encode_node_value(
                 Json::Array(items) => {
                     let mut out = Vec::with_capacity(items.len());
                     for item in items {
-                        let obj = item.as_object().ok_or_else(|| err(format!("each entry in \"{}\" needs to be an object (key/value fields), got {item}", node_display_name(n))))?;
+                        let obj = item.as_object().ok_or_else(|| err(format!("each entry in \"{}\" needs to be an object (key/value fields), got {item}", node_display_name(&node))))?;
                         out.push(encode_body(schema, node, obj, cf, continue_on_error)?);
                     }
                     Ok(Cbor::Array(out))
@@ -1445,7 +1423,7 @@ pub fn encode_node_value(
                 Json::Object(obj) if cf.is_sequence() => encode_body(schema, node, obj, cf, continue_on_error),
                 other => Err(err(format!(
                     "\"{}\" needs a list{}, got {other}",
-                    node_display_name(n),
+                    node_display_name(&node),
                     if cf.is_sequence() { " (or a single entry, for fetch/ipatch)" } else { "" }
                 ))),
             },
@@ -1458,41 +1436,40 @@ pub fn encode_node_value(
             // `effective_delta_base`). As user-facing YAML/JSON input,
             // though, a single `input:`/`output:` wrapper key disambiguates
             // which side is meant; unwrap it if present.
-            let obj = value.as_object().ok_or_else(|| err(format!("\"{}\" needs an object (its input/output fields), got {value}", node_display_name(n))))?;
+            let obj = value.as_object().ok_or_else(|| err(format!("\"{}\" needs an object (its input/output fields), got {value}", node_display_name(&node))))?;
             if obj.len() == 1 {
                 for side_name in ["input", "output"] {
                     if let Some(inner) = obj.get(side_name) {
-                        let side_node = schema
-                            .find_child(node, side_name)
-                            .ok_or_else(|| err(format!("\"{}\" doesn't have a \"{side_name}\" side in the schema -- this looks like a catalog problem", node_display_name(n))))?;
+                        let side_node = node
+                            .find_child(side_name)
+                            .ok_or_else(|| err(format!("\"{}\" doesn't have a \"{side_name}\" side in the schema -- this looks like a catalog problem", node_display_name(&node))))?;
                         let inner_obj = inner
                             .as_object()
-                            .ok_or_else(|| err(format!("the \"{side_name}\" of \"{}\" needs an object (key/value fields), got {inner}", node_display_name(n))))?;
+                            .ok_or_else(|| err(format!("the \"{side_name}\" of \"{}\" needs an object (key/value fields), got {inner}", node_display_name(&node))))?;
                         return encode_body(schema, side_node, inner_obj, cf, continue_on_error);
                     }
                 }
             }
-            let side = schema.find_child(node, "input").unwrap_or(node);
+            let side = node.find_child("input").unwrap_or(node);
             encode_body(schema, side, obj, cf, continue_on_error)
         }
-        other => Err(err(format!("\"{}\" has an unsupported schema shape ({other:?}) -- this looks like a catalog problem", node_display_name(n)))),
+        other => Err(err(format!("\"{}\" has an unsupported schema shape ({other:?}) -- this looks like a catalog problem", node_display_name(&node)))),
     }
 }
 
 pub fn decode_node_value(
     schema: &Schema,
-    node: NodeId,
+    node: NodeRef<'_>,
     value: &Cbor,
     cf: ContentFormat,
 ) -> R<Json> {
-    let n = schema.node(node);
-    match n.kw.as_str() {
-        "leaf" => decode_leaf_value(schema, n, value),
+    match node.kw.as_str() {
+        "leaf" => decode_leaf_value(schema, node, value),
         "leaf-list" => {
-            let items = value.as_array().ok_or_else(|| err(format!("\"{}\" needs a list of values, but the device sent {}", node_display_name(n), describe_cbor(value))))?;
+            let items = value.as_array().ok_or_else(|| err(format!("\"{}\" needs a list of values, but the device sent {}", node_display_name(&node), describe_cbor(value))))?;
             let mut out = Vec::with_capacity(items.len());
             for item in items {
-                out.push(decode_leaf_value(schema, n, item)?);
+                out.push(decode_leaf_value(schema, node, item)?);
             }
             Ok(Json::Array(out))
         }
@@ -1506,7 +1483,7 @@ pub fn decode_node_value(
                 Ok(Json::Array(out))
             }
             Cbor::Map(_) if cf.is_sequence() => decode_body(schema, node, value, cf),
-            other => Err(err(format!("\"{}\" needs a list, but the device sent {}", node_display_name(n), describe_cbor(other)))),
+            other => Err(err(format!("\"{}\" needs a list, but the device sent {}", node_display_name(&node), describe_cbor(other)))),
         },
         "rpc" | "action" => {
             // Mirrors `cbor2json`'s `'rpc'`/`'action'` branch
@@ -1526,36 +1503,35 @@ pub fn decode_node_value(
             // checked before output, same as Ruby's substatement order.
             let map = value
                 .as_map()
-                .ok_or_else(|| err(format!("\"{}\" needs an object (its input/output fields), but the device sent {}", node_display_name(n), describe_cbor(value))))?;
+                .ok_or_else(|| err(format!("\"{}\" needs an object (its input/output fields), but the device sent {}", node_display_name(&node), describe_cbor(value))))?;
             if map.is_empty() {
                 // No mandatory parameters on this side -- ok, matches
                 // Ruby's `cbor.is_a? Hash and cbor.empty?` case.
                 return Ok(Json::Object(serde_json::Map::new()));
             }
-            let base = n.sid.unwrap_or(0);
+            let base = node.sid.unwrap_or(0);
             let (first_key, _) = map.first().expect("checked non-empty above");
             let delta = cbor_as_i128(first_key).ok_or_else(|| err("the device sent a field whose identifier isn't a valid number"))? as i64;
             let absolute_sid = delta + base;
             let side_name = ["input", "output"]
                 .into_iter()
                 .find(|&side| {
-                    schema
-                        .find_child(node, side)
-                        .is_some_and(|side_node| schema.node(side_node).children.iter().any(|&c| schema.node(c).sid == Some(absolute_sid)))
+                    node.find_child(side)
+                        .is_some_and(|side_node| side_node.children().any(|c| c.sid == Some(absolute_sid)))
                 })
                 .ok_or_else(|| {
                     err(format!(
                         "couldn't tell whether \"{}\"'s response is its input or output parameters (field #{absolute_sid} matches neither) -- the loaded YANG catalog may not match this device's firmware",
-                        node_display_name(n)
+                        node_display_name(&node)
                     ))
                 })?;
-            let side_node = schema.find_child(node, side_name).expect("just matched above");
+            let side_node = node.find_child(side_name).expect("just matched above");
             let decoded = decode_body(schema, side_node, value, cf)?;
             let mut wrapper = serde_json::Map::new();
             wrapper.insert(side_name.to_string(), decoded);
             Ok(Json::Object(wrapper))
         }
-        other => Err(err(format!("\"{}\" has an unsupported schema shape ({other:?}) -- this looks like a catalog problem", node_display_name(n)))),
+        other => Err(err(format!("\"{}\" has an unsupported schema shape ({other:?}) -- this looks like a catalog problem", node_display_name(&node)))),
     }
 }
 
@@ -1746,7 +1722,7 @@ pub fn json_to_cbor(
                     cf.upper_name()
                 ))
             })
-            .and_then(|obj| encode_body(schema, schema.root, obj, cf, continue_on_error)),
+            .and_then(|obj| encode_body(schema, schema.root(), obj, cf, continue_on_error)),
         continue_on_error,
         || Cbor::Map(vec![]),
     )?;
@@ -1763,7 +1739,7 @@ pub fn cbor_to_json(schema: &Schema, bytes: &[u8], cf: ContentFormat) -> R<Json>
         .into_iter()
         .next()
         .ok_or_else(|| err("could not read any CBOR value from this response"))?;
-    decode_body(schema, schema.root, &value, cf)
+    decode_body(schema, schema.root(), &value, cf)
 }
 
 // ===========================================================================
@@ -2181,9 +2157,10 @@ mod tests {
             .expect("validation test schema builds")
     }
 
-    fn box_node(schema: &Schema) -> NodeId {
+    fn box_node(schema: &Schema) -> NodeRef<'_> {
         schema
-            .find_child(schema.root, "test:box")
+            .root()
+            .find_child("test:box")
             .expect("test:box exists")
     }
 
@@ -2460,9 +2437,7 @@ mod tests {
     fn list_shape_mismatch_hard_fails_without_continue_and_is_empty_with_it() {
         let schema = validation_test_schema();
         let box_id = box_node(&schema);
-        let item_id = schema
-            .find_child(box_id, "item")
-            .expect("test:box/item exists");
+        let item_id = box_id.find_child("item").expect("test:box/item exists");
 
         let e = encode_node_value(&schema, item_id, &Json::from(5), ContentFormat::Put, false)
             .unwrap_err();
@@ -2483,9 +2458,7 @@ mod tests {
         // policy (see `encode_node_value`'s doc comment).
         let schema = validation_test_schema();
         let box_id = box_node(&schema);
-        let tag_id = schema
-            .find_child(box_id, "tag")
-            .expect("test:box/tag exists");
+        let tag_id = box_id.find_child("tag").expect("test:box/tag exists");
 
         assert!(
             encode_node_value(&schema, tag_id, &Json::from(5), ContentFormat::Put, false).is_err()

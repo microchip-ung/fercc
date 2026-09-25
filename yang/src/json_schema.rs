@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
 // SPDX-License-Identifier: MIT
 
-//! JSON Schema (draft-07) generation from a built [`Schema`], ported from
+//! JSON Schema (draft-07) generation from a built [`crate::schema::Schema`], ported from
 //! `support/yang-enc/yang-enc.rb`'s `to_json_schema`/`type2schema`. This
 //! is the schema the Ruby reference feeds to `json_schemer` to validate a
 //! request/response before encoding/decoding -- generating it is also
@@ -41,7 +41,7 @@
 use serde_json::{Map, Value as Json};
 
 use crate::codec::all_identity_bases;
-use crate::schema::{Builtin, NodeId, Schema, TypeId};
+use crate::schema::{Builtin, NodeRef, TypeRef};
 
 const DATA_NODES: &[&str] = &[
     "container",
@@ -98,37 +98,28 @@ fn num(v: i128) -> Json {
 /// Mirrors `to_json_schema` (yang-enc.rb:1007-1129). `content_format` is
 /// one of `"yang"`/`"fetch"`/`"ipatch"`/`"get"`/`"put"`/`"post"`, same as
 /// the codec's own content-format strings.
-pub fn to_json_schema(schema: &Schema, node: NodeId, content_format: &str) -> Json {
-    let n = schema.node(node);
-
+pub fn to_json_schema(node: NodeRef<'_>, content_format: &str) -> Json {
     let mut properties = Map::new();
     let mut required = Vec::new();
-    for &child_id in &n.children {
-        let child = schema.node(child_id);
+    for child in node.children() {
         if matches!(content_format, "ipatch" | "put") && !child.config {
             continue;
         }
         if DATA_NODES.contains(&child.kw.as_str()) {
-            properties.insert(
-                child.name.clone(),
-                to_json_schema(schema, child_id, content_format),
-            );
+            properties.insert(child.name.clone(), to_json_schema(child, content_format));
         }
         if child.kw == "input" || child.kw == "output" {
-            properties.insert(
-                child.kw.clone(),
-                to_json_schema(schema, child_id, content_format),
-            );
+            properties.insert(child.kw.clone(), to_json_schema(child, content_format));
         }
         if child.mandatory {
             required.push(child.name.clone());
         }
     }
 
-    let mut result = match n.kw.as_str() {
+    let mut result = match node.kw.as_str() {
         "module" => {
             let mut m = Map::new();
-            m.insert("title".into(), Json::String(n.name.clone()));
+            m.insert("title".into(), Json::String(node.name.clone()));
             m.insert(
                 "$schema".into(),
                 Json::String("http://json-schema.org/draft-07/schema#".into()),
@@ -153,23 +144,23 @@ pub fn to_json_schema(schema: &Schema, node: NodeId, content_format: &str) -> Js
             Json::Object(m)
         }
 
-        "leaf" => type2schema(schema, n.type_id.expect("leaf without a type")),
+        "leaf" => type2schema(node.ty().expect("leaf without a type")),
 
         "leaf-list" => {
             let mut m = Map::new();
             m.insert("type".into(), Json::String("array".into()));
             m.insert(
                 "items".into(),
-                type2schema(schema, n.type_id.expect("leaf-list without a type")),
+                type2schema(node.ty().expect("leaf-list without a type")),
             );
-            if n.config {
+            if node.config {
                 m.insert("uniqueItems".into(), Json::Bool(true));
             }
             Json::Object(m)
         }
 
         "list" => {
-            let mut keys_and_required = n.keys.clone();
+            let mut keys_and_required = node.keys.clone();
             keys_and_required.extend(required);
             let keys_and_required = dedup_preserve_order(keys_and_required);
 
@@ -206,7 +197,7 @@ pub fn to_json_schema(schema: &Schema, node: NodeId, content_format: &str) -> Js
         "anyxml" => Json::Object(Map::new()),
 
         "input" | "output" => {
-            if n.children.is_empty() {
+            if node.children().next().is_none() {
                 let mut m = Map::new();
                 m.insert("type".into(), Json::String("null".into()));
                 Json::Object(m)
@@ -220,10 +211,8 @@ pub fn to_json_schema(schema: &Schema, node: NodeId, content_format: &str) -> Js
                 // (yang-enc.rb:1095-1096) -- an inconsistency in the
                 // reference, replicated rather than "fixed", per this
                 // port's own fidelity goal.
-                let required: Vec<String> = n
-                    .children
-                    .iter()
-                    .map(|&c| schema.node(c))
+                let required: Vec<String> = node
+                    .children()
                     .filter(|c| c.mandatory)
                     .map(|c| c.name.clone())
                     .collect();
@@ -235,21 +224,15 @@ pub fn to_json_schema(schema: &Schema, node: NodeId, content_format: &str) -> Js
         }
 
         "action" | "rpc" => {
-            let input_node = n
-                .children
-                .iter()
-                .copied()
-                .find(|&c| schema.node(c).kw == "input")
+            let input_node = node
+                .children()
+                .find(|c| c.kw == "input")
                 .expect("action/rpc always has a synthesized input node");
-            let output_node = n
-                .children
-                .iter()
-                .copied()
-                .find(|&c| schema.node(c).kw == "output")
+            let output_node = node
+                .children()
+                .find(|c| c.kw == "output")
                 .expect("action/rpc always has a synthesized output node");
-            if schema.node(input_node).children.is_empty()
-                && schema.node(output_node).children.is_empty()
-            {
+            if input_node.children().next().is_none() && output_node.children().next().is_none() {
                 let mut m = Map::new();
                 m.insert("type".into(), Json::String("null".into()));
                 Json::Object(m)
@@ -279,15 +262,14 @@ pub fn to_json_schema(schema: &Schema, node: NodeId, content_format: &str) -> Js
     // (yang-enc.rb:1127): applied uniformly on top of whatever shape the
     // match above produced -- including a `leaf`'s `type2schema` result,
     // an empty `anydata`/`anyxml` `{}`, or a `oneOf`-wrapped list/rpc.
-    if let (Some(desc), Json::Object(obj)) = (&n.description, &mut result) {
+    if let (Some(desc), Json::Object(obj)) = (&node.description, &mut result) {
         obj.insert("description".to_string(), Json::String(desc.clone()));
     }
     result
 }
 
 /// Mirrors `type2schema` (yang-enc.rb:1131-1232).
-fn type2schema(schema: &Schema, type_id: TypeId) -> Json {
-    let t = schema.ty(type_id);
+fn type2schema(t: TypeRef<'_>) -> Json {
     match t.builtin {
         Builtin::Int8
         | Builtin::Int16
@@ -343,12 +325,7 @@ fn type2schema(schema: &Schema, type_id: TypeId) -> Json {
             let mut m = Map::new();
             m.insert(
                 "anyOf".into(),
-                Json::Array(
-                    t.union_members
-                        .iter()
-                        .map(|&member| type2schema(schema, member))
-                        .collect(),
-                ),
+                Json::Array(t.union_members().map(type2schema).collect()),
             );
             Json::Object(m)
         }
@@ -417,22 +394,22 @@ fn type2schema(schema: &Schema, type_id: TypeId) -> Json {
         }
 
         Builtin::Leafref => {
-            let target = t.leafref_target.expect("leafref with an unresolved target");
-            let target_type = schema
-                .node(target)
-                .type_id
+            let target_type = t
+                .leafref_target()
+                .expect("leafref with an unresolved target")
+                .ty()
                 .expect("leafref target without a type");
-            type2schema(schema, target_type)
+            type2schema(target_type)
         }
 
         // The permissible identity names are the intersection of
         // identities derived from each base identity. See RFC 7950
         // section 9.10.2 -- note "or equal to" there: this port's own
-        // `all_identity_bases`/`Schema::derived_from` (used for encode/
-        // decode, where a value equal to the base itself really is
-        // legal per the RFC) includes each base itself in the returned
-        // set, but Ruby's `Identity#derived_from` this mirrors for JSON-
-        // Schema generation specifically does not ("@derived +
+        // `all_identity_bases`/`IdentityRef::derived_from` (used for
+        // encode/decode, where a value equal to the base itself really
+        // is legal per the RFC) includes each base itself in the
+        // returned set, but Ruby's `Identity#derived_from` this mirrors
+        // for JSON-Schema generation specifically does not ("@derived +
         // @derived.flat_map(&:derived_from)" -- an identity's *own*
         // list of things derived from it, never including itself). So
         // the bases themselves are excluded here, deliberately
@@ -442,14 +419,14 @@ fn type2schema(schema: &Schema, type_id: TypeId) -> Json {
         // against a real `yang-enc schema` run on the same catalog --
         // see `yang/tests/json_schema_conformance.rs`).
         Builtin::Identityref => {
-            let candidates = all_identity_bases(schema, t).unwrap_or_default();
+            let candidates = all_identity_bases(t).unwrap_or_default();
+            let bases: Vec<_> = t.identity_bases().collect();
             let source_module = t.source_module.as_deref();
             let mut enums = Vec::new();
-            for id in candidates {
-                if t.identity_bases.contains(&id) {
+            for identity in candidates {
+                if bases.contains(&identity) {
                     continue;
                 }
-                let identity = schema.identity(id);
                 enums.push(format!("{}:{}", identity.module, identity.name));
                 if Some(identity.module.as_str()) == source_module {
                     enums.push(identity.name.clone());

@@ -154,7 +154,7 @@ const ALLOWED_GAPS: &[&str] = &[
 #[test]
 fn matches_real_yang_enc_schema_output_modulo_documented_gaps() {
     let schema = schema();
-    let rust_schema = to_json_schema(&schema, schema.root, "yang");
+    let rust_schema = to_json_schema(schema.root(), "yang");
 
     let reference_text = fs::read_to_string(test_data_dir().join("yang-enc-schema-reference.json"))
         .expect("read captured yang-enc schema reference");
