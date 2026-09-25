@@ -8,7 +8,7 @@
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser, Debug)]
-#[command(name = "fercc", about = "MUP1/CoAP/CORECONF client for VelocityDRIVE-SP devices")]
+#[command(name = "fercc", about = "MUP1/CoAP/CORECONF client for VelocityDRIVE-SP devices", version)]
 pub struct Opts {
     /// `conv`/`schema`, folding in `yang-enc`'s CLI (mirrors
     /// `support/yang-enc/yang-enc.rb`). Omitted entirely: the flat

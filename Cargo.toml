@@ -6,6 +6,7 @@ resolver = "2"
 members = ["cbor", "mup1", "coap", "yang", "fercc"]
 
 [workspace.package]
+version = "0.1.0"
 edition = "2021"
 license = "MIT"
 
