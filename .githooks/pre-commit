@@ -7,20 +7,41 @@ if [ -z "$files" ]; then
     exit 0
 fi
 
+reformatted=""
 unformatted=""
 for f in $files; do
     if ! rustfmt --check --edition 2021 "$f" >/dev/null 2>&1; then
-        unformatted="$unformatted $f"
+        if git diff --quiet -- "$f"; then
+            rustfmt --edition 2021 "$f"
+            git add "$f"
+            reformatted="$reformatted $f"
+        else
+            unformatted="$unformatted $f"
+        fi
     fi
 done
 
+if [ -n "$reformatted" ]; then
+    echo "cargo fmt / rustfmt reformatted:" >&2
+    for f in $reformatted; do
+        echo "  $f" >&2
+    done
+fi
+
 if [ -n "$unformatted" ]; then
-    echo "cargo fmt / rustfmt check failed for:" >&2
+    echo "cargo fmt / rustfmt check failed for (has unstaged changes too, so" >&2
+    echo "not auto-formatted -- format manually and re-stage):" >&2
     for f in $unformatted; do
         echo "  $f" >&2
     done
     echo "" >&2
     echo "Run 'cargo fmt --all' (or 'rustfmt <file>') and re-stage." >&2
+    exit 1
+fi
+
+if ! cargo clippy --workspace --all-targets -- -D warnings; then
+    echo "" >&2
+    echo "cargo clippy is not happy. Fix the warnings above and re-stage." >&2
     exit 1
 fi
 
