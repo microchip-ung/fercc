@@ -149,8 +149,7 @@ fn fixture_corpus_round_trips() {
 /// Each fixture is real hardware data, captured from a live board via a
 /// deliberately malformed/rejected request. They cover different
 /// response shapes: which of `error-tag`/`error-app-tag`/
-/// `error-data-node`/`error-message` are present, and whether
-/// `error-data-node` is empty or a populated instance-identifier.
+/// `error-data-node`/`error-message` are present.
 #[test]
 fn coreconf_error_responses_decode_correctly() {
     let schema = schema();

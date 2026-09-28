@@ -13,11 +13,11 @@
 //! remain, all independent of each other:
 //! - `properties/ietf-coreconf:error` (an `rc:yang-data` root, not a
 //!   real datastore node) is entirely missing from this port's output:
-//!   [`crate::schema`]'s flattened tree deliberately keeps `rc:yang-
-//!   data` roots out of the root node's children (so a whole-tree GET/
-//!   PUT doesn't enumerate them as if they were real paths), so
-//!   `to_json_schema` never sees them as children of `schema.root`
-//!   either. Allow-listed in the conformance test above.
+//!   [`crate::schema`] deliberately keeps `rc:yang-data` roots out of
+//!   every module's `root_data_nodes` (so a whole-tree GET/PUT doesn't
+//!   enumerate them as if they were real paths), so
+//!   `to_json_schema_for_catalog` never sees them either. Allow-listed
+//!   in the conformance test above.
 //! - Two `maxLength` values (both a `binary` leaf's *default*,
 //!   unrestricted length) render as `i64::MAX` here versus Ruby's exact
 //!   `24595658764946068820` -- see `num`'s doc comment. Also allow-
@@ -41,16 +41,7 @@
 use serde_json::{Map, Value as Json};
 
 use crate::codec::all_identity_bases;
-use crate::schema::{Builtin, NodeRef, TypeRef};
-
-const DATA_NODES: &[&str] = &[
-    "container",
-    "leaf",
-    "leaf-list",
-    "list",
-    "anydata",
-    "anyxml",
-];
+use crate::schema::{Builtin, NodeRef, Schema, TypeRef};
 
 fn dedup_preserve_order(items: Vec<String>) -> Vec<String> {
     let mut seen = std::collections::HashSet::new();
@@ -95,44 +86,58 @@ fn num(v: i128) -> Json {
     }
 }
 
+pub fn to_json_schema_for_catalog(schema: &Schema, content_format: &str) -> Json {
+    let mut properties = Map::new();
+    let mut required = Vec::new();
+    for module in schema.modules() {
+        for child in module.root_data_nodes() {
+            if matches!(child.kw.as_str(), "rpc" | "action") {
+                continue;
+            }
+            if matches!(content_format, "ipatch" | "put") && !child.config {
+                continue;
+            }
+            properties.insert(child.name.clone(), to_json_schema(child, content_format));
+            if child.mandatory {
+                required.push(child.name.clone());
+            }
+        }
+    }
+    let mut m = Map::new();
+    m.insert("title".into(), Json::String("data-tree-schema".to_string()));
+    m.insert(
+        "$schema".into(),
+        Json::String("http://json-schema.org/draft-07/schema#".into()),
+    );
+    m.insert("type".into(), Json::String("object".into()));
+    m.insert("additionalProperties".into(), Json::Bool(false));
+    m.insert("properties".into(), Json::Object(properties));
+    if !required.is_empty() {
+        m.insert("required".into(), json_strings(required));
+    }
+    Json::Object(m)
+}
+
 /// Mirrors `to_json_schema` (yang-enc.rb:1007-1129). `content_format` is
 /// one of `"yang"`/`"fetch"`/`"ipatch"`/`"get"`/`"put"`/`"post"`, same as
 /// the codec's own content-format strings.
 pub fn to_json_schema(node: NodeRef<'_>, content_format: &str) -> Json {
     let mut properties = Map::new();
     let mut required = Vec::new();
-    for child in node.children() {
+    for child in node.data_children() {
+        if matches!(child.kw.as_str(), "rpc" | "action") {
+            continue;
+        }
         if matches!(content_format, "ipatch" | "put") && !child.config {
             continue;
         }
-        if DATA_NODES.contains(&child.kw.as_str()) {
-            properties.insert(child.name.clone(), to_json_schema(child, content_format));
-        }
-        if child.kw == "input" || child.kw == "output" {
-            properties.insert(child.kw.clone(), to_json_schema(child, content_format));
-        }
+        properties.insert(child.name.clone(), to_json_schema(child, content_format));
         if child.mandatory {
             required.push(child.name.clone());
         }
     }
 
     let mut result = match node.kw.as_str() {
-        "module" => {
-            let mut m = Map::new();
-            m.insert("title".into(), Json::String(node.name.clone()));
-            m.insert(
-                "$schema".into(),
-                Json::String("http://json-schema.org/draft-07/schema#".into()),
-            );
-            m.insert("type".into(), Json::String("object".into()));
-            m.insert("additionalProperties".into(), Json::Bool(false));
-            m.insert("properties".into(), Json::Object(properties));
-            if !required.is_empty() {
-                m.insert("required".into(), json_strings(required));
-            }
-            Json::Object(m)
-        }
-
         "container" => {
             let mut m = Map::new();
             m.insert("type".into(), Json::String("object".into()));
@@ -197,7 +202,7 @@ pub fn to_json_schema(node: NodeRef<'_>, content_format: &str) -> Json {
         "anyxml" => Json::Object(Map::new()),
 
         "input" | "output" => {
-            if node.children().next().is_none() {
+            if node.data_children().next().is_none() {
                 let mut m = Map::new();
                 m.insert("type".into(), Json::String("null".into()));
                 Json::Object(m)
@@ -212,7 +217,7 @@ pub fn to_json_schema(node: NodeRef<'_>, content_format: &str) -> Json {
                 // reference, replicated rather than "fixed", per this
                 // port's own fidelity goal.
                 let required: Vec<String> = node
-                    .children()
+                    .data_children()
                     .filter(|c| c.mandatory)
                     .map(|c| c.name.clone())
                     .collect();
@@ -225,14 +230,16 @@ pub fn to_json_schema(node: NodeRef<'_>, content_format: &str) -> Json {
 
         "action" | "rpc" => {
             let input_node = node
-                .children()
+                .data_children()
                 .find(|c| c.kw == "input")
                 .expect("action/rpc always has a synthesized input node");
             let output_node = node
-                .children()
+                .data_children()
                 .find(|c| c.kw == "output")
                 .expect("action/rpc always has a synthesized output node");
-            if input_node.children().next().is_none() && output_node.children().next().is_none() {
+            if input_node.data_children().next().is_none()
+                && output_node.data_children().next().is_none()
+            {
                 let mut m = Map::new();
                 m.insert("type".into(), Json::String("null".into()));
                 Json::Object(m)
@@ -252,9 +259,6 @@ pub fn to_json_schema(node: NodeRef<'_>, content_format: &str) -> Json {
             }
         }
 
-        // Every other keyword (choice/case) is elided by the schema
-        // builder's own flattening pass (crate::schema::Builder::finish)
-        // and never reaches here as a child at all.
         other => panic!("to_json_schema: unexpected node keyword {other:?}"),
     };
 

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 //! Byte-for-byte (modulo two documented, narrow gaps) conformance check:
-//! `yang::json_schema::to_json_schema` against a real `yang-enc schema`
+//! `yang::json_schema::to_json_schema_for_catalog` against a real `yang-enc schema`
 //! run on the exact same bundled catalog.
 //!
 //! The reference output was captured once, by hand, inside the `dr`
@@ -33,7 +33,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value as Json;
-use yang::json_schema::to_json_schema;
+use yang::json_schema::to_json_schema_for_catalog;
 use yang::schema::Schema;
 
 fn test_data_dir() -> PathBuf {
@@ -154,7 +154,7 @@ const ALLOWED_GAPS: &[&str] = &[
 #[test]
 fn matches_real_yang_enc_schema_output_modulo_documented_gaps() {
     let schema = schema();
-    let rust_schema = to_json_schema(schema.root(), "yang");
+    let rust_schema = to_json_schema_for_catalog(&schema, "yang");
 
     let reference_text = fs::read_to_string(test_data_dir().join("yang-enc-schema-reference.json"))
         .expect("read captured yang-enc schema reference");

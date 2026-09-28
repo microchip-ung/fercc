@@ -282,6 +282,13 @@ impl<'a> ModuleRef<'a> {
             .iter()
             .map(move |&id| schema.node_ref(id))
     }
+
+    pub fn root_data_nodes(&self) -> impl Iterator<Item = NodeRef<'a>> + 'a {
+        let schema = self.schema;
+        spliced(&schema.nodes, &self.module.root_nodes)
+            .into_iter()
+            .map(move |id| schema.node_ref(id))
+    }
 }
 
 pub struct Schema {
@@ -290,10 +297,6 @@ pub struct Schema {
     identities: Vec<Identity>,
     module_root: HashMap<String, Module>,
     yang_data_roots: HashMap<String, NodeId>,
-    /// The synthetic flattened data-tree-schema root (choice/case elided),
-    /// used by the codec. `sid == Some(0)`.
-    root: NodeId,
-    /// Absolute SID -> node in the flattened tree, for FETCH/decode.
     sid_index: HashMap<i64, NodeId>,
 }
 
@@ -319,6 +322,13 @@ impl<'a> NodeRef<'a> {
             .map(move |&c| NodeRef { schema, id: c })
     }
 
+    pub fn data_children(&self) -> impl Iterator<Item = NodeRef<'a>> + 'a {
+        let schema = self.schema;
+        spliced(&schema.nodes, &schema.nodes[self.id].children)
+            .into_iter()
+            .map(move |id| NodeRef { schema, id })
+    }
+
     pub fn parent(&self) -> Option<NodeRef<'a>> {
         let schema = self.schema;
         schema.nodes[self.id]
@@ -328,6 +338,10 @@ impl<'a> NodeRef<'a> {
 
     pub fn find_child(&self, name: &str) -> Option<NodeRef<'a>> {
         self.children().find(|c| c.name == name)
+    }
+
+    pub fn find_data_child(&self, name: &str) -> Option<NodeRef<'a>> {
+        self.data_children().find(|c| c.name == name)
     }
 
     pub fn ty(&self) -> Option<TypeRef<'a>> {
@@ -433,11 +447,29 @@ impl<'a> IdentityRef<'a> {
     }
 }
 
+fn spliced(nodes: &[Node], ids: &[NodeId]) -> Vec<NodeId> {
+    let mut out = Vec::new();
+    for &id in ids {
+        if matches!(nodes[id].kw.as_str(), "choice" | "case") {
+            out.extend(spliced(nodes, &nodes[id].children));
+        } else {
+            out.push(id);
+        }
+    }
+    out
+}
+
 fn find_child_by_local_raw(nodes: &[Node], parent: NodeId, local: &str) -> Option<NodeId> {
     nodes[parent]
         .children
         .iter()
         .copied()
+        .find(|&c| nodes[c].local_name() == local)
+}
+
+fn find_data_child_by_local_raw(nodes: &[Node], parent: NodeId, local: &str) -> Option<NodeId> {
+    spliced(nodes, &nodes[parent].children)
+        .into_iter()
         .find(|&c| nodes[c].local_name() == local)
 }
 
@@ -450,6 +482,19 @@ fn descend_by_local<'s>(
     for seg in segs {
         let local = seg.rsplit_once(':').map(|(_, n)| n).unwrap_or(seg);
         cur = find_child_by_local_raw(nodes, cur, local)?;
+    }
+    Some(cur)
+}
+
+fn descend_by_data_local<'s>(
+    nodes: &[Node],
+    start: NodeId,
+    segs: impl Iterator<Item = &'s str>,
+) -> Option<NodeId> {
+    let mut cur = start;
+    for seg in segs {
+        let local = seg.rsplit_once(':').map(|(_, n)| n).unwrap_or(seg);
+        cur = find_data_child_by_local_raw(nodes, cur, local)?;
     }
     Some(cur)
 }
@@ -481,13 +526,6 @@ impl Schema {
         NodeRef { schema: self, id }
     }
 
-    /// The synthetic flattened data-tree-schema root (choice/case elided)
-    /// -- every real datastore node is reachable from here via
-    /// `children()`.
-    pub fn root(&self) -> NodeRef<'_> {
-        self.node_ref(self.root)
-    }
-
     pub fn node_by_sid(&self, sid: i64) -> Option<NodeRef<'_>> {
         self.sid_index.get(&sid).map(|&id| self.node_ref(id))
     }
@@ -511,6 +549,13 @@ impl Schema {
             .iter()
             .position(|t| t.module.as_deref() == Some(module) && t.name.as_deref() == Some(name))
             .map(|id| TypeRef { schema: self, id })
+    }
+
+    pub fn modules(&self) -> impl Iterator<Item = ModuleRef<'_>> + '_ {
+        self.module_root.values().map(|module| ModuleRef {
+            schema: self,
+            module,
+        })
     }
 
     pub fn module_by_name(&self, name: &str) -> Option<ModuleRef<'_>> {
@@ -538,8 +583,17 @@ impl Schema {
     pub fn node_by_data_path(&self, path: &str) -> Option<NodeRef<'_>> {
         let mut segs = path.split('/').filter(|s| !s.is_empty());
         let first = segs.next()?;
-        let first_node = self.root().find_child(first)?;
-        let id = descend_by_local(&self.nodes, first_node.id, segs)?;
+        let first_node = self.root_data_node_by_name(first)?;
+        let id = descend_by_data_local(&self.nodes, first_node.id, segs)?;
+        Some(self.node_ref(id))
+    }
+
+    pub fn root_data_node_by_name(&self, name: &str) -> Option<NodeRef<'_>> {
+        let id = self
+            .module_root
+            .values()
+            .flat_map(|m| spliced(&self.nodes, &m.root_nodes))
+            .find(|&id| self.nodes[id].name == name)?;
         Some(self.node_ref(id))
     }
 }
@@ -1371,7 +1425,9 @@ impl<'a> Builder<'a> {
     }
 
     fn remove_node(&mut self, target: NodeId) {
-        if let Some(p) = self.nodes[target].parent {
+        let parent = self.nodes[target].parent;
+
+        if let Some(p) = parent {
             self.nodes[p].children.retain(|&c| c != target);
         } else {
             let owner_module = self.nodes[target].owner_module.clone();
@@ -1382,8 +1438,9 @@ impl<'a> Builder<'a> {
     }
 
     fn propagate_config_false(&mut self, node: NodeId) {
-        let children = self.nodes[node].children.clone();
-        for c in children {
+        let len = self.nodes[node].children.len();
+        for i in 0..len {
+            let c = self.nodes[node].children[i];
             self.nodes[c].config = false;
             self.propagate_config_false(c);
         }
@@ -1483,37 +1540,21 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
-    // -- finalize: flatten choice/case into the data-tree schema ---------
-
-    fn finish(mut self) -> R<Schema> {
-        let root = self.new_node(
-            "module",
-            "data-tree-schema".to_string(),
-            String::new(),
-            None,
-            true,
-        );
-        self.nodes[root].sid = Some(0);
-
+    fn finish(self) -> R<Schema> {
+        let mut sid_index = HashMap::new();
         let all_root_nodes: Vec<NodeId> = self
             .module_root
             .values()
             .flat_map(|m| m.root_nodes.iter().copied())
             .collect();
-        for child in all_root_nodes {
-            // flatten_clone already appends the new node to `root`'s
-            // children itself (needed so a spliced choice/case can
-            // contribute more than one).
-            self.flatten_clone(child, Some(root));
+        for root in all_root_nodes {
+            self.index_sids(root, &mut sid_index);
         }
-
-        let mut sid_index = HashMap::new();
-        self.index_sids(root, &mut sid_index);
         // `rc:yang-data` roots (e.g. `ietf-coreconf:error`) are
-        // deliberately not children of `root`
-        // but their SIDs are still real wire values (a device error
-        // response is addressed by exactly these SIDs), so index each
-        // one's subtree separately rather than via the `root` walk.
+        // deliberately not any module's root_nodes (see
+        // interpret_extension) but their SIDs are still real wire values
+        // (a device error response is addressed by exactly these SIDs),
+        // so index each one's subtree separately.
         let yang_data_roots: Vec<NodeId> = self.yang_data_roots.values().copied().collect();
         for yd_root in yang_data_roots {
             self.index_sids(yd_root, &mut sid_index);
@@ -1525,79 +1566,8 @@ impl<'a> Builder<'a> {
             identities: self.identities,
             module_root: self.module_root,
             yang_data_roots: self.yang_data_roots,
-            root,
             sid_index,
         })
-    }
-
-    /// Clone `node` (and, recursively, its children) into a fresh node
-    /// under `new_parent`, splicing away `choice`/`case` wrappers by
-    /// re-parenting their children directly (RFC 7951/9254: choice/case
-    /// are schema-tree-only, never data nodes).
-    fn flatten_clone(&mut self, node: NodeId, new_parent: Option<NodeId>) -> NodeId {
-        if matches!(self.nodes[node].kw.as_str(), "choice" | "case") {
-            // Splice: this node contributes its children directly, no
-            // node of its own in the flattened tree. Since exactly one
-            // flattened id is expected by the caller, promote the first
-            // spliced child and append the rest as extra siblings.
-            let children = self.nodes[node].children.clone();
-            let mut ids = Vec::new();
-            for c in children {
-                ids.extend(self.flatten_clone_multi(c, new_parent));
-            }
-            return *ids
-                .first()
-                .unwrap_or(&self.dangling_placeholder(new_parent));
-        }
-
-        let src = &self.nodes[node];
-        let new_id = self.nodes.len();
-        self.nodes.push(Node {
-            kw: src.kw.clone(),
-            name: src.name.clone(),
-            parent: new_parent,
-            children: Vec::new(),
-            config: src.config,
-            mandatory: src.mandatory,
-            type_id: src.type_id,
-            keys: src.keys.clone(),
-            sid: src.sid,
-            owner_module: src.owner_module.clone(),
-            description: src.description.clone(),
-            status: src.status,
-            default: src.default.clone(),
-        });
-        if let Some(p) = new_parent {
-            self.nodes[p].children.push(new_id);
-        }
-        let children = self.nodes[node].children.clone();
-        for c in children {
-            self.flatten_clone_multi(c, Some(new_id));
-        }
-        new_id
-    }
-
-    /// Like `flatten_clone`, but returns every id actually added as a
-    /// direct child of `new_parent` (more than one when `node` is a
-    /// choice/case being spliced away).
-    fn flatten_clone_multi(&mut self, node: NodeId, new_parent: Option<NodeId>) -> Vec<NodeId> {
-        if matches!(self.nodes[node].kw.as_str(), "choice" | "case") {
-            let children = self.nodes[node].children.clone();
-            let mut ids = Vec::new();
-            for c in children {
-                ids.extend(self.flatten_clone_multi(c, new_parent));
-            }
-            ids
-        } else {
-            vec![self.flatten_clone(node, new_parent)]
-        }
-    }
-
-    fn dangling_placeholder(&mut self, parent: Option<NodeId>) -> NodeId {
-        // An empty choice/case with no data-node children at all (legal
-        // but useless); create nothing and let callers treat this as
-        // absent. Only reached for genuinely empty choices.
-        self.new_node("case", String::new(), String::new(), parent, true)
     }
 
     fn index_sids(&self, node: NodeId, out: &mut HashMap<i64, NodeId>) {
@@ -1629,7 +1599,7 @@ mod tests {
             }
         "#;
         let schema = build(&[src.to_string()], &[]).unwrap();
-        let bar = schema.root().find_child("foo:bar").unwrap();
+        let bar = schema.node_by_data_path("/foo:bar").unwrap();
         assert_eq!(bar.status, Some(Status::Current));
         let baz = bar.find_child("baz").unwrap();
         assert_eq!(baz.status, Some(Status::Current));
@@ -1652,7 +1622,7 @@ mod tests {
             }
         "#;
         let schema = build(&[src.to_string()], &[]).unwrap();
-        let bar = schema.root().find_child("foo:bar").unwrap();
+        let bar = schema.node_by_data_path("/foo:bar").unwrap();
         assert_eq!(bar.status, Some(Status::Deprecated));
         let baz = bar.find_child("baz").unwrap();
         assert_eq!(baz.status, Some(Status::Obsolete));
@@ -1798,7 +1768,7 @@ mod tests {
             }
         "#;
         let schema = build(&[src.to_string()], &[]).unwrap();
-        let outer = schema.root().find_child("foo:outer").unwrap();
+        let outer = schema.node_by_data_path("/foo:outer").unwrap();
         let c = outer.find_child("c").unwrap();
         let x = c.find_child("x");
         assert!(x.is_some());
@@ -1909,7 +1879,7 @@ mod tests {
         let percent = schema.typedef_by_name("foo", "percent").unwrap();
         assert_eq!(percent.ranges, vec![(0, 100)]);
 
-        let bar = schema.root().find_child("foo:bar").unwrap();
+        let bar = schema.node_by_data_path("/foo:bar").unwrap();
         let narrow = bar.find_child("narrow").unwrap();
         let narrow_ty = narrow.ty().unwrap();
         assert_eq!(narrow_ty.ranges, vec![(0, 50)]);

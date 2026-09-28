@@ -1064,7 +1064,7 @@ fn convert_iid_key_value(ty: TypeRef<'_>, raw: &str) -> R<Json> {
 /// schema node it addresses.
 pub fn resolve_iid<'a>(schema: &'a Schema, path: &str) -> R<(NodeRef<'a>, Cbor)> {
     let segs = split_outside_brackets(path);
-    let mut cur = schema.root();
+    let mut cur: Option<NodeRef<'a>> = None;
     let mut last_sid = 0i64;
     // Keys accumulate from *every* list ancestor traversed along the
     // path, not just the final segment: a path descending into a leaf
@@ -1075,9 +1075,11 @@ pub fn resolve_iid<'a>(schema: &'a Schema, path: &str) -> R<(NodeRef<'a>, Cbor)>
 
     for raw_seg in segs {
         let seg = parse_iid_segment(raw_seg)?;
-        let child = cur
-            .find_child(seg.name)
-            .ok_or_else(|| err(format!("\"{}\" in the path {path:?} doesn't exist in this device's YANG model -- check for a typo", seg.name)))?;
+        let child = match cur {
+            Some(node) => node.find_data_child(seg.name),
+            None => schema.root_data_node_by_name(seg.name),
+        }
+        .ok_or_else(|| err(format!("\"{}\" in the path {path:?} doesn't exist in this device's YANG model -- check for a typo", seg.name)))?;
         let sid = child
             .sid
             .ok_or_else(|| err(format!("\"{}\" exists in the schema but has no SID assigned -- this looks like a catalog problem, not a mistake in your path", seg.name)))?;
@@ -1116,10 +1118,12 @@ pub fn resolve_iid<'a>(schema: &'a Schema, path: &str) -> R<(NodeRef<'a>, Cbor)>
             )));
         }
 
-        cur = child;
+        cur = Some(child);
         last_sid = sid;
         all_keys.extend(ordered_keys);
     }
+
+    let cur = cur.ok_or_else(|| err(format!("empty instance-identifier path {path:?}")))?;
 
     let cbor = if all_keys.is_empty() {
         Cbor::from(last_sid)
@@ -1134,18 +1138,18 @@ pub fn resolve_iid<'a>(schema: &'a Schema, path: &str) -> R<(NodeRef<'a>, Cbor)>
 /// Split a decoded IID CBOR value into (absolute SID, key CBOR values).
 fn split_iid_cbor(value: &Cbor) -> R<(i64, Vec<Cbor>)> {
     match value {
-        Cbor::Integer(_) => Ok((cbor_as_i128(value).ok_or_else(|| err("the device sent a path identifier that isn't a valid integer"))? as i64, Vec::new())),
+        Cbor::Integer(_) => Ok((cbor_as_i128(value).ok_or_else(|| err("the device sent a SID that isn't a valid integer"))? as i64, Vec::new())),
         Cbor::Array(items) => {
             let mut it = items.iter();
             let sid = it
                 .next()
                 .and_then(cbor_as_i128)
-                .ok_or_else(|| err(format!("the device sent a path identifier (a {}-item list) with no valid number in the first position", items.len())))?
+                .ok_or_else(|| err(format!("the device sent a SID (a {}-item list) with no valid number in the first position", items.len())))?
                 as i64;
             Ok((sid, it.cloned().collect()))
         }
         other => Err(err(format!(
-            "the device sent a path identifier that's neither a plain number nor a list starting with one -- got {}",
+            "the device sent a SID that's neither a plain number nor a list starting with one -- got {}",
             describe_cbor(other)
         ))),
     }
@@ -1159,7 +1163,7 @@ pub fn decode_iid<'a>(schema: &'a Schema, value: &Cbor) -> R<(NodeRef<'a>, Strin
     let (sid, mut keys) = split_iid_cbor(value)?;
     let node = schema
         .node_by_sid(sid)
-        .ok_or_else(|| err(format!("the device referenced path identifier #{sid}, which isn't in the loaded YANG catalog -- the catalog may not match this device's firmware")))?;
+        .ok_or_else(|| err(format!("the device referenced SID #{sid}, which isn't in the loaded YANG catalog -- the catalog may not match this device's firmware")))?;
     let path = node_path_string(schema, node, &mut keys)?;
     Ok((node, path))
 }
@@ -1175,9 +1179,6 @@ fn node_path_string(schema: &Schema, node: NodeRef<'_>, keys: &mut Vec<Cbor>) ->
 
     let mut path = String::new();
     for &nd in &chain {
-        if nd.kw == "module" {
-            continue;
-        }
         path.push('/');
         path.push_str(&nd.name);
         if !nd.keys.is_empty() {
@@ -1217,16 +1218,8 @@ fn cbor_to_iid_string(schema: &Schema, value: &Cbor) -> R<String> {
 
 const IMPLICIT_INPUT_OUTPUT_BASE: &[&str] = &["rpc", "action"];
 
-/// A name for `node` fit for an error message: the synthetic multi-
-/// module root (`schema.rs`'s `finish()`) is called `"data-tree-schema"`
-/// internally, which means nothing to someone who didn't write this
-/// port -- call it what it is to them instead.
 fn node_display_name(node: &Node) -> &str {
-    if node.name == "data-tree-schema" {
-        "the request"
-    } else {
-        &node.name
-    }
+    &node.name
 }
 
 fn effective_delta_base(node: NodeRef<'_>) -> i64 {
@@ -1303,7 +1296,7 @@ fn encode_body(
     let mut entries = Vec::new();
     for (key, val) in obj {
         let found = scope
-            .find_child(key)
+            .find_data_child(key)
             .ok_or_else(|| err(format!("{key:?} is not a valid field inside {} -- check for a typo or the wrong nesting", node_display_name(&scope))))
             .and_then(|child| {
                 child
@@ -1322,7 +1315,7 @@ fn encode_body(
     // `list` node -- one of its own keys) but absent from `obj`.
     // Operational-state (`config false`) children are never required for
     // an ipatch/put request, matching `to_json_schema`'s own filter.
-    for c in scope.children() {
+    for c in scope.data_children() {
         if matches!(cf, ContentFormat::Ipatch | ContentFormat::Put) && !c.config {
             continue;
         }
@@ -1517,7 +1510,7 @@ pub fn decode_node_value(
                 .into_iter()
                 .find(|&side| {
                     node.find_child(side)
-                        .is_some_and(|side_node| side_node.children().any(|c| c.sid == Some(absolute_sid)))
+                        .is_some_and(|side_node| side_node.data_children().any(|c| c.sid == Some(absolute_sid)))
                 })
                 .ok_or_else(|| {
                     err(format!(
@@ -1703,10 +1696,35 @@ pub fn cbor_seq_to_json(schema: &Schema, bytes: &[u8], cf: ContentFormat) -> R<V
     Ok(out)
 }
 
+fn encode_whole_tree(
+    schema: &Schema,
+    obj: &serde_json::Map<String, Json>,
+    cf: ContentFormat,
+    continue_on_error: bool,
+) -> R<Cbor> {
+    let mut entries = Vec::new();
+    for (key, val) in obj {
+        let found = schema
+            .root_data_node_by_name(key)
+            .ok_or_else(|| err(format!("{key:?} is not a valid field inside the request -- check for a typo or the wrong nesting")))
+            .and_then(|child| {
+                child
+                    .sid
+                    .map(|sid| (child, sid))
+                    .ok_or_else(|| err(format!("{key:?} exists in the schema but has no SID assigned -- this looks like a catalog/schema problem, not a mistake in your data")))
+            });
+        let Some((child, child_sid)) = lenient(found.map(Some), continue_on_error, || None)? else {
+            continue;
+        };
+        let cbor_val = encode_node_value(schema, child, val, cf, continue_on_error)?;
+        entries.push((Cbor::from(child_sid), cbor_val));
+    }
+    Ok(Cbor::Map(entries))
+}
+
 /// `json2cbor`/whole-tree encode for `yang`/`get`/`put`. The top-level
 /// shape check is `--continue`-gated (falls back to an empty map),
-/// matching `json2cbor`'s `'module'` branch (yang-enc.rb:212-222) --
-/// `schema.root`'s own `kw` is `"module"`.
+/// matching `json2cbor`'s `'module'` branch (yang-enc.rb:212-222).
 pub fn json_to_cbor(
     schema: &Schema,
     value: &Json,
@@ -1722,11 +1740,34 @@ pub fn json_to_cbor(
                     cf.upper_name()
                 ))
             })
-            .and_then(|obj| encode_body(schema, schema.root(), obj, cf, continue_on_error)),
+            .and_then(|obj| encode_whole_tree(schema, obj, cf, continue_on_error)),
         continue_on_error,
         || Cbor::Map(vec![]),
     )?;
     cbor_to_bytes(&cbor)
+}
+
+fn decode_whole_tree(schema: &Schema, value: &Cbor, cf: ContentFormat) -> R<Json> {
+    let map = value.as_map().ok_or_else(|| {
+        err(format!(
+            "expected a set of fields for the request, but the device sent {}",
+            describe_cbor(value)
+        ))
+    })?;
+    let mut obj = serde_json::Map::new();
+    for (k, v) in map {
+        let sid = cbor_as_i128(k)
+            .ok_or_else(|| err("the device sent a field whose identifier isn't a valid number"))?
+            as i64;
+        let child = schema.node_by_sid(sid).ok_or_else(|| {
+            err(format!(
+                "the device sent field #{sid}, which isn't in the loaded YANG catalog -- the catalog may not match this device's firmware"
+            ))
+        })?;
+        let name = child.name.clone();
+        obj.insert(name, decode_node_value(schema, child, v, cf)?);
+    }
+    Ok(Json::Object(obj))
 }
 
 /// `cbor2json`/whole-tree decode for `yang`/`get`/`put`.
@@ -1739,7 +1780,7 @@ pub fn cbor_to_json(schema: &Schema, bytes: &[u8], cf: ContentFormat) -> R<Json>
         .into_iter()
         .next()
         .ok_or_else(|| err("could not read any CBOR value from this response"))?;
-    decode_body(schema, schema.root(), &value, cf)
+    decode_whole_tree(schema, &value, cf)
 }
 
 // ===========================================================================
@@ -2159,8 +2200,7 @@ mod tests {
 
     fn box_node(schema: &Schema) -> NodeRef<'_> {
         schema
-            .root()
-            .find_child("test:box")
+            .node_by_data_path("/test:box")
             .expect("test:box exists")
     }
 
