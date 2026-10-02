@@ -10,7 +10,7 @@
 use cbor::Value as Cbor;
 use serde_json::Value as Json;
 
-use crate::schema::{Builtin, IdentityRef, Node, NodeRef, Schema, TypeDef, TypeRef};
+use crate::schema::{Builtin, IdentityRef, Node, NodeRef, Schema, TypeDescriptor, TypeRef};
 
 #[derive(Debug)]
 pub struct CodecError(pub String);
@@ -156,7 +156,7 @@ fn lenient<T>(result: R<T>, continue_on_error: bool, fallback: impl FnOnce() -> 
     }
 }
 
-/// A range/length bound as `i64`, narrowing `TypeDef::ranges`' `i128`
+/// A range/length bound as `i64`, narrowing `TypeDescriptor::ranges`' `i128`
 /// storage at the boundary. Every bound a real catalog actually
 /// restricts fits `i64` exactly; the *default*, unrestricted bound
 /// (`u64::MAX`, for string/binary length) doesn't, but clamping it here
@@ -217,8 +217,8 @@ fn matches_all_patterns(s: &str, patterns: &[String]) -> R<bool> {
 /// extension of, rather than in a separately-generated JSON Schema
 /// fed to a generic validator library (considered and deliberately not
 /// done -- see this session's notes: it would need a real dependency
-/// for what `TypeDef::ranges`/`patterns` already hold directly on the
-/// node being encoded, and it can't help disagreeing with the encoder's
+/// for what `TypeDescriptor::ranges`/`patterns` already hold directly on
+/// the node being encoded, and it can't help disagreeing with the encoder's
 /// own identityref acceptance rule, since `type2schema`'s `enum`
 /// deliberately excludes the base identity to match Ruby while the
 /// encoder's own `all_identity_bases` correctly includes it per RFC
@@ -473,7 +473,7 @@ fn describe_cbor(value: &Cbor) -> String {
 
 // -- decimal64 ---------------------------------------------------------
 
-fn encode_decimal64(ty: &TypeDef, value: &Json, _in_union: bool) -> R<Cbor> {
+fn encode_decimal64(ty: &TypeDescriptor, value: &Json, _in_union: bool) -> R<Cbor> {
     let fraction_digits = ty.fraction_digits.ok_or_else(|| err("this decimal field is missing its fraction-digits setting in the schema -- this looks like a catalog problem"))? as usize;
     let s = value.as_str().ok_or_else(|| {
         err(format!(
@@ -507,7 +507,7 @@ fn encode_decimal64(ty: &TypeDef, value: &Json, _in_union: bool) -> R<Cbor> {
     ))
 }
 
-fn decode_decimal64(_ty: &TypeDef, value: &Cbor, _in_union: bool) -> R<Json> {
+fn decode_decimal64(_ty: &TypeDescriptor, value: &Cbor, _in_union: bool) -> R<Json> {
     let (exp, mantissa) = decimal64_tag_parts(value)?;
     let f = (mantissa as f64) * 10f64.powi(exp as i32);
     Ok(Json::String(format_ruby_float(f)))
@@ -544,7 +544,7 @@ fn format_ruby_float(f: f64) -> String {
 
 // -- enumeration ---------------------------------------------------------
 
-fn encode_enum(ty: &TypeDef, value: &Json, in_union: bool) -> R<Cbor> {
+fn encode_enum(ty: &TypeDescriptor, value: &Json, in_union: bool) -> R<Cbor> {
     let name = value.as_str().ok_or_else(|| {
         err(format!(
             "expected one of this field's allowed text values, got {value}"
@@ -562,7 +562,7 @@ fn encode_enum(ty: &TypeDef, value: &Json, in_union: bool) -> R<Cbor> {
     }
 }
 
-fn decode_enum(ty: &TypeDef, value: &Cbor, in_union: bool) -> R<Json> {
+fn decode_enum(ty: &TypeDescriptor, value: &Cbor, in_union: bool) -> R<Json> {
     if in_union {
         if let Cbor::Tag(44, inner) = value {
             let name = inner
@@ -584,7 +584,7 @@ fn decode_enum(ty: &TypeDef, value: &Cbor, in_union: bool) -> R<Json> {
 
 // -- bits (RFC 9254 6.7) -------------------------------------------------
 
-fn encode_bits(ty: &TypeDef, value: &Json, in_union: bool) -> R<Cbor> {
+fn encode_bits(ty: &TypeDescriptor, value: &Json, in_union: bool) -> R<Cbor> {
     let names: Vec<&str> = match value {
         Json::String(s) => s.split_whitespace().collect(),
         Json::Array(items) => items.iter().filter_map(|v| v.as_str()).collect(),
@@ -653,7 +653,7 @@ fn bits_bytes_to_spans(bytes: &[u8]) -> Vec<Cbor> {
     out
 }
 
-fn decode_bits(ty: &TypeDef, value: &Cbor, in_union: bool) -> R<Json> {
+fn decode_bits(ty: &TypeDescriptor, value: &Cbor, in_union: bool) -> R<Json> {
     if in_union {
         if let Cbor::Tag(43, inner) = value {
             let s = inner
@@ -1955,8 +1955,8 @@ mod tests {
     // examples: exact RFC 9254 6.7 sparse/dense byte patterns, pinned
     // independently of any real catalog's bit layout.
 
-    fn alarm_state_type() -> TypeDef {
-        let mut ty = TypeDef::new(Builtin::Bits);
+    fn alarm_state_type() -> TypeDescriptor {
+        let mut ty = TypeDescriptor::new(Builtin::Bits);
         ty.bits = vec![
             Bit {
                 name: "unknown".into(),
@@ -2057,7 +2057,7 @@ mod tests {
 
     #[test]
     fn decimal64_exponent_is_always_fraction_digits() {
-        let mut ty = TypeDef::new(Builtin::Decimal64);
+        let mut ty = TypeDescriptor::new(Builtin::Decimal64);
         ty.fraction_digits = Some(2);
         assert_eq!(
             encode_decimal64(&ty, &Json::String("2.57".into()), false).unwrap(),
@@ -2084,7 +2084,7 @@ mod tests {
 
     #[test]
     fn decimal64_decode_always_shows_a_decimal_point() {
-        let ty = TypeDef::new(Builtin::Decimal64);
+        let ty = TypeDescriptor::new(Builtin::Decimal64);
         assert_eq!(
             decode_decimal64(
                 &ty,

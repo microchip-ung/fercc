@@ -20,8 +20,8 @@ use crate::parser::{self, Stmt};
 use crate::sid::{self, Namespace};
 
 type NodeId = usize;
-type TypeId = usize;
 type IdentityId = usize;
+type TypedefId = usize;
 
 const SCHEMA_NODE_KEYWORDS: &[&str] = &[
     "container",
@@ -113,9 +113,7 @@ pub struct EnumVal {
 }
 
 #[derive(Debug, Clone)]
-pub struct TypeDef {
-    name: Option<String>,
-    module: Option<String>,
+pub struct TypeDescriptor {
     pub builtin: Builtin,
     pub fraction_digits: Option<u8>,
     pub bits: Vec<Bit>,
@@ -126,7 +124,7 @@ pub struct TypeDef {
     pub source_module: Option<String>,
     pub leafref_path: Option<String>,
     leafref_target: Option<NodeId>,
-    union_members: Vec<TypeId>,
+    union_members: Vec<TypeDescriptor>,
     /// `range` restrictions (int8/16/32/64, uint8/16/32/64) or `length`
     /// restrictions (string, binary) -- one underlying field for both,
     /// mirroring `Type#ranges`/`Type#length` in yang-utils.rb (`length` is
@@ -141,13 +139,12 @@ pub struct TypeDef {
     /// the typedef chain (RFC 7950: multiple pattern statements, whether
     /// inherited or local, are all ANDed together).
     pub patterns: Vec<String>,
+    base: Option<TypedefId>,
 }
 
-impl TypeDef {
+impl TypeDescriptor {
     pub(crate) fn new(builtin: Builtin) -> Self {
         Self {
-            name: None,
-            module: None,
             builtin,
             fraction_digits: None,
             bits: Vec::new(),
@@ -159,8 +156,17 @@ impl TypeDef {
             union_members: Vec::new(),
             ranges: Vec::new(),
             patterns: Vec::new(),
+            base: None,
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct Typedef {
+    pub name: String,
+    pub module: String,
+    pub description: Option<String>,
+    ty: TypeDescriptor,
 }
 
 /// The natural bounds a builtin type starts with before any `range`/
@@ -232,7 +238,7 @@ pub struct Node {
     children: Vec<NodeId>,
     pub config: bool,
     pub mandatory: bool,
-    type_id: Option<TypeId>,
+    ty: Option<TypeDescriptor>,
     /// List keys, in schema-declared order (not necessarily input order).
     pub keys: Vec<String>,
     pub sid: Option<i64>,
@@ -293,7 +299,7 @@ impl<'a> ModuleRef<'a> {
 
 pub struct Schema {
     nodes: Vec<Node>,
-    types: Vec<TypeDef>,
+    typedefs: Vec<Typedef>,
     identities: Vec<Identity>,
     module_root: HashMap<String, Module>,
     yang_data_roots: HashMap<String, NodeId>,
@@ -347,36 +353,37 @@ impl<'a> NodeRef<'a> {
     pub fn ty(&self) -> Option<TypeRef<'a>> {
         let schema = self.schema;
         schema.nodes[self.id]
-            .type_id
-            .map(|id| TypeRef { schema, id })
+            .ty
+            .as_ref()
+            .map(|ty| TypeRef { schema, ty })
     }
 }
 
 #[derive(Clone, Copy)]
 pub struct TypeRef<'a> {
     schema: &'a Schema,
-    id: TypeId,
+    ty: &'a TypeDescriptor,
 }
 
 impl<'a> std::ops::Deref for TypeRef<'a> {
-    type Target = TypeDef;
-    fn deref(&self) -> &TypeDef {
-        &self.schema.types[self.id]
+    type Target = TypeDescriptor;
+    fn deref(&self) -> &TypeDescriptor {
+        self.ty
     }
 }
 
 impl<'a> TypeRef<'a> {
     pub fn union_members(&self) -> impl Iterator<Item = TypeRef<'a>> + 'a {
         let schema = self.schema;
-        schema.types[self.id]
+        self.ty
             .union_members
             .iter()
-            .map(move |&id| TypeRef { schema, id })
+            .map(move |ty| TypeRef { schema, ty })
     }
 
     pub fn identity_bases(&self) -> impl Iterator<Item = IdentityRef<'a>> + 'a {
         let schema = self.schema;
-        schema.types[self.id]
+        self.ty
             .identity_bases
             .iter()
             .map(move |&id| IdentityRef { schema, id })
@@ -384,9 +391,34 @@ impl<'a> TypeRef<'a> {
 
     pub fn leafref_target(&self) -> Option<NodeRef<'a>> {
         let schema = self.schema;
-        schema.types[self.id]
-            .leafref_target
-            .map(|id| NodeRef { schema, id })
+        self.ty.leafref_target.map(|id| NodeRef { schema, id })
+    }
+
+    pub fn base(&self) -> Option<TypedefRef<'a>> {
+        let schema = self.schema;
+        self.ty.base.map(|id| TypedefRef { schema, id })
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct TypedefRef<'a> {
+    schema: &'a Schema,
+    id: TypedefId,
+}
+
+impl<'a> std::ops::Deref for TypedefRef<'a> {
+    type Target = Typedef;
+    fn deref(&self) -> &Typedef {
+        &self.schema.typedefs[self.id]
+    }
+}
+
+impl<'a> TypedefRef<'a> {
+    pub fn ty(&self) -> TypeRef<'a> {
+        TypeRef {
+            schema: self.schema,
+            ty: &self.schema.typedefs[self.id].ty,
+        }
     }
 }
 
@@ -544,11 +576,15 @@ impl Schema {
             .map(|id| IdentityRef { schema: self, id })
     }
 
-    pub fn typedef_by_name(&self, module: &str, name: &str) -> Option<TypeRef<'_>> {
-        self.types
+    pub fn typedef_by_name(&self, module: &str, name: &str) -> Option<TypedefRef<'_>> {
+        self.typedefs
             .iter()
-            .position(|t| t.module.as_deref() == Some(module) && t.name.as_deref() == Some(name))
-            .map(|id| TypeRef { schema: self, id })
+            .position(|t| t.module == module && t.name == name)
+            .map(|id| TypedefRef { schema: self, id })
+    }
+
+    pub fn typedefs(&self) -> impl Iterator<Item = TypedefRef<'_>> + '_ {
+        (0..self.typedefs.len()).map(|id| TypedefRef { schema: self, id })
     }
 
     pub fn modules(&self) -> impl Iterator<Item = ModuleRef<'_>> + '_ {
@@ -646,13 +682,12 @@ struct Builder<'a> {
     built: std::collections::HashSet<String>,
 
     nodes: Vec<Node>,
-    types: Vec<TypeDef>,
+    typedefs: Vec<Typedef>,
     identities: Vec<Identity>,
     identity_by_module_name: HashMap<(String, String), IdentityId>,
-    typedef_cache: HashMap<(String, String), TypeId>,
+    typedef_cache: HashMap<(String, String), TypedefId>,
     module_root: HashMap<String, Module>,
     yang_data_roots: HashMap<String, NodeId>,
-    leafref_pending: Vec<TypeId>,
 }
 
 /// Parse `.yang` sources and build the full schema, including flattening
@@ -703,13 +738,12 @@ pub fn build(yang_sources: &[String], sid_sources: &[String]) -> R<Schema> {
         building: Default::default(),
         built: Default::default(),
         nodes: Vec::new(),
-        types: Vec::new(),
+        typedefs: Vec::new(),
         identities: Vec::new(),
         identity_by_module_name: HashMap::new(),
         typedef_cache: HashMap::new(),
         module_root: HashMap::new(),
         yang_data_roots: HashMap::new(),
-        leafref_pending: Vec::new(),
     };
 
     let module_names: Vec<String> = parsed.iter().map(|m| m.arg_str().to_string()).collect();
@@ -745,7 +779,7 @@ impl<'a> Builder<'a> {
             children: Vec::new(),
             config: true,
             mandatory: false,
-            type_id: None,
+            ty: None,
             keys: Vec::new(),
             sid: None,
             owner_module: owner_module.clone(),
@@ -1005,7 +1039,7 @@ impl<'a> Builder<'a> {
             "leaf" | "leaf-list" => {
                 if let Some(t) = s.sub("type") {
                     let ty = self.interpret_type(resolve, t)?;
-                    self.nodes[node].type_id = Some(ty);
+                    self.nodes[node].ty = Some(ty);
                 }
             }
             "list" => {
@@ -1253,13 +1287,7 @@ impl<'a> Builder<'a> {
 
     // -- types ---------------------------------------------------------
 
-    fn new_type(&mut self, t: TypeDef) -> TypeId {
-        let id = self.types.len();
-        self.types.push(t);
-        id
-    }
-
-    fn resolve_typedef(&mut self, def_module: &str, local: &str) -> R<TypeId> {
+    fn resolve_typedef(&mut self, def_module: &str, local: &str) -> R<TypedefId> {
         let key = (def_module.to_string(), local.to_string());
         if let Some(&id) = self.typedef_cache.get(&key) {
             return Ok(id);
@@ -1272,36 +1300,34 @@ impl<'a> Builder<'a> {
         let base = raw
             .sub("type")
             .ok_or_else(|| err(format!("typedef {local:?} has no type")))?;
-        let base_id = self.interpret_type(def_module, base)?;
-        let mut ty = self.types[base_id].clone();
-        ty.name = Some(local.to_string());
-        ty.module = Some(def_module.to_string());
-        let id = self.new_type(ty);
+        let ty = self.interpret_type(def_module, base)?;
+        let description = raw.sub("description").map(|d| d.arg_str().to_string());
+        let id = self.typedefs.len();
+        self.typedefs.push(Typedef {
+            name: local.to_string(),
+            module: def_module.to_string(),
+            description,
+            ty,
+        });
         self.typedef_cache.insert(key, id);
         Ok(id)
     }
 
-    fn interpret_type(&mut self, module: &str, t: &Stmt) -> R<TypeId> {
+    fn interpret_type(&mut self, module: &str, t: &Stmt) -> R<TypeDescriptor> {
         let name = t.arg_str();
         let mut ty = if let Some(builtin) = Builtin::from_name(name) {
             self.interpret_builtin_type(module, builtin, t)?
         } else {
-            // typedef reference: clone the typedef's own canonical
-            // resolution -- a clone, not the same TypeId, since this
-            // same typedef can be used (and independently further
-            // restricted) at more than one site. Mirrors
-            // `inner.derive(typedef['name'])` (yang-utils.rb:324): the
-            // canonical entry's already-resolved ranges/patterns carry
-            // forward as the starting point for this level's own
-            // restrictions below. `name`/`module` are cleared on the
-            // clone -- only the canonical entry `resolve_typedef` cached
-            // may ever claim to *be* this typedef; this one is a
-            // use-site-specific derivative of it.
+            // typedef reference: clone the named typedef's own
+            // descriptor as the starting point for this use site's own
+            // restrictions below -- a clone, not a shared reference,
+            // since this same typedef can be used (and independently
+            // further restricted) at more than one site. Mirrors
+            // `inner.derive(typedef['name'])` (yang-utils.rb:324).
             let (def_module, local) = self.split_qualified(module, name)?;
-            let canonical_id = self.resolve_typedef(&def_module, local)?;
-            let mut ty = self.types[canonical_id].clone();
-            ty.name = None;
-            ty.module = None;
+            let typedef_id = self.resolve_typedef(&def_module, local)?;
+            let mut ty = self.typedefs[typedef_id].ty.clone();
+            ty.base = Some(typedef_id);
             ty
         };
 
@@ -1323,11 +1349,16 @@ impl<'a> Builder<'a> {
             ty.patterns.push(p.arg_str().to_string());
         }
 
-        Ok(self.new_type(ty))
+        Ok(ty)
     }
 
-    fn interpret_builtin_type(&mut self, module: &str, builtin: Builtin, t: &Stmt) -> R<TypeDef> {
-        let mut ty = TypeDef::new(builtin);
+    fn interpret_builtin_type(
+        &mut self,
+        module: &str,
+        builtin: Builtin,
+        t: &Stmt,
+    ) -> R<TypeDescriptor> {
+        let mut ty = TypeDescriptor::new(builtin);
         ty.ranges = default_ranges(builtin);
 
         match builtin {
@@ -1409,7 +1440,7 @@ impl<'a> Builder<'a> {
                             }
                             if let Some(t) = d.sub("type") {
                                 let ty = self.interpret_type(module, t)?;
-                                self.nodes[target].type_id = Some(ty);
+                                self.nodes[target].ty = Some(ty);
                             }
                         }
                         "add" | "delete" => {
@@ -1449,36 +1480,63 @@ impl<'a> Builder<'a> {
     // -- leafref ---------------------------------------------------------
 
     fn resolve_leafrefs(&mut self) -> R<()> {
-        // Map each Leafref TypeId to the node that declared it -- needed
-        // to resolve a *relative* path ("../../module/identifier"),
-        // which starts from that leaf's own position in the tree, not
-        // from any fixed module root.
-        let mut owner: HashMap<TypeId, NodeId> = HashMap::new();
-        for (id, node) in self.nodes.iter().enumerate() {
-            if let Some(t) = node.type_id {
-                owner.insert(t, id);
-            }
+        let mut reachable = vec![false; self.nodes.len()];
+        let roots: Vec<NodeId> = self
+            .module_root
+            .values()
+            .flat_map(|m| m.root_nodes.iter().copied())
+            .chain(self.yang_data_roots.values().copied())
+            .collect();
+        for root in roots {
+            self.mark_reachable(root, &mut reachable);
         }
 
-        for i in 0..self.types.len() {
-            if self.types[i].builtin == Builtin::Leafref && self.types[i].leafref_path.is_some() {
-                self.leafref_pending.push(i);
+        for (id, &is_reachable) in reachable.iter().enumerate() {
+            if !is_reachable {
+                continue;
+            }
+            if let Some(mut ty) = self.nodes[id].ty.take() {
+                self.resolve_leafref_in_descriptor(id, &mut ty)?;
+                self.nodes[id].ty = Some(ty);
             }
         }
-        for ty_id in self.leafref_pending.clone() {
-            let path = self.types[ty_id].leafref_path.clone().unwrap();
-            let module = self.types[ty_id].source_module.clone().unwrap();
-            let target = if let Some(abs) = path.trim().strip_prefix('/') {
-                self.resolve_absolute_schema_node_id(&module, &format!("/{abs}"))
-                    .ok()
-            } else {
-                owner
-                    .get(&ty_id)
-                    .and_then(|&node| self.resolve_relative_leafref(node, &path))
-            };
-            if let Some(target) = target {
-                self.types[ty_id].leafref_target = Some(target);
+        Ok(())
+    }
+
+    fn mark_reachable(&self, node: NodeId, reachable: &mut [bool]) {
+        reachable[node] = true;
+        for &c in &self.nodes[node].children {
+            self.mark_reachable(c, reachable);
+        }
+    }
+
+    fn resolve_leafref_in_descriptor(&self, node: NodeId, ty: &mut TypeDescriptor) -> R<()> {
+        if ty.builtin == Builtin::Leafref {
+            if let Some(path) = ty.leafref_path.clone() {
+                let module = ty
+                    .source_module
+                    .clone()
+                    .expect("a leafref's source_module is always set alongside leafref_path");
+                let target = if let Some(abs) = path.trim().strip_prefix('/') {
+                    self.resolve_absolute_schema_node_id(&module, &format!("/{abs}"))?
+                } else {
+                    self.resolve_relative_leafref(node, &path).ok_or_else(|| {
+                        err(format!(
+                            "leafref path {path:?} (declared in module {module:?}) could not be resolved"
+                        ))
+                    })?
+                };
+                let target_kw = &self.nodes[target].kw;
+                if target_kw != "leaf" && target_kw != "leaf-list" {
+                    return Err(err(format!(
+                        "leafref path {path:?} (declared in module {module:?}) refers to a {target_kw}, not a leaf or leaf-list"
+                    )));
+                }
+                ty.leafref_target = Some(target);
             }
+        }
+        for member in &mut ty.union_members {
+            self.resolve_leafref_in_descriptor(node, member)?;
         }
         Ok(())
     }
@@ -1562,7 +1620,7 @@ impl<'a> Builder<'a> {
 
         Ok(Schema {
             nodes: self.nodes,
-            types: self.types,
+            typedefs: self.typedefs,
             identities: self.identities,
             module_root: self.module_root,
             yang_data_roots: self.yang_data_roots,
@@ -1877,17 +1935,18 @@ mod tests {
         "#;
         let schema = build(&[src.to_string()], &[]).unwrap();
         let percent = schema.typedef_by_name("foo", "percent").unwrap();
-        assert_eq!(percent.ranges, vec![(0, 100)]);
+        assert_eq!(percent.ty().ranges, vec![(0, 100)]);
 
         let bar = schema.node_by_data_path("/foo:bar").unwrap();
         let narrow = bar.find_child("narrow").unwrap();
         let narrow_ty = narrow.ty().unwrap();
         assert_eq!(narrow_ty.ranges, vec![(0, 50)]);
+        assert_eq!(narrow_ty.base().unwrap().name, "percent");
 
         // The narrowed use site must not have clobbered the canonical
         // entry `typedef_by_name` returns.
         let percent_again = schema.typedef_by_name("foo", "percent").unwrap();
-        assert_eq!(percent_again.ranges, vec![(0, 100)]);
+        assert_eq!(percent_again.ty().ranges, vec![(0, 100)]);
     }
 
     #[test]
@@ -1905,6 +1964,193 @@ mod tests {
         let schema = build(&[src.to_string()], &[]).unwrap();
         assert!(schema.typedef_by_name("foo", "string").is_none());
         assert!(schema.typedef_by_name("foo", "no-such-typedef").is_none());
+    }
+
+    #[test]
+    fn an_inline_type_has_no_base_but_a_typedef_use_site_does() {
+        // A leaf's own anonymous `type` has no typedef identity to point
+        // back to at all; one referencing (and narrowing) a typedef
+        // carries `base` as pure provenance -- not the typedef's own
+        // entry, which stays unrestricted (see
+        // typedef_by_name_finds_the_canonical_unrestricted_resolution).
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              typedef percent {
+                type uint8 {
+                  range "0..100";
+                }
+              }
+
+              container bar {
+                leaf inline {
+                  type uint8;
+                }
+                leaf named {
+                  type percent;
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let bar = schema.node_by_data_path("/foo:bar").unwrap();
+
+        let inline = bar.find_child("inline").unwrap().ty().unwrap();
+        assert!(inline.base().is_none());
+
+        let named = bar.find_child("named").unwrap().ty().unwrap();
+        let base = named.base().unwrap();
+        assert_eq!(base.name, "percent");
+        assert_eq!(base.module, "foo");
+    }
+
+    #[test]
+    fn typedefs_lists_every_named_typedef_exactly_once_with_its_description() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              typedef percent {
+                description "a percentage, 0 to 100";
+                type uint8 {
+                  range "0..100";
+                }
+              }
+
+              container bar {
+                leaf a {
+                  type percent;
+                }
+                leaf b {
+                  type percent {
+                    range "0..50";
+                  }
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let names: Vec<String> = schema.typedefs().map(|t| t.name.clone()).collect();
+        assert_eq!(names, vec!["percent"]);
+        let percent = schema.typedef_by_name("foo", "percent").unwrap();
+        assert_eq!(
+            percent.description.as_deref(),
+            Some("a percentage, 0 to 100")
+        );
+    }
+
+    #[test]
+    fn leafref_resolves_through_a_typedef_to_its_concrete_target() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              typedef bar-ref {
+                type leafref {
+                  path "/f:bar/f:name";
+                }
+              }
+
+              list bar {
+                key "name";
+                leaf name {
+                  type string;
+                }
+              }
+
+              leaf pick {
+                type bar-ref;
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let pick = schema.node_by_data_path("/foo:pick").unwrap();
+        let target = pick.ty().unwrap().leafref_target().unwrap();
+        assert_eq!(target.kw, "leaf");
+        assert_eq!(target.local_name(), "name");
+    }
+
+    #[test]
+    fn an_unresolvable_leafref_path_is_a_schema_error() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              leaf pick {
+                type leafref {
+                  path "/f:no-such-node";
+                }
+              }
+            }
+        "#;
+        let err = build(&[src.to_string()], &[]).err().unwrap();
+        assert!(err.0.contains("no-such-node"), "{}", err.0);
+    }
+
+    #[test]
+    fn a_leafref_path_targeting_a_non_leaf_is_a_schema_error() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              container bar {
+                leaf x {
+                  type string;
+                }
+              }
+
+              leaf pick {
+                type leafref {
+                  path "/f:bar";
+                }
+              }
+            }
+        "#;
+        let err = build(&[src.to_string()], &[]).err().unwrap();
+        assert!(err.0.contains("container"), "{}", err.0);
+    }
+
+    #[test]
+    fn a_dangling_leafref_on_a_deviated_away_node_is_not_an_error() {
+        // `old` is removed entirely by the deviation before leafref
+        // resolution runs; its own leafref path targets another node
+        // that's *also* removed. Neither should be visited at all --
+        // mirrors a real catalog shape (ietf-interfaces's
+        // `higher-layer-if`/`lower-layer-if`, leafrefs into
+        // `interfaces-state`, with both sides deviated away together by
+        // the same device profile).
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              container removed-target {
+                leaf name {
+                  type string;
+                }
+              }
+
+              leaf old {
+                type leafref {
+                  path "/f:removed-target/f:name";
+                }
+              }
+
+              deviation /f:removed-target {
+                deviate not-supported;
+              }
+              deviation /f:old {
+                deviate not-supported;
+              }
+            }
+        "#;
+        assert!(build(&[src.to_string()], &[]).is_ok());
     }
 
     #[test]
