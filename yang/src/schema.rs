@@ -546,22 +546,28 @@ fn descend_by_data_local<'s>(
 fn resolve_schema_path(
     nodes: &[Node],
     module_root: &HashMap<String, Module>,
+    path: &str,
+) -> Option<NodeId> {
+    let mut segs = path.split('/').filter(|s| !s.is_empty());
+    let first = segs.next()?;
+    let (module_name, first_local) = first.split_once(':')?;
+    let module = module_root.get(module_name)?;
+    let first_node = module
+        .root_nodes
+        .iter()
+        .copied()
+        .find(|&id| nodes[id].local_name() == first_local)?;
+    descend_by_local(nodes, first_node, segs)
+}
+
+fn resolve_yang_data_path(
+    nodes: &[Node],
     yang_data_roots: &HashMap<String, NodeId>,
     path: &str,
 ) -> Option<NodeId> {
     let mut segs = path.split('/').filter(|s| !s.is_empty());
     let first = segs.next()?;
-    let first_node = if let Some(&root) = yang_data_roots.get(first) {
-        root
-    } else {
-        let (module_name, first_local) = first.split_once(':')?;
-        let module = module_root.get(module_name)?;
-        module
-            .root_nodes
-            .iter()
-            .copied()
-            .find(|&id| nodes[id].local_name() == first_local)?
-    };
+    let &first_node = yang_data_roots.get(first)?;
     descend_by_local(nodes, first_node, segs)
 }
 
@@ -624,8 +630,12 @@ impl Schema {
     }
 
     pub fn node_by_schema_path(&self, path: &str) -> Option<NodeRef<'_>> {
-        let id = resolve_schema_path(&self.nodes, &self.module_root, &self.yang_data_roots, path)?;
+        let id = resolve_schema_path(&self.nodes, &self.module_root, path)?;
         Some(self.node_ref(id))
+    }
+
+    pub fn yang_data_root_by_name(&self, name: &str) -> Option<NodeRef<'_>> {
+        self.yang_data_roots.get(name).map(|&id| self.node_ref(id))
     }
 
     pub fn node_by_data_path(&self, path: &str) -> Option<NodeRef<'_>> {
@@ -1258,15 +1268,17 @@ impl<'a> Builder<'a> {
     /// the declaring module's own import-prefix *aliases*), a `.sid`
     /// file's first path segment prefix is always the real module name
     /// directly -- there's no per-file alias context to translate
-    /// through.
+    /// through. A real `.sid` file's own `data`-namespace identifier can
+    /// name either an ordinary schema node or a `rc:yang-data` root
+    /// (e.g. "/ietf-coreconf:error"), so both are tried.
     fn resolve_sid_data_identifier(&self, path: &str) -> R<NodeId> {
-        resolve_schema_path(&self.nodes, &self.module_root, &self.yang_data_roots, path).ok_or_else(
-            || {
+        resolve_schema_path(&self.nodes, &self.module_root, path)
+            .or_else(|| resolve_yang_data_path(&self.nodes, &self.yang_data_roots, path))
+            .ok_or_else(|| {
                 err(format!(
                     "target segment not found in SID data identifier {path:?}"
                 ))
-            },
-        )
+            })
     }
 
     fn find_in_module(&self, module: &Module, local: &str) -> Option<NodeId> {
@@ -1907,6 +1919,42 @@ mod tests {
     }
 
     #[test]
+    fn a_sid_files_data_identifier_can_attach_a_sid_to_a_yang_data_root() {
+        // Real .sid files address a yang-data root's own container
+        // directly by its full qualified name (e.g.
+        // "/ietf-coreconf:error") -- confirmed against a real catalog's
+        // ietf-coreconf@*.sid. Attaching that SID must reach the
+        // yang-data root, not just ordinary module schema nodes.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              rc:yang-data coreconf-error {
+                container error {
+                  leaf message {
+                    type string;
+                  }
+                }
+              }
+            }
+        "#;
+        let sid = r#"{
+            "module-name": "foo",
+            "module-revision": "2026-01-01",
+            "items": [
+                {"namespace": "data", "identifier": "/foo:error", "sid": 38455},
+                {"namespace": "data", "identifier": "/foo:error/message", "sid": 38456}
+            ]
+        }"#;
+        let schema = build(&[src.to_string()], &[sid.to_string()]).unwrap();
+        let error_root = schema.yang_data_root_by_name("foo:error").unwrap();
+        assert_eq!(error_root.sid, Some(38455));
+        let message = error_root.find_child("message").unwrap();
+        assert_eq!(message.sid, Some(38456));
+    }
+
+    #[test]
     fn module_root_nodes_lists_its_own_top_level_nodes_in_order() {
         let src = r#"
             module foo {
@@ -2273,7 +2321,11 @@ mod tests {
     }
 
     #[test]
-    fn node_by_schema_path_finds_a_yang_data_root_by_its_full_qualified_name() {
+    fn yang_data_root_by_name_finds_it_but_node_by_schema_path_and_data_path_do_not() {
+        // A yang-data root is its own separate document (RFC 8040 Sec.
+        // 8), never reachable by walking any module's own schema tree --
+        // so it has no schema-node-path and no data-node-path, and needs
+        // its own dedicated entry point.
         let src = r#"
             module foo {
               namespace "urn:foo";
@@ -2289,11 +2341,11 @@ mod tests {
             }
         "#;
         let schema = build(&[src.to_string()], &[]).unwrap();
-        let error_root = schema.node_by_schema_path("/foo:error").unwrap();
+        let error_root = schema.yang_data_root_by_name("foo:error").unwrap();
         assert_eq!(error_root.kw, "container");
         assert!(error_root.find_child("message").is_some());
 
-        // Not part of the datastore, so unreachable via a data-node-path.
+        assert!(schema.node_by_schema_path("/foo:error").is_none());
         assert!(schema.node_by_data_path("/foo:error").is_none());
     }
 

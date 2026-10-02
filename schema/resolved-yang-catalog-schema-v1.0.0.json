@@ -7,7 +7,7 @@
   "type": "object",
   "required": [
     "schema-version", "yang-catalog", "modules", "typedefs",
-    "identities", "schema-nodes", "sid-index", "data-node-path-index"
+    "identities", "schema-nodes", "yang-data", "sid-index"
   ],
   "properties": {
     "$schema": {
@@ -62,21 +62,19 @@
       }
     },
 
+    "yang-data": {
+      "type": "object",
+      "description": "Every YANG data template (RFC 8040's yang-data extension, used e.g. by ietf-coreconf's error structure), keyed by \"module:name\".",
+      "patternProperties": {
+        "^[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*$": { "$ref": "#/$defs/schema-node" }
+      }
+    },
+
     "sid-index": {
       "type": "object",
       "description": "SID (as a string) to namespace + natural identifier, mirroring a .sid file. Empty if no .sid data was supplied.",
       "patternProperties": {
         "^[0-9]+$": { "$ref": "#/$defs/sid-index-entry" }
-      }
-    },
-
-    "data-node-path-index": {
-      "type": "object",
-      "description": "Data-node-path to schema-node-path, for resolving a data tree path down to its schema node.",
-      "patternProperties": {
-        "^/[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*(/[A-Za-z_][A-Za-z0-9_.-]*(:[A-Za-z_][A-Za-z0-9_.-]*)?)*$": {
-          "$ref": "#/$defs/schema-node-path"
-        }
       }
     }
   },
@@ -86,12 +84,6 @@
       "type": "string",
       "pattern": "^/[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*(/[A-Za-z_][A-Za-z0-9_.-]*(:[A-Za-z_][A-Za-z0-9_.-]*)?)*$",
       "description": "An absolute schema-node path: the first segment is always module-qualified, later segments only when they cross into a different module."
-    },
-
-    "data-node-path": {
-      "type": "string",
-      "pattern": "^/[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*(/[A-Za-z_][A-Za-z0-9_.-]*(:[A-Za-z_][A-Za-z0-9_.-]*)?)*$",
-      "description": "An instance-identifier with every predicate omitted (list key, leaf-list value, and positional)."
     },
 
     "sid-string": {
@@ -461,107 +453,92 @@
       }
     },
 
-    "schema-node-common": {
-      "type": "object",
-      "required": ["keyword", "name", "module", "parent", "children", "status"],
-      "properties": {
-        "keyword": {
-          "enum": [
-            "container", "leaf", "leaf-list", "list", "choice", "case",
-            "rpc", "action", "input", "output", "notification", "anydata", "anyxml"
-          ]
-        },
-        "name": {
-          "type": "string",
-          "description": "This node's own declared name."
-        },
-        "module": {
-          "$ref": "#/$defs/module-name",
-          "description": "This node's defining module."
-        },
-        "parent": {
-          "oneOf": [
-            { "$ref": "#/$defs/schema-node-path" },
-            { "type": "null" }
-          ],
-          "description": "The parent's schema-node-path, or null at a module's top level."
-        },
-        "children": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/schema-node-path" },
-          "description": "Direct children's paths, in declaration order."
-        },
-        "status": {
-          "enum": ["current", "deprecated", "obsolete"],
-          "description": "current: safe to use. deprecated: still usable but scheduled for removal. obsolete: no longer usable."
-        },
-        "description": { "type": "string" },
-        "sid": { "$ref": "#/$defs/sid-string" }
-      }
-    },
-
     "schema-node": {
-      "description": "One schema node, selected by `keyword`.",
-      "oneOf": [
+      "description": "One schema node, selected by `keyword`. Each branch requires exactly the substatements RFC 7950 makes mandatory for that keyword; fercc may add further optional fields to any branch in a future minor version.",
+      "allOf": [
         {
-          "title": "Container",
-          "allOf": [
-            { "$ref": "#/$defs/schema-node-common" },
+          "type": "object",
+          "required": ["keyword", "name", "module", "parent", "children", "data-children", "status"],
+          "properties": {
+            "keyword": {
+              "enum": [
+                "container", "leaf", "leaf-list", "list", "choice", "case",
+                "rpc", "action", "input", "output", "notification", "anydata", "anyxml"
+              ]
+            },
+            "name": {
+              "type": "string",
+              "description": "This node's own declared name."
+            },
+            "module": {
+              "$ref": "#/$defs/module-name",
+              "description": "This node's defining module."
+            },
+            "parent": {
+              "oneOf": [
+                { "$ref": "#/$defs/schema-node-path" },
+                { "type": "null" }
+              ],
+              "description": "The parent's schema-node-path, or null at a module's top level."
+            },
+            "children": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/schema-node-path" },
+              "description": "Direct children's paths, in declaration order."
+            },
+            "data-children": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/schema-node-path" },
+              "description": "Direct children's paths with choice/case spliced out (each replaced by its own data-children, recursively), in declaration order."
+            },
+            "status": {
+              "enum": ["current", "deprecated", "obsolete"],
+              "description": "current: safe to use. deprecated: still usable but scheduled for removal. obsolete: no longer usable."
+            },
+            "description": { "type": "string" },
+            "sid": { "$ref": "#/$defs/sid-string" }
+          }
+        },
+        {
+          "oneOf": [
             {
+              "title": "Container",
               "type": "object",
-              "required": ["config", "data-node-path"],
+              "required": ["config"],
               "properties": {
                 "keyword": { "const": "container" },
-                "config": { "type": "boolean" },
-                "data-node-path": { "$ref": "#/$defs/data-node-path" }
+                "config": { "type": "boolean" }
               }
-            }
-          ]
-        },
-        {
-          "title": "Leaf",
-          "allOf": [
-            { "$ref": "#/$defs/schema-node-common" },
+            },
             {
+              "title": "Leaf",
               "type": "object",
-              "required": ["config", "type", "mandatory", "data-node-path"],
+              "required": ["config", "type", "mandatory"],
               "properties": {
                 "keyword": { "const": "leaf" },
                 "config": { "type": "boolean" },
                 "type": { "$ref": "#/$defs/type-descriptor" },
                 "mandatory": { "type": "boolean" },
                 "default": { "type": "string" },
-                "units": { "type": "string" },
-                "data-node-path": { "$ref": "#/$defs/data-node-path" }
+                "units": { "type": "string" }
               }
-            }
-          ]
-        },
-        {
-          "title": "Leaf-list",
-          "allOf": [
-            { "$ref": "#/$defs/schema-node-common" },
+            },
             {
+              "title": "Leaf-list",
               "type": "object",
-              "required": ["config", "type", "data-node-path"],
+              "required": ["config", "type"],
               "properties": {
                 "keyword": { "const": "leaf-list" },
                 "config": { "type": "boolean" },
                 "type": { "$ref": "#/$defs/type-descriptor" },
                 "default": { "type": "array", "items": { "type": "string" } },
-                "units": { "type": "string" },
-                "data-node-path": { "$ref": "#/$defs/data-node-path" }
+                "units": { "type": "string" }
               }
-            }
-          ]
-        },
-        {
-          "title": "List",
-          "allOf": [
-            { "$ref": "#/$defs/schema-node-common" },
+            },
             {
+              "title": "List",
               "type": "object",
-              "required": ["config", "keys", "data-node-path"],
+              "required": ["config", "keys"],
               "properties": {
                 "keyword": { "const": "list" },
                 "config": { "type": "boolean" },
@@ -569,17 +546,11 @@
                   "type": "array",
                   "items": { "$ref": "#/$defs/schema-node-path" },
                   "description": "Key leafs' own paths, in schema-declared order. Empty for a keyless list (legal when config false)."
-                },
-                "data-node-path": { "$ref": "#/$defs/data-node-path" }
+                }
               }
-            }
-          ]
-        },
-        {
-          "title": "Choice",
-          "allOf": [
-            { "$ref": "#/$defs/schema-node-common" },
+            },
             {
+              "title": "Choice",
               "type": "object",
               "required": ["config", "mandatory"],
               "properties": {
@@ -591,79 +562,55 @@
                   "description": "The case used when no case is present in the data."
                 }
               }
-            }
-          ]
-        },
-        {
-          "title": "Case",
-          "allOf": [
-            { "$ref": "#/$defs/schema-node-common" },
-            { "type": "object", "properties": { "keyword": { "const": "case" } } }
-          ]
-        },
-        {
-          "title": "Rpc",
-          "allOf": [
-            { "$ref": "#/$defs/schema-node-common" },
-            { "type": "object", "properties": { "keyword": { "const": "rpc" } } }
-          ]
-        },
-        {
-          "title": "Action",
-          "allOf": [
-            { "$ref": "#/$defs/schema-node-common" },
-            { "type": "object", "properties": { "keyword": { "const": "action" } } }
-          ]
-        },
-        {
-          "title": "Input",
-          "allOf": [
-            { "$ref": "#/$defs/schema-node-common" },
-            { "type": "object", "properties": { "keyword": { "const": "input" } } }
-          ]
-        },
-        {
-          "title": "Output",
-          "allOf": [
-            { "$ref": "#/$defs/schema-node-common" },
-            { "type": "object", "properties": { "keyword": { "const": "output" } } }
-          ]
-        },
-        {
-          "title": "Notification",
-          "allOf": [
-            { "$ref": "#/$defs/schema-node-common" },
-            { "type": "object", "properties": { "keyword": { "const": "notification" } } }
-          ]
-        },
-        {
-          "title": "Anydata",
-          "allOf": [
-            { "$ref": "#/$defs/schema-node-common" },
+            },
             {
+              "title": "Case",
               "type": "object",
-              "required": ["config", "mandatory", "data-node-path"],
+              "properties": { "keyword": { "const": "case" } }
+            },
+            {
+              "title": "Rpc",
+              "type": "object",
+              "properties": { "keyword": { "const": "rpc" } }
+            },
+            {
+              "title": "Action",
+              "type": "object",
+              "properties": { "keyword": { "const": "action" } }
+            },
+            {
+              "title": "Input",
+              "type": "object",
+              "properties": { "keyword": { "const": "input" } }
+            },
+            {
+              "title": "Output",
+              "type": "object",
+              "properties": { "keyword": { "const": "output" } }
+            },
+            {
+              "title": "Notification",
+              "type": "object",
+              "properties": { "keyword": { "const": "notification" } }
+            },
+            {
+              "title": "Anydata",
+              "type": "object",
+              "required": ["config", "mandatory"],
               "properties": {
                 "keyword": { "const": "anydata" },
                 "config": { "type": "boolean" },
-                "mandatory": { "type": "boolean" },
-                "data-node-path": { "$ref": "#/$defs/data-node-path" }
+                "mandatory": { "type": "boolean" }
               }
-            }
-          ]
-        },
-        {
-          "title": "Anyxml",
-          "allOf": [
-            { "$ref": "#/$defs/schema-node-common" },
+            },
             {
+              "title": "Anyxml",
               "type": "object",
-              "required": ["config", "mandatory", "data-node-path"],
+              "required": ["config", "mandatory"],
               "properties": {
                 "keyword": { "const": "anyxml" },
                 "config": { "type": "boolean" },
-                "mandatory": { "type": "boolean" },
-                "data-node-path": { "$ref": "#/$defs/data-node-path" }
+                "mandatory": { "type": "boolean" }
               }
             }
           ]
