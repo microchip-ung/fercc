@@ -201,66 +201,52 @@
       }
     },
 
-    "type-descriptor-common": {
-      "type": "object",
-      "required": ["builtin"],
-      "properties": {
-        "builtin": {
-          "enum": [
-            "binary", "bits", "boolean", "decimal64", "empty", "enumeration",
-            "identityref", "instance-identifier", "int8", "int16", "int32", "int64",
-            "leafref", "string", "uint8", "uint16", "uint32", "uint64", "union"
-          ]
-        },
-        "derived-from": {
-          "$ref": "#/$defs/typedef-key",
-          "description": "The named typedef this type derives from, if any."
-        }
-      }
-    },
-
     "type-descriptor": {
       "description": "A resolved YANG type, selected by `builtin`. Each branch requires exactly the substatements RFC 7950 Sec. 9 makes mandatory for that builtin; fercc may add further optional fields to any branch in a future minor version.",
-      "oneOf": [
+      "allOf": [
         {
-          "title": "Binary",
-          "allOf": [
-            { "$ref": "#/$defs/type-descriptor-common" },
+          "type": "object",
+          "required": ["builtin"],
+          "properties": {
+            "builtin": {
+              "enum": [
+                "binary", "bits", "boolean", "decimal64", "empty", "enumeration",
+                "identityref", "instance-identifier", "int8", "int16", "int32", "int64",
+                "leafref", "string", "uint8", "uint16", "uint32", "uint64", "union"
+              ]
+            },
+            "derived-from": {
+              "$ref": "#/$defs/typedef-key",
+              "description": "The named typedef this type derives from, if any."
+            }
+          }
+        },
+        {
+          "oneOf": [
             {
+              "title": "Binary",
               "type": "object",
               "properties": {
                 "builtin": { "const": "binary" },
                 "length": { "$ref": "#/$defs/range" }
               }
-            }
-          ]
-        },
-        {
-          "title": "Bits",
-          "allOf": [
-            { "$ref": "#/$defs/type-descriptor-common" },
+            },
             {
+              "title": "Bits",
               "type": "object",
               "required": ["bit"],
               "properties": {
                 "builtin": { "const": "bits" },
                 "bit": { "type": "array", "items": { "$ref": "#/$defs/bit-value" } }
               }
-            }
-          ]
-        },
-        {
-          "title": "Boolean",
-          "allOf": [
-            { "$ref": "#/$defs/type-descriptor-common" },
-            { "type": "object", "properties": { "builtin": { "const": "boolean" } } }
-          ]
-        },
-        {
-          "title": "Decimal64",
-          "allOf": [
-            { "$ref": "#/$defs/type-descriptor-common" },
+            },
             {
+              "title": "Boolean",
+              "type": "object",
+              "properties": { "builtin": { "const": "boolean" } }
+            },
+            {
+              "title": "Decimal64",
               "type": "object",
               "required": ["fraction-digit"],
               "properties": {
@@ -268,35 +254,23 @@
                 "fraction-digit": { "type": "integer", "minimum": 1, "maximum": 18 },
                 "range": { "$ref": "#/$defs/range64" }
               }
-            }
-          ]
-        },
-        {
-          "title": "Empty",
-          "allOf": [
-            { "$ref": "#/$defs/type-descriptor-common" },
-            { "type": "object", "properties": { "builtin": { "const": "empty" } } }
-          ]
-        },
-        {
-          "title": "Enumeration",
-          "allOf": [
-            { "$ref": "#/$defs/type-descriptor-common" },
+            },
             {
+              "title": "Empty",
+              "type": "object",
+              "properties": { "builtin": { "const": "empty" } }
+            },
+            {
+              "title": "Enumeration",
               "type": "object",
               "required": ["enum"],
               "properties": {
                 "builtin": { "const": "enumeration" },
                 "enum": { "type": "array", "items": { "$ref": "#/$defs/enum-value" } }
               }
-            }
-          ]
-        },
-        {
-          "title": "Identityref",
-          "allOf": [
-            { "$ref": "#/$defs/type-descriptor-common" },
+            },
             {
+              "title": "Identityref",
               "type": "object",
               "required": ["base"],
               "properties": {
@@ -308,67 +282,37 @@
                   "description": "Base identities, into `identities`."
                 }
               }
-            }
-          ]
-        },
-        {
-          "title": "Instance-identifier",
-          "allOf": [
-            { "$ref": "#/$defs/type-descriptor-common" },
+            },
             {
+              "title": "Instance-identifier",
               "type": "object",
               "properties": {
                 "builtin": { "const": "instance-identifier" },
                 "require-instance": { "type": "boolean" }
               }
-            }
-          ]
-        },
-        {
-          "title": "Int8",
-          "allOf": [
-            { "$ref": "#/$defs/type-descriptor-common" },
+            },
             {
+              "title": "Int8",
               "type": "object",
               "properties": { "builtin": { "const": "int8" }, "range": { "$ref": "#/$defs/range" } }
-            }
-          ]
-        },
-        {
-          "title": "Int16",
-          "allOf": [
-            { "$ref": "#/$defs/type-descriptor-common" },
+            },
             {
+              "title": "Int16",
               "type": "object",
               "properties": { "builtin": { "const": "int16" }, "range": { "$ref": "#/$defs/range" } }
-            }
-          ]
-        },
-        {
-          "title": "Int32",
-          "allOf": [
-            { "$ref": "#/$defs/type-descriptor-common" },
+            },
             {
+              "title": "Int32",
               "type": "object",
               "properties": { "builtin": { "const": "int32" }, "range": { "$ref": "#/$defs/range" } }
-            }
-          ]
-        },
-        {
-          "title": "Int64",
-          "allOf": [
-            { "$ref": "#/$defs/type-descriptor-common" },
+            },
             {
+              "title": "Int64",
               "type": "object",
               "properties": { "builtin": { "const": "int64" }, "range": { "$ref": "#/$defs/range64" } }
-            }
-          ]
-        },
-        {
-          "title": "Leafref",
-          "allOf": [
-            { "$ref": "#/$defs/type-descriptor-common" },
+            },
             {
+              "title": "Leafref",
               "type": "object",
               "required": ["path", "target"],
               "properties": {
@@ -377,73 +321,43 @@
                 "target": { "$ref": "#/$defs/schema-node-path", "description": "Resolved target of `path`." },
                 "require-instance": { "type": "boolean" }
               }
-            }
-          ]
-        },
-        {
-          "title": "String",
-          "allOf": [
-            { "$ref": "#/$defs/type-descriptor-common" },
+            },
             {
+              "title": "String",
               "type": "object",
               "properties": {
                 "builtin": { "const": "string" },
                 "length": { "$ref": "#/$defs/range" },
                 "pattern": { "type": "array", "items": { "$ref": "#/$defs/pattern-value" } }
               }
-            }
-          ]
-        },
-        {
-          "title": "Uint8",
-          "allOf": [
-            { "$ref": "#/$defs/type-descriptor-common" },
+            },
             {
+              "title": "Uint8",
               "type": "object",
               "properties": { "builtin": { "const": "uint8" }, "range": { "$ref": "#/$defs/range" } }
-            }
-          ]
-        },
-        {
-          "title": "Uint16",
-          "allOf": [
-            { "$ref": "#/$defs/type-descriptor-common" },
+            },
             {
+              "title": "Uint16",
               "type": "object",
               "properties": { "builtin": { "const": "uint16" }, "range": { "$ref": "#/$defs/range" } }
-            }
-          ]
-        },
-        {
-          "title": "Uint32",
-          "allOf": [
-            { "$ref": "#/$defs/type-descriptor-common" },
+            },
             {
+              "title": "Uint32",
               "type": "object",
               "properties": { "builtin": { "const": "uint32" }, "range": { "$ref": "#/$defs/range" } }
-            }
-          ]
-        },
-        {
-          "title": "Uint64",
-          "allOf": [
-            { "$ref": "#/$defs/type-descriptor-common" },
+            },
             {
+              "title": "Uint64",
               "type": "object",
               "properties": { "builtin": { "const": "uint64" }, "range": { "$ref": "#/$defs/range64" } }
-            }
-          ]
-        },
-        {
-          "title": "Union",
-          "allOf": [
-            { "$ref": "#/$defs/type-descriptor-common" },
+            },
             {
+              "title": "Union",
               "type": "object",
               "required": ["type"],
               "properties": {
                 "builtin": { "const": "union" },
-                "type": { "type": "array", "items": { "$ref": "#/$defs/type-or-ref" }, "minItems": 1 }
+                "type": { "type": "array", "items": { "$ref": "#/$defs/type-descriptor" }, "minItems": 1 }
               }
             }
           ]
@@ -469,14 +383,6 @@
             "units": { "type": "string" }
           }
         }
-      ]
-    },
-
-    "type-or-ref": {
-      "description": "Either a reference into `typedefs`, or an inline type-descriptor.",
-      "oneOf": [
-        { "title": "Typedef", "$ref": "#/$defs/typedef-key" },
-        { "title": "Type", "$ref": "#/$defs/type-descriptor" }
       ]
     },
 
@@ -622,7 +528,7 @@
               "properties": {
                 "keyword": { "const": "leaf" },
                 "config": { "type": "boolean" },
-                "type": { "$ref": "#/$defs/type-or-ref" },
+                "type": { "$ref": "#/$defs/type-descriptor" },
                 "mandatory": { "type": "boolean" },
                 "default": { "type": "string" },
                 "units": { "type": "string" },
@@ -641,7 +547,7 @@
               "properties": {
                 "keyword": { "const": "leaf-list" },
                 "config": { "type": "boolean" },
-                "type": { "$ref": "#/$defs/type-or-ref" },
+                "type": { "$ref": "#/$defs/type-descriptor" },
                 "default": { "type": "array", "items": { "type": "string" } },
                 "units": { "type": "string" },
                 "data-node-path": { "$ref": "#/$defs/data-node-path" }
