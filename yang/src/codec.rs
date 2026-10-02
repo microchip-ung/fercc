@@ -1085,12 +1085,11 @@ pub fn resolve_iid<'a>(schema: &'a Schema, path: &str) -> R<(NodeRef<'a>, Cbor)>
             .ok_or_else(|| err(format!("\"{}\" exists in the schema but has no SID assigned -- this looks like a catalog problem, not a mistake in your path", seg.name)))?;
 
         let mut ordered_keys = Vec::new();
-        if !child.keys.is_empty() {
-            for key_name in &child.keys {
-                if let Some((_, v)) = seg.keys.iter().find(|(k, _)| k == key_name) {
-                    let key_child = child
-                        .find_child(key_name)
-                        .ok_or_else(|| err(format!("the key \"{key_name}\" of \"{}\" doesn't exist in this device's YANG model ({path:?})", seg.name)))?;
+        let child_keys: Vec<NodeRef<'a>> = child.keys().collect();
+        if !child_keys.is_empty() {
+            for key_child in &child_keys {
+                let key_name = key_child.local_name();
+                if let Some((_, v)) = seg.keys.iter().find(|(k, _)| *k == key_name) {
                     let key_type = key_child
                         .ty()
                         .ok_or_else(|| err(format!("the key \"{key_name}\" has no type in the schema -- this looks like a catalog problem")))?;
@@ -1105,7 +1104,7 @@ pub fn resolve_iid<'a>(schema: &'a Schema, path: &str) -> R<(NodeRef<'a>, Cbor)>
                 }
             }
             for (k, _) in &seg.keys {
-                if !child.keys.iter().any(|nk| nk == k) {
+                if !child_keys.iter().any(|nk| nk.local_name() == *k) {
                     return Err(err(format!(
                         "\"{k}\" is not a key of the list at {path:?} -- check the key name"
                     )));
@@ -1181,14 +1180,12 @@ fn node_path_string(schema: &Schema, node: NodeRef<'_>, keys: &mut Vec<Cbor>) ->
     for &nd in &chain {
         path.push('/');
         path.push_str(&nd.name);
-        if !nd.keys.is_empty() {
+        if nd.keys().next().is_some() {
             // Every list ancestor along the chain consumes its keys from
             // the front, in the same outer-to-inner order `resolve_iid`
             // accumulates them -- not just the final target node.
-            for key_name in &nd.keys {
-                let key_child = nd
-                    .find_child(key_name)
-                    .ok_or_else(|| err(format!("the list \"{}\" is missing its own key field \"{key_name}\" in the schema -- this looks like a catalog problem", nd.name)))?;
+            for key_child in nd.keys() {
+                let key_name = key_child.local_name();
                 let key_type = key_child
                     .ty()
                     .ok_or_else(|| err(format!("the key \"{key_name}\" has no type in the schema -- this looks like a catalog problem")))?;
@@ -1319,7 +1316,7 @@ fn encode_body(
         if matches!(cf, ContentFormat::Ipatch | ContentFormat::Put) && !c.config {
             continue;
         }
-        let is_key = scope.keys.iter().any(|k| k == c.local_name());
+        let is_key = scope.keys().any(|k| k.local_name() == c.local_name());
         if (c.mandatory || is_key) && !obj.contains_key(&c.name) {
             let why = if is_key {
                 "it's a key of this list -- every entry needs one"

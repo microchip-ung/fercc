@@ -165,7 +165,7 @@ pub fn to_json_schema(node: NodeRef<'_>, content_format: &str) -> Json {
         }
 
         "list" => {
-            let mut keys_and_required = node.keys.clone();
+            let mut keys_and_required: Vec<String> = node.keys().map(|k| k.name.clone()).collect();
             keys_and_required.extend(required);
             let keys_and_required = dedup_preserve_order(keys_and_required);
 

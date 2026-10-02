@@ -239,8 +239,7 @@ pub struct Node {
     pub config: bool,
     pub mandatory: bool,
     ty: Option<TypeDescriptor>,
-    /// List keys, in schema-declared order (not necessarily input order).
-    pub keys: Vec<String>,
+    keys: Vec<NodeId>,
     pub sid: Option<i64>,
     pub owner_module: String,
     /// This node's own `description` substatement text, if any --
@@ -263,6 +262,8 @@ impl Node {
 
 pub struct Module {
     pub name: String,
+    pub namespace: String,
+    pub revision: Option<String>,
     pub sid: Option<i64>,
     root_nodes: Vec<NodeId>,
 }
@@ -333,6 +334,17 @@ impl<'a> NodeRef<'a> {
         spliced(&schema.nodes, &schema.nodes[self.id].children)
             .into_iter()
             .map(move |id| NodeRef { schema, id })
+    }
+
+    /// List keys, in the order the `key` statement itself lists them --
+    /// not necessarily the order the key leafs are declared in, and not
+    /// necessarily input order either.
+    pub fn keys(&self) -> impl Iterator<Item = NodeRef<'a>> + 'a {
+        let schema = self.schema;
+        schema.nodes[self.id]
+            .keys
+            .iter()
+            .map(move |&id| NodeRef { schema, id })
     }
 
     pub fn parent(&self) -> Option<NodeRef<'a>> {
@@ -851,8 +863,17 @@ impl<'a> Builder<'a> {
             }
         }
 
+        let namespace = raw
+            .sub("namespace")
+            .ok_or_else(|| err(format!("module {name:?} has no namespace statement")))?
+            .arg_str()
+            .to_string();
+        let revision = raw.sub("revision").map(|r| r.arg_str().to_string());
+
         let module = Module {
             name: name.to_string(),
+            namespace,
+            revision,
             sid: None,
             root_nodes: Vec::new(),
         };
@@ -1042,15 +1063,6 @@ impl<'a> Builder<'a> {
                     self.nodes[node].ty = Some(ty);
                 }
             }
-            "list" => {
-                if let Some(k) = s.sub("key") {
-                    self.nodes[node].keys = k
-                        .arg_str()
-                        .split_whitespace()
-                        .map(|s| s.to_string())
-                        .collect();
-                }
-            }
             "rpc" | "action" => {
                 if s.sub("input").is_none() {
                     self.new_node(
@@ -1078,6 +1090,20 @@ impl<'a> Builder<'a> {
             self.interpret_choice_body(resolve, naming, &s.subs, node)?;
         } else {
             self.interpret_children(resolve, naming, &s.subs, Some(node))?;
+        }
+
+        if s.keyword == "list" {
+            if let Some(k) = s.sub("key") {
+                for local in k.arg_str().split_whitespace() {
+                    let key_id = self.find_by_local(node, local).ok_or_else(|| {
+                        err(format!(
+                            "key {local:?} of list {:?} is not one of its own direct children",
+                            self.nodes[node].name
+                        ))
+                    })?;
+                    self.nodes[node].keys.push(key_id);
+                }
+            }
         }
         Ok(())
     }
@@ -2289,5 +2315,91 @@ mod tests {
         assert!(schema.node_by_data_path("/foo:no-such-node").is_none());
         assert!(schema.node_by_schema_path("").is_none());
         assert!(schema.node_by_data_path("").is_none());
+    }
+
+    #[test]
+    fn module_tracks_its_own_namespace_and_revision() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+              revision 2026-01-01;
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let module = schema.module_by_name("foo").unwrap();
+        assert_eq!(module.namespace, "urn:foo");
+        assert_eq!(module.revision.as_deref(), Some("2026-01-01"));
+    }
+
+    #[test]
+    fn module_revision_is_none_when_unstated() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let module = schema.module_by_name("foo").unwrap();
+        assert_eq!(module.revision, None);
+    }
+
+    #[test]
+    fn a_missing_namespace_statement_is_a_schema_error() {
+        let src = r#"
+            module foo {
+              prefix f;
+            }
+        "#;
+        let err = build(&[src.to_string()], &[]).err().unwrap();
+        assert!(err.0.contains("namespace"), "{}", err.0);
+    }
+
+    #[test]
+    fn list_keys_resolve_against_their_own_direct_children() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              list entry {
+                key "name index";
+                leaf name {
+                  type string;
+                }
+                leaf index {
+                  type uint8;
+                }
+                leaf other {
+                  type string;
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let entry = schema.node_by_data_path("/foo:entry").unwrap();
+        let key_names: Vec<String> = entry.keys().map(|k| k.local_name().to_string()).collect();
+        assert_eq!(key_names, vec!["name", "index"]);
+    }
+
+    #[test]
+    fn a_key_naming_something_other_than_a_direct_child_is_a_schema_error() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              list entry {
+                key "missing";
+                leaf name {
+                  type string;
+                }
+              }
+            }
+        "#;
+        let err = build(&[src.to_string()], &[]).err().unwrap();
+        assert!(err.0.contains("missing"), "{}", err.0);
+        assert!(err.0.contains("entry"), "{}", err.0);
     }
 }

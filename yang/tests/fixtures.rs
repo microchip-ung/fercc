@@ -207,3 +207,23 @@ fn coreconf_error_responses_decode_correctly() {
         failures.len()
     );
 }
+
+#[test]
+fn real_catalog_list_keys_follow_the_key_statement_not_declaration_order() {
+    // ieee802-dot1q-bridge:.../filtering-entry declares its key leafs
+    // database-id, address, vids (in that order) but its own `key`
+    // statement lists them "database-id vids address" -- address and
+    // vids swapped relative to declaration order. keys() must follow
+    // the `key` statement's order, not declaration order.
+    let schema = schema();
+    let filtering_entry = schema
+        .node_by_schema_path(
+            "/ieee802-dot1q-bridge:bridges/bridge/component/filtering-database/filtering-entry",
+        )
+        .expect("filtering-entry exists in the bundled catalog");
+    let key_names: Vec<String> = filtering_entry
+        .keys()
+        .map(|k| k.local_name().to_string())
+        .collect();
+    assert_eq!(key_names, vec!["database-id", "vids", "address"]);
+}

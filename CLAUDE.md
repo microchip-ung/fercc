@@ -43,6 +43,17 @@ Conversely: don't add a test for something that's already covered (directly
 or transitively) by the existing suite — check first. Do add a test for any
 genuinely new public entry point.
 
+## Test coverage is required before committing
+
+Every change needs test coverage before it's committed: either a new
+`#[test]` (unit test in the same file, or an integration test) or, when
+behavior is better exercised against real data, a check against the bundled
+real YANG catalog. Check first whether the existing suite already covers the
+new behavior (directly or transitively) before adding a redundant test — see
+"Don't add code nobody runs" above. A change with no way to verify it is
+either untested or untestable; both are a problem to fix before committing,
+not after.
+
 ## Verify against ground truth, don't assume
 
 Before asserting why some code behaves a certain way, check: the git history,
@@ -56,9 +67,7 @@ If a real captured device response contradicts its own YANG schema (e.g. an
 `instance-identifier` leaf populated with a value that doesn't satisfy
 `require-instance true`), that's a firmware bug, not a case for fercc to
 silently tolerate or work around. Prefer fixing/flagging the firmware over
-adding client-side accommodation for known-bad device behavior — and don't
-keep a test fixture around whose only purpose is asserting that bogus
-behavior is "expected."
+adding client-side accommodation for known-bad device behavior.
 
 ## Commit messages
 
