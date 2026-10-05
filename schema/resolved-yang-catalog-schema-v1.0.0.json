@@ -402,7 +402,7 @@
 
     "module": {
       "type": "object",
-      "required": ["namespace", "root-nodes", "typedefs", "identities"],
+      "required": ["namespace", "root-nodes", "data-root-nodes", "typedefs", "identities"],
       "properties": {
         "namespace": {
           "type": "string",
@@ -421,6 +421,12 @@
           "type": "array",
           "items": { "$ref": "#/$defs/schema-node-path" },
           "description": "This module's top-level schema node paths, in declaration order."
+        },
+
+        "data-root-nodes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/schema-node-path" },
+          "description": "This module's top-level schema node paths with choice/case spliced out (each replaced by its own data-children, recursively), in declaration order."
         },
 
         "typedefs": {
