@@ -7,7 +7,7 @@
   "type": "object",
   "required": [
     "schema-version", "yang-catalog", "modules", "typedefs",
-    "identities", "schema-nodes", "yang-data", "sid-index"
+    "identities", "features", "schema-nodes", "yang-data", "sid-index"
   ],
   "properties": {
     "$schema": {
@@ -38,7 +38,7 @@
 
     "typedefs": {
       "type": "object",
-      "description": "Every named type, keyed by typedef-key. Anonymous types are inlined at their point of use instead.",
+      "description": "Every named type used in this catalog, keyed by typedef-key.",
       "patternProperties": {
         "^\\S+ \\S+$": { "$ref": "#/$defs/typedef" }
       }
@@ -46,9 +46,17 @@
 
     "identities": {
       "type": "object",
-      "description": "Every YANG identity, keyed by \"module:identity-name\".",
+      "description": "Every YANG identity used in this catalog, keyed by \"module:identity-name\".",
       "patternProperties": {
         "^[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*$": { "$ref": "#/$defs/identity" }
+      }
+    },
+
+    "features": {
+      "type": "object",
+      "description": "Every YANG feature this device supports, keyed by \"module:feature-name\".",
+      "patternProperties": {
+        "^[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*$": { "$ref": "#/$defs/feature" }
       }
     },
 
@@ -72,7 +80,7 @@
 
     "sid-index": {
       "type": "object",
-      "description": "SID (as a string) to namespace + natural identifier, mirroring a .sid file. Empty if no .sid data was supplied.",
+      "description": "Every SID in this catalog, keyed by the SID itself (as a string), naming the namespace and natural identifier it refers to.",
       "patternProperties": {
         "^[0-9]+$": { "$ref": "#/$defs/sid-index-entry" }
       }
@@ -380,10 +388,11 @@
 
     "identity": {
       "type": "object",
-      "required": ["module", "name", "base", "derived"],
+      "required": ["module", "name", "sid", "base", "derived"],
       "properties": {
         "module": { "$ref": "#/$defs/module-name" },
         "name": { "type": "string" },
+        "description": { "type": "string" },
         "sid": { "$ref": "#/$defs/sid-string" },
 
         "base": {
@@ -400,9 +409,20 @@
       }
     },
 
+    "feature": {
+      "type": "object",
+      "required": ["module", "name", "sid"],
+      "properties": {
+        "module": { "$ref": "#/$defs/module-name" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "sid": { "$ref": "#/$defs/sid-string" }
+      }
+    },
+
     "module": {
       "type": "object",
-      "required": ["namespace", "root-nodes", "data-root-nodes", "typedefs", "identities"],
+      "required": ["namespace", "sid", "root-nodes", "data-root-nodes", "typedefs", "identities"],
       "properties": {
         "namespace": {
           "type": "string",
@@ -464,7 +484,7 @@
       "allOf": [
         {
           "type": "object",
-          "required": ["keyword", "name", "module", "parent", "children", "data-children", "status"],
+          "required": ["keyword", "name", "module", "parent", "children", "data-children", "status", "sid"],
           "properties": {
             "keyword": {
               "enum": [

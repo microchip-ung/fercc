@@ -224,6 +224,7 @@ fn restrict_range(prev: &[(i128, i128)], spec: &str) -> Vec<(i128, i128)> {
 pub struct Identity {
     pub name: String,
     pub module: String,
+    pub description: Option<String>,
     base: Vec<IdentityId>,
     derived: Vec<IdentityId>,
     pub sid: Option<i64>,
@@ -810,6 +811,7 @@ impl<'a> Builder<'a> {
         self.identities.push(Identity {
             name: name.to_string(),
             module: module.to_string(),
+            description: None,
             base: Vec::new(),
             derived: Vec::new(),
             sid: None,
@@ -845,6 +847,8 @@ impl<'a> Builder<'a> {
         // may be forward-referenced within the same module).
         for ident in raw.subs_of("identity") {
             let id = self.get_identity(name, ident.arg_str());
+            self.identities[id].description =
+                ident.sub("description").map(|d| d.arg_str().to_string());
             for base in ident.subs_of("base") {
                 let base_id = self.resolve_identity_ref(name, base.arg_str())?;
                 self.identities[id].base.push(base_id);
@@ -1984,6 +1988,26 @@ mod tests {
         assert_eq!(dog.base().count(), 1);
         assert_eq!(dog.base().next().unwrap().name, "animal");
         assert!(schema.identity_by_name("foo", "no-such-identity").is_none());
+    }
+
+    #[test]
+    fn an_identitys_description_is_read_from_its_own_statement() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              identity animal {
+                description "a living creature";
+              }
+              identity rock;
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let animal = schema.identity_by_name("foo", "animal").unwrap();
+        assert_eq!(animal.description.as_deref(), Some("a living creature"));
+        let rock = schema.identity_by_name("foo", "rock").unwrap();
+        assert_eq!(rock.description, None);
     }
 
     #[test]
