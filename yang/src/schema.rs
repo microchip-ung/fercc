@@ -23,6 +23,9 @@ type NodeId = usize;
 type IdentityId = usize;
 type TypedefId = usize;
 
+type Scope<'a> = [(&'a Stmt, String)];
+type ScopeVec<'a> = Vec<(&'a Stmt, String)>;
+
 const SCHEMA_NODE_KEYWORDS: &[&str] = &[
     "container",
     "leaf",
@@ -164,7 +167,7 @@ impl TypeDescriptor {
 #[derive(Debug, Clone)]
 pub struct Typedef {
     pub name: String,
-    pub module: String,
+    pub scope: String,
     pub description: Option<String>,
     ty: TypeDescriptor,
 }
@@ -594,10 +597,10 @@ impl Schema {
             .map(|id| IdentityRef { schema: self, id })
     }
 
-    pub fn typedef_by_name(&self, module: &str, name: &str) -> Option<TypedefRef<'_>> {
+    pub fn typedef_by_name(&self, scope: &str, name: &str) -> Option<TypedefRef<'_>> {
         self.typedefs
             .iter()
-            .position(|t| t.module == module && t.name == name)
+            .position(|t| t.scope == scope && t.name == name)
             .map(|id| TypedefRef { schema: self, id })
     }
 
@@ -676,16 +679,6 @@ fn err(msg: impl Into<String>) -> SchemaError {
     SchemaError(msg.into())
 }
 
-/// A named grouping or typedef, resolvable by (module, name) with lexical
-/// scoping (nearer/inner definitions shadow outer ones is not modeled --
-/// real catalogs don't rely on shadowing; module-top-level and any
-/// ancestor's siblings are all visible).
-#[derive(Clone)]
-struct Definitions<'a> {
-    typedefs: HashMap<(String, String), &'a Stmt>,
-    groupings: HashMap<(String, String), &'a Stmt>,
-}
-
 struct ModuleCtx {
     prefix_to_module: HashMap<String, String>,
 }
@@ -699,7 +692,6 @@ impl ModuleCtx {
 struct Builder<'a> {
     raw_modules: HashMap<String, &'a Stmt>,
     contexts: HashMap<String, ModuleCtx>,
-    defs: Definitions<'a>,
     building: std::collections::HashSet<String>,
     built: std::collections::HashSet<String>,
 
@@ -727,8 +719,6 @@ pub fn build(yang_sources: &[String], sid_sources: &[String]) -> R<Schema> {
     }
 
     let mut contexts = HashMap::new();
-    let mut typedefs = HashMap::new();
-    let mut groupings = HashMap::new();
     for m in &parsed {
         let mname = m.arg_str().to_string();
         let mut prefix_to_module = HashMap::new();
@@ -741,22 +731,11 @@ pub fn build(yang_sources: &[String], sid_sources: &[String]) -> R<Schema> {
             prefix_to_module.insert(p.arg_str().to_string(), mname.clone());
         }
         contexts.insert(mname.clone(), ModuleCtx { prefix_to_module });
-
-        for td in m.subs_of("typedef") {
-            typedefs.insert((mname.clone(), td.arg_str().to_string()), td);
-        }
-        for g in m.subs_of("grouping") {
-            groupings.insert((mname.clone(), g.arg_str().to_string()), g);
-        }
     }
 
     let mut b = Builder {
         raw_modules,
         contexts,
-        defs: Definitions {
-            typedefs,
-            groupings,
-        },
         building: Default::default(),
         built: Default::default(),
         nodes: Vec::new(),
@@ -890,7 +869,7 @@ impl<'a> Builder<'a> {
         self.module_root.insert(name.to_string(), module);
 
         let ctx_name = name.to_string();
-        self.interpret_children(&ctx_name, &ctx_name, &raw.subs, None)?;
+        self.interpret_children(&ctx_name, &ctx_name, &[], &raw.subs, None)?;
 
         self.built.insert(name.to_string());
         self.building.remove(name);
@@ -946,11 +925,12 @@ impl<'a> Builder<'a> {
         &mut self,
         resolve: &str,
         naming: &str,
-        stmts: &[Stmt],
+        scope: &Scope<'a>,
+        stmts: &'a [Stmt],
         parent: Option<NodeId>,
     ) -> R<()> {
         for s in stmts {
-            self.interpret_one(resolve, naming, s, parent)?;
+            self.interpret_one(resolve, naming, scope, s, parent)?;
         }
         Ok(())
     }
@@ -959,19 +939,20 @@ impl<'a> Builder<'a> {
         &mut self,
         resolve: &str,
         naming: &str,
-        s: &Stmt,
+        scope: &Scope<'a>,
+        s: &'a Stmt,
         parent: Option<NodeId>,
     ) -> R<()> {
         if s.prefix.is_some() {
-            self.interpret_extension(naming, s, parent)?;
+            self.interpret_extension(resolve, naming, s, parent)?;
             return Ok(());
         }
         if SCHEMA_NODE_KEYWORDS.contains(&s.keyword.as_str()) {
-            return self.interpret_schema_node(resolve, naming, s, parent);
+            return self.interpret_schema_node(resolve, naming, scope, s, parent);
         }
         match s.keyword.as_str() {
-            "uses" => self.interpret_uses(resolve, naming, s, parent)?,
-            "augment" => self.interpret_augment(resolve, naming, s, parent, None)?,
+            "uses" => self.interpret_uses(resolve, naming, scope, s, parent)?,
+            "augment" => self.interpret_augment(resolve, naming, scope, s, parent, None)?,
             // Everything else here (typedef/grouping/identity/import,
             // module metadata, or a substatement like config/description
             // seen as a sibling rather than consumed by its owning
@@ -983,7 +964,13 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
-    fn interpret_extension(&mut self, naming: &str, s: &Stmt, _parent: Option<NodeId>) -> R<()> {
+    fn interpret_extension(
+        &mut self,
+        resolve: &str,
+        naming: &str,
+        s: &'a Stmt,
+        _parent: Option<NodeId>,
+    ) -> R<()> {
         // Only the RFC 8040 `rc:yang-data` extension is handled (matches
         // yang-utils.rb): must contain exactly one container, promoted to
         // a top-level root node named "module:<container's own name>" --
@@ -996,7 +983,7 @@ impl<'a> Builder<'a> {
             if let Some(container) = s.sub("container") {
                 let name = format!("{naming}:{}", container.arg_str());
                 let root = self.new_node("container", name.clone(), naming.to_string(), None, true);
-                self.interpret_children(naming, naming, &container.subs, Some(root))?;
+                self.interpret_children(resolve, naming, &[], &container.subs, Some(root))?;
                 // `rc:yang-data` roots aren't children of their module's
                 // node (they're "not part of the datastore" -- see
                 // finish()'s comment -- so must stay out of module_root's
@@ -1020,7 +1007,8 @@ impl<'a> Builder<'a> {
         &mut self,
         resolve: &str,
         naming: &str,
-        s: &Stmt,
+        scope: &Scope<'a>,
+        s: &'a Stmt,
         parent: Option<NodeId>,
     ) -> R<()> {
         let is_top = parent.is_none();
@@ -1069,7 +1057,7 @@ impl<'a> Builder<'a> {
         match s.keyword.as_str() {
             "leaf" | "leaf-list" => {
                 if let Some(t) = s.sub("type") {
-                    let ty = self.interpret_type(resolve, t)?;
+                    let ty = self.interpret_type(resolve, scope, t)?;
                     self.nodes[node].ty = Some(ty);
                 }
             }
@@ -1096,10 +1084,27 @@ impl<'a> Builder<'a> {
             _ => {}
         }
 
-        if s.keyword == "choice" {
-            self.interpret_choice_body(resolve, naming, &s.subs, node)?;
+        const SCOPE_BEARING_KEYWORDS: &[&str] = &[
+            "container",
+            "list",
+            "rpc",
+            "action",
+            "input",
+            "output",
+            "notification",
+        ];
+        let mut extended_scope = scope.to_vec();
+        let inner_scope = if SCOPE_BEARING_KEYWORDS.contains(&s.keyword.as_str()) {
+            extended_scope.push((s, self.schema_node_path_of(node)));
+            extended_scope.as_slice()
         } else {
-            self.interpret_children(resolve, naming, &s.subs, Some(node))?;
+            scope
+        };
+
+        if s.keyword == "choice" {
+            self.interpret_choice_body(resolve, naming, inner_scope, &s.subs, node)?;
+        } else {
+            self.interpret_children(resolve, naming, inner_scope, &s.subs, Some(node))?;
         }
 
         if s.keyword == "list" {
@@ -1126,7 +1131,8 @@ impl<'a> Builder<'a> {
         &mut self,
         resolve: &str,
         naming: &str,
-        stmts: &[Stmt],
+        scope: &Scope<'a>,
+        stmts: &'a [Stmt],
         choice_node: NodeId,
     ) -> R<()> {
         const IMPLICIT_CASE_KEYWORDS: &[&str] = &[
@@ -1147,7 +1153,7 @@ impl<'a> Builder<'a> {
                     Some(choice_node),
                     false,
                 );
-                self.interpret_one(resolve, naming, s, Some(case_id))?;
+                self.interpret_one(resolve, naming, scope, s, Some(case_id))?;
                 // Implicit case statements should have the same "status" as the data node it represents.
                 let child_id = self.nodes[case_id]
                     .children
@@ -1155,7 +1161,7 @@ impl<'a> Builder<'a> {
                     .expect("implicit case must have a child");
                 self.nodes[case_id].status = self.nodes[*child_id].status;
             } else {
-                self.interpret_one(resolve, naming, s, Some(choice_node))?;
+                self.interpret_one(resolve, naming, scope, s, Some(choice_node))?;
             }
         }
         Ok(())
@@ -1165,20 +1171,12 @@ impl<'a> Builder<'a> {
         &mut self,
         resolve: &str,
         naming: &str,
-        s: &Stmt,
+        scope: &Scope<'a>,
+        s: &'a Stmt,
         parent: Option<NodeId>,
     ) -> R<()> {
         let (def_module, local) = self.split_qualified(resolve, s.arg_str())?;
-        let raw = *self
-            .defs
-            .groupings
-            .get(&(def_module.clone(), local.to_string()))
-            .ok_or_else(|| {
-                err(format!(
-                    "grouping {:?} not found (used from {resolve})",
-                    s.arg_str()
-                ))
-            })?;
+        let (raw, def_scope) = self.find_grouping_stmt(&def_module, scope, local)?;
 
         // Splice the grouping's body directly into the use site: its own
         // source text resolves against *its* defining module
@@ -1186,7 +1184,13 @@ impl<'a> Builder<'a> {
         // nodes still belong to the same using-module namespace as
         // before (`naming` passes through unchanged) -- see
         // `interpret_children`'s doc comment.
-        self.interpret_children(&def_module, naming, &raw.subs, parent)?;
+        let use_site_scope = match parent {
+            Some(p) => self.schema_node_path_of(p),
+            None => naming.to_string(),
+        };
+        let mut inner_scope = def_scope;
+        inner_scope.push((raw, use_site_scope));
+        self.interpret_children(&def_module, naming, &inner_scope, &raw.subs, parent)?;
 
         // An augment nested inside this `uses` targets a path within the
         // grouping's own body, which was just spliced in above. It's
@@ -1195,7 +1199,7 @@ impl<'a> Builder<'a> {
         // resolves and is named in `resolve`/`naming` unchanged, not
         // `def_module`.
         for aug in s.subs_of("augment") {
-            self.interpret_augment(resolve, naming, aug, parent, parent)?;
+            self.interpret_augment(resolve, naming, scope, aug, parent, parent)?;
         }
         Ok(())
     }
@@ -1210,7 +1214,8 @@ impl<'a> Builder<'a> {
         &mut self,
         resolve: &str,
         naming: &str,
-        s: &Stmt,
+        scope: &Scope<'a>,
+        s: &'a Stmt,
         _use_site: Option<NodeId>,
         relative_root: Option<NodeId>,
     ) -> R<()> {
@@ -1235,7 +1240,7 @@ impl<'a> Builder<'a> {
                 continue;
             }
             let before = self.nodes[target].children.len();
-            self.interpret_one(resolve, naming, child_stmt, Some(target))?;
+            self.interpret_one(resolve, naming, scope, child_stmt, Some(target))?;
             // Namespace fixup (RFC 7950 4.2.8/7.17): a node augmented in
             // from a different module than the target's module is named
             // in the *augmenting* module's namespace.
@@ -1323,27 +1328,106 @@ impl<'a> Builder<'a> {
         Ok(cur)
     }
 
+    fn schema_node_path_of(&self, id: NodeId) -> String {
+        let mut chain = Vec::new();
+        let mut cur = Some(id);
+        while let Some(n) = cur {
+            chain.push(n);
+            cur = self.nodes[n].parent;
+        }
+        chain.reverse();
+        chain.into_iter().map(|n| self.nodes[n].name.as_str()).fold(
+            String::new(),
+            |mut path, name| {
+                path.push('/');
+                path.push_str(name);
+                path
+            },
+        )
+    }
+
     // -- types ---------------------------------------------------------
 
-    fn resolve_typedef(&mut self, def_module: &str, local: &str) -> R<TypedefId> {
-        let key = (def_module.to_string(), local.to_string());
+    fn find_typedef_stmt(
+        &self,
+        def_module: &str,
+        scope: &Scope<'a>,
+        local: &str,
+    ) -> R<(&'a Stmt, String, ScopeVec<'a>)> {
+        for i in (0..scope.len()).rev() {
+            if let Some(td) = scope[i]
+                .0
+                .subs_of("typedef")
+                .find(|td| td.arg_str() == local)
+            {
+                return Ok((td, scope[i].1.clone(), scope[..=i].to_vec()));
+            }
+        }
+        let module_stmt = *self
+            .raw_modules
+            .get(def_module)
+            .ok_or_else(|| err(format!("unknown module {def_module:?}")))?;
+        let td = module_stmt
+            .subs_of("typedef")
+            .find(|td| td.arg_str() == local)
+            .ok_or_else(|| {
+                err(format!(
+                    "typedef {local:?} not found in module {def_module:?}"
+                ))
+            })?;
+        Ok((td, def_module.to_string(), vec![]))
+    }
+
+    fn find_grouping_stmt(
+        &self,
+        def_module: &str,
+        scope: &Scope<'a>,
+        local: &str,
+    ) -> R<(&'a Stmt, ScopeVec<'a>)> {
+        for i in (0..scope.len()).rev() {
+            if let Some(g) = scope[i]
+                .0
+                .subs_of("grouping")
+                .find(|g| g.arg_str() == local)
+            {
+                return Ok((g, scope[..=i].to_vec()));
+            }
+        }
+        let module_stmt = *self
+            .raw_modules
+            .get(def_module)
+            .ok_or_else(|| err(format!("unknown module {def_module:?}")))?;
+        let g = module_stmt
+            .subs_of("grouping")
+            .find(|g| g.arg_str() == local)
+            .ok_or_else(|| {
+                err(format!(
+                    "grouping {local:?} not found in module {def_module:?}"
+                ))
+            })?;
+        Ok((g, vec![]))
+    }
+
+    fn resolve_typedef(
+        &mut self,
+        def_module: &str,
+        scope: &Scope<'a>,
+        local: &str,
+    ) -> R<TypedefId> {
+        let (raw, typedef_scope, def_scope) = self.find_typedef_stmt(def_module, scope, local)?;
+        let key = (typedef_scope.clone(), local.to_string());
         if let Some(&id) = self.typedef_cache.get(&key) {
             return Ok(id);
         }
-        let raw = *self.defs.typedefs.get(&key).ok_or_else(|| {
-            err(format!(
-                "typedef {local:?} not found in module {def_module:?}"
-            ))
-        })?;
         let base = raw
             .sub("type")
             .ok_or_else(|| err(format!("typedef {local:?} has no type")))?;
-        let ty = self.interpret_type(def_module, base)?;
+        let ty = self.interpret_type(def_module, &def_scope, base)?;
         let description = raw.sub("description").map(|d| d.arg_str().to_string());
         let id = self.typedefs.len();
         self.typedefs.push(Typedef {
             name: local.to_string(),
-            module: def_module.to_string(),
+            scope: typedef_scope,
             description,
             ty,
         });
@@ -1351,10 +1435,10 @@ impl<'a> Builder<'a> {
         Ok(id)
     }
 
-    fn interpret_type(&mut self, module: &str, t: &Stmt) -> R<TypeDescriptor> {
+    fn interpret_type(&mut self, module: &str, scope: &Scope<'a>, t: &Stmt) -> R<TypeDescriptor> {
         let name = t.arg_str();
         let mut ty = if let Some(builtin) = Builtin::from_name(name) {
-            self.interpret_builtin_type(module, builtin, t)?
+            self.interpret_builtin_type(module, scope, builtin, t)?
         } else {
             // typedef reference: clone the named typedef's own
             // descriptor as the starting point for this use site's own
@@ -1363,7 +1447,11 @@ impl<'a> Builder<'a> {
             // further restricted) at more than one site. Mirrors
             // `inner.derive(typedef['name'])` (yang-utils.rb:324).
             let (def_module, local) = self.split_qualified(module, name)?;
-            let typedef_id = self.resolve_typedef(&def_module, local)?;
+            let typedef_id = if def_module == module {
+                self.resolve_typedef(&def_module, scope, local)?
+            } else {
+                self.resolve_typedef(&def_module, &[], local)?
+            };
             let mut ty = self.typedefs[typedef_id].ty.clone();
             ty.base = Some(typedef_id);
             ty
@@ -1393,6 +1481,7 @@ impl<'a> Builder<'a> {
     fn interpret_builtin_type(
         &mut self,
         module: &str,
+        scope: &Scope<'a>,
         builtin: Builtin,
         t: &Stmt,
     ) -> R<TypeDescriptor> {
@@ -1448,7 +1537,7 @@ impl<'a> Builder<'a> {
             }
             Builtin::Union => {
                 for m in t.subs_of("type") {
-                    let member = self.interpret_type(module, m)?;
+                    let member = self.interpret_type(module, scope, m)?;
                     ty.union_members.push(member);
                 }
             }
@@ -1477,7 +1566,7 @@ impl<'a> Builder<'a> {
                                 }
                             }
                             if let Some(t) = d.sub("type") {
-                                let ty = self.interpret_type(module, t)?;
+                                let ty = self.interpret_type(module, &[], t)?;
                                 self.nodes[target].ty = Some(ty);
                             }
                         }
@@ -2077,7 +2166,7 @@ mod tests {
         let named = bar.find_child("named").unwrap().ty().unwrap();
         let base = named.base().unwrap();
         assert_eq!(base.name, "percent");
-        assert_eq!(base.module, "foo");
+        assert_eq!(base.scope, "foo");
     }
 
     #[test]
@@ -2114,6 +2203,274 @@ mod tests {
             percent.description.as_deref(),
             Some("a percentage, 0 to 100")
         );
+    }
+
+    #[test]
+    fn a_typedef_nested_in_a_container_resolves_from_within_it() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              container bar {
+                typedef percent {
+                  type uint8 {
+                    range "0..100";
+                  }
+                }
+                leaf x {
+                  type percent;
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let x = schema.node_by_data_path("/foo:bar/x").unwrap();
+        let ty = x.ty().unwrap();
+        assert_eq!(ty.ranges, vec![(0, 100)]);
+        let base = ty.base().unwrap();
+        assert_eq!(base.name, "percent");
+        assert_eq!(base.scope, "/foo:bar");
+
+        // The reported scope must round-trip through the public lookup
+        // entry point -- it's the external interface for addressing a
+        // typedef by identity, not just a label to compare by eye.
+        let looked_up = schema.typedef_by_name(&base.scope, "percent").unwrap();
+        assert_eq!(looked_up.ty().ranges, vec![(0, 100)]);
+        assert!(schema.typedef_by_name("foo", "percent").is_none());
+    }
+
+    #[test]
+    fn a_typedef_nested_in_a_container_is_invisible_outside_it() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              container bar {
+                typedef percent {
+                  type uint8 {
+                    range "0..100";
+                  }
+                }
+                leaf x {
+                  type percent;
+                }
+              }
+
+              container other {
+                leaf y {
+                  type percent;
+                }
+              }
+            }
+        "#;
+        let err = build(&[src.to_string()], &[]).err().unwrap();
+        assert!(err.0.contains("percent"), "{}", err.0);
+    }
+
+    #[test]
+    fn a_typedef_nested_in_a_list_rpc_input_and_notification_all_resolve() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              list entry {
+                key "name";
+                typedef percent {
+                  type uint8 {
+                    range "0..100";
+                  }
+                }
+                leaf name {
+                  type string;
+                }
+                leaf x {
+                  type percent;
+                }
+              }
+
+              rpc do-it {
+                input {
+                  typedef percent {
+                    type uint8 {
+                      range "0..100";
+                    }
+                  }
+                  leaf x {
+                    type percent;
+                  }
+                }
+              }
+
+              notification happened {
+                typedef percent {
+                  type uint8 {
+                    range "0..100";
+                  }
+                }
+                leaf x {
+                  type percent;
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+
+        let list_x = schema.node_by_data_path("/foo:entry/x").unwrap();
+        assert_eq!(list_x.ty().unwrap().ranges, vec![(0, 100)]);
+
+        let input_x = schema.node_by_schema_path("/foo:do-it/input/x").unwrap();
+        assert_eq!(input_x.ty().unwrap().ranges, vec![(0, 100)]);
+
+        let notif_x = schema.node_by_data_path("/foo:happened/x").unwrap();
+        assert_eq!(notif_x.ty().unwrap().ranges, vec![(0, 100)]);
+    }
+
+    #[test]
+    fn a_grouping_nested_in_a_container_resolves_from_a_deeper_use_site() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              container bar {
+                grouping g {
+                  leaf x {
+                    type string;
+                  }
+                }
+
+                container inner {
+                  uses g;
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        assert!(schema.node_by_data_path("/foo:bar/inner/x").is_some());
+    }
+
+    #[test]
+    fn a_grouping_nested_in_a_container_is_invisible_outside_it() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              container bar {
+                grouping g {
+                  leaf x {
+                    type string;
+                  }
+                }
+              }
+
+              container other {
+                uses g;
+              }
+            }
+        "#;
+        let err = build(&[src.to_string()], &[]).err().unwrap();
+        assert!(err.0.contains("g"), "{}", err.0);
+    }
+
+    #[test]
+    fn a_grouping_nested_directly_in_another_grouping_resolves_when_spliced() {
+        // RFC 7950 7.12.1 lets a `grouping` directly contain another
+        // `grouping`. `outer`'s own `uses inner;` must resolve `inner`
+        // against outer's own lexical position (RFC 7950 7.12:
+        // "resolved relative to the scope in which the grouping is
+        // defined, not where it is used") -- which only matters once
+        // `outer` itself gets spliced somewhere else entirely.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              grouping outer {
+                grouping inner {
+                  leaf x {
+                    type string;
+                  }
+                }
+                uses inner;
+              }
+
+              container bar {
+                uses outer;
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        assert!(schema.node_by_data_path("/foo:bar/x").is_some());
+    }
+
+    #[test]
+    fn a_typedef_declared_directly_in_a_grouping_gets_an_independent_identity_per_use_site() {
+        // RFC 7950 5.5: "The identifiers defined in the grouping are not
+        // bound to a namespace until the contents of the grouping are
+        // added to the schema tree via a 'uses' statement... at which
+        // point they are bound to the namespace of the current module."
+        // Two uses of the same grouping must produce two independent
+        // typedefs, scoped to each use site, not one shared entry.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              grouping g {
+                typedef percent {
+                  type uint8 {
+                    range "0..100";
+                  }
+                }
+                leaf x {
+                  type percent;
+                }
+              }
+
+              container bar {
+                uses g;
+              }
+
+              container baz {
+                uses g;
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+
+        let bar_x = schema.node_by_data_path("/foo:bar/x").unwrap();
+        let bar_base = bar_x.ty().unwrap().base().unwrap();
+        assert_eq!(bar_base.scope, "/foo:bar");
+
+        let baz_x = schema.node_by_data_path("/foo:baz/x").unwrap();
+        let baz_base = baz_x.ty().unwrap().base().unwrap();
+        assert_eq!(baz_base.scope, "/foo:baz");
+
+        // Two independent typedefs named "percent" now exist, one per
+        // use site -- not a single shared entry.
+        let names_and_scopes: Vec<(String, String)> = schema
+            .typedefs()
+            .map(|t| (t.name.clone(), t.scope.clone()))
+            .collect();
+        assert_eq!(
+            names_and_scopes,
+            vec![
+                ("percent".to_string(), "/foo:bar".to_string()),
+                ("percent".to_string(), "/foo:baz".to_string()),
+            ]
+        );
+
+        // Each reported scope must look up its OWN independent entry
+        // through the public interface -- not the other site's, and not
+        // a single shared one.
+        let via_bar = schema.typedef_by_name("/foo:bar", "percent").unwrap();
+        let via_baz = schema.typedef_by_name("/foo:baz", "percent").unwrap();
+        assert_eq!(via_bar.scope, "/foo:bar");
+        assert_eq!(via_baz.scope, "/foo:baz");
     }
 
     #[test]
