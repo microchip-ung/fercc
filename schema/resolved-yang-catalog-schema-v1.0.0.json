@@ -484,7 +484,7 @@
       "allOf": [
         {
           "type": "object",
-          "required": ["keyword", "name", "module", "parent", "children", "data-children", "status", "sid"],
+          "required": ["keyword", "name", "module", "parent", "children", "data-children", "status", "sid", "synthetic"],
           "properties": {
             "keyword": {
               "enum": [
@@ -522,7 +522,11 @@
               "description": "current: safe to use. deprecated: still usable but scheduled for removal. obsolete: no longer usable."
             },
             "description": { "type": "string" },
-            "sid": { "$ref": "#/$defs/sid-string" }
+            "sid": { "$ref": "#/$defs/sid-string" },
+            "synthetic": {
+              "type": "boolean",
+              "description": "True if this node has no corresponding statement in the source YANG text -- e.g. a shorthand `case` (RFC 7950 7.9.2) or an rpc/action's `input`/`output` left unwritten (RFC 7950 7.14), both of which always exist in the schema tree regardless."
+            }
           }
         },
         {

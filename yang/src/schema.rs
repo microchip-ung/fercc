@@ -253,6 +253,7 @@ pub struct Node {
     pub description: Option<String>,
     pub status: Option<Status>,
     pub default: Option<String>,
+    pub synthetic: bool,
 }
 
 impl Node {
@@ -772,6 +773,7 @@ impl<'a> Builder<'a> {
         owner_module: String,
         parent: Option<NodeId>,
         detached: bool,
+        synthetic: bool,
     ) -> NodeId {
         let id = self.nodes.len();
         self.nodes.push(Node {
@@ -788,6 +790,7 @@ impl<'a> Builder<'a> {
             description: None,
             status: None,
             default: None,
+            synthetic,
         });
         if !detached {
             if let Some(p) = parent {
@@ -986,7 +989,14 @@ impl<'a> Builder<'a> {
         if s.keyword == "yang-data" {
             if let Some(container) = s.sub("container") {
                 let name = format!("{naming}:{}", container.arg_str());
-                let root = self.new_node("container", name.clone(), naming.to_string(), None, true);
+                let root = self.new_node(
+                    "container",
+                    name.clone(),
+                    naming.to_string(),
+                    None,
+                    true,
+                    false,
+                );
                 self.interpret_children(resolve, naming, &[], &container.subs, Some(root))?;
                 // `rc:yang-data` roots aren't children of their module's
                 // node (they're "not part of the datastore" -- see
@@ -1029,7 +1039,7 @@ impl<'a> Builder<'a> {
             local.to_string()
         };
 
-        let node = self.new_node(&s.keyword, name, naming.to_string(), parent, false);
+        let node = self.new_node(&s.keyword, name, naming.to_string(), parent, false, false);
 
         if let Some(cfg) = s.sub("config") {
             self.nodes[node].config = cfg.arg_str() == "true";
@@ -1073,6 +1083,7 @@ impl<'a> Builder<'a> {
                         naming.to_string(),
                         Some(node),
                         false,
+                        true,
                     );
                 }
                 if s.sub("output").is_none() {
@@ -1082,6 +1093,7 @@ impl<'a> Builder<'a> {
                         naming.to_string(),
                         Some(node),
                         false,
+                        true,
                     );
                 }
             }
@@ -1156,6 +1168,7 @@ impl<'a> Builder<'a> {
                     naming.to_string(),
                     Some(choice_node),
                     false,
+                    true,
                 );
                 self.interpret_one(resolve, naming, scope, s, Some(case_id))?;
                 // Implicit case statements should have the same "status" as the data node it represents.
@@ -1893,6 +1906,74 @@ mod tests {
         let output = schema.node_by_schema_path("/foo:bar/output").unwrap();
         assert_eq!(input.status, None);
         assert_eq!(output.status, None);
+    }
+
+    #[test]
+    fn synthetic_marks_only_nodes_absent_from_the_source_text() {
+        // rpc bar's `input` and `output` are absent from the source, so
+        // fercc fabricates them (RFC 7950 7.14 says they always exist in
+        // the schema tree); `rpc baz`'s are explicit. `choice pick`'s
+        // `leaf sub` has no `case` wrapper (RFC 7950 7.9.2 shorthand), so
+        // fercc synthesizes one; `choice other`'s `case explicit` is
+        // written out.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              rpc bar;
+
+              rpc baz {
+                input {
+                  leaf x {
+                    type string;
+                  }
+                }
+                output {
+                  leaf y {
+                    type string;
+                  }
+                }
+              }
+
+              container top {
+                choice pick {
+                  leaf sub {
+                    type string;
+                  }
+                }
+                choice other {
+                  case explicit {
+                    leaf sub2 {
+                      type string;
+                    }
+                  }
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+
+        let bar_input = schema.node_by_schema_path("/foo:bar/input").unwrap();
+        let bar_output = schema.node_by_schema_path("/foo:bar/output").unwrap();
+        assert!(bar_input.synthetic);
+        assert!(bar_output.synthetic);
+
+        let baz_input = schema.node_by_schema_path("/foo:baz/input").unwrap();
+        let baz_output = schema.node_by_schema_path("/foo:baz/output").unwrap();
+        assert!(!baz_input.synthetic);
+        assert!(!baz_output.synthetic);
+
+        let implicit_case = schema.node_by_schema_path("/foo:top/pick/sub").unwrap();
+        assert!(implicit_case.synthetic);
+
+        let explicit_case = schema
+            .node_by_schema_path("/foo:top/other/explicit")
+            .unwrap();
+        assert!(!explicit_case.synthetic);
+
+        let top = schema.node_by_schema_path("/foo:top").unwrap();
+        assert!(!top.synthetic);
     }
 
     #[test]
