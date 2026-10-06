@@ -72,7 +72,7 @@ fn json_strings(items: impl IntoIterator<Item = String>) -> Json {
 /// property no catalog in this codebase actually restricts. See
 /// `yang/tests/json_schema_conformance.rs` for where this is allow-
 /// listed against a real `yang-enc schema` diff.
-fn num(v: i128) -> Json {
+pub(crate) fn num(v: i128) -> Json {
     if let Ok(i) = i64::try_from(v) {
         Json::Number(i.into())
     } else if let Ok(u) = u64::try_from(v) {

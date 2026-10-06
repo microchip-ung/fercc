@@ -36,6 +36,7 @@ pub fn run() -> Result<(), String> {
         return match command {
             opts::Command::Conv(args) => run_conv(args),
             opts::Command::Schema(args) => run_schema(args),
+            opts::Command::Dump(args) => run_dump(args),
         };
     }
 
@@ -143,7 +144,24 @@ fn load_downloaded_schema(
     if verbose {
         eprintln!("YANG Lib checksum in DUT: {checksum}");
     }
-    let cache_dir = cache_base_dir()?.join(&checksum);
+    load_schema_by_checksum(&checksum, catalog_fetcher, verbose)
+}
+
+fn load_schema_by_checksum(
+    checksum: &str,
+    catalog_fetcher: Option<&str>,
+    verbose: bool,
+) -> Result<Schema, String> {
+    let files = load_catalog_files_by_checksum(checksum, catalog_fetcher, verbose)?;
+    yang::schema::build(&files.yang, &files.sid).map_err(|e| e.to_string())
+}
+
+fn load_catalog_files_by_checksum(
+    checksum: &str,
+    catalog_fetcher: Option<&str>,
+    verbose: bool,
+) -> Result<yang::catalog::CatalogFiles, String> {
+    let cache_dir = cache_base_dir()?.join(checksum);
     // NOT "yang_schema": mup1cc uses exactly that name, as a *file*
     // holding its Marshal-dumped parsed schema, directly under this
     // same per-checksum cache directory (`PersistentYangSchema`,
@@ -154,10 +172,9 @@ fn load_downloaded_schema(
     // subdirectory must not collide with that name.
     let catalog_dir = cache_dir.join("catalog");
     std::fs::create_dir_all(&cache_dir).map_err(|e| e.to_string())?;
-    yang::catalog::download_and_extract(&checksum, &catalog_dir, catalog_fetcher, verbose)
+    yang::catalog::download_and_extract(checksum, &catalog_dir, catalog_fetcher, verbose)
         .map_err(|e| e.to_string())?;
-    let files = yang::catalog::load_from_dir(&catalog_dir).map_err(|e| e.to_string())?;
-    yang::schema::build(&files.yang, &files.sid).map_err(|e| e.to_string())
+    yang::catalog::load_from_dir(&catalog_dir).map_err(|e| e.to_string())
 }
 
 fn cache_base_dir() -> Result<PathBuf, String> {
@@ -426,6 +443,25 @@ fn run_schema(args: &opts::SchemaArgs) -> Result<(), String> {
     };
     let value = yang::json_schema::to_json_schema_for_catalog(&schema, "yang");
     print_normalized(&serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?);
+    Ok(())
+}
+
+fn run_dump(args: &opts::DumpArgs) -> Result<(), String> {
+    let checksum = args.checksum.to_lowercase();
+    if checksum.is_empty() || !checksum.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!(
+            "{:?} doesn't look like a yang catalog checksum (expected lowercase hex)",
+            args.checksum
+        ));
+    }
+
+    let schema = load_schema_by_checksum(&checksum, args.catalog_fetcher.as_deref(), args.verbose)?;
+    let doc = yang::resolved_catalog::to_resolved_catalog(&schema, &checksum)?;
+    let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    std::fs::write(&args.output, text).map_err(|e| format!("writing {}: {e}", args.output))?;
+    if args.verbose {
+        eprintln!("wrote resolved yang catalog to {}", args.output);
+    }
     Ok(())
 }
 

@@ -167,6 +167,7 @@ impl TypeDescriptor {
 #[derive(Debug, Clone)]
 pub struct Typedef {
     pub name: String,
+    pub module: String,
     pub scope: String,
     pub description: Option<String>,
     ty: TypeDescriptor,
@@ -176,7 +177,7 @@ pub struct Typedef {
 /// `length` statement narrows them, mirroring `Type#initialize`
 /// (yang-utils.rb:654-661). Every other builtin starts with no ranges at
 /// all -- there is nothing to narrow and nothing downstream reads them.
-fn default_ranges(builtin: Builtin) -> Vec<(i128, i128)> {
+pub(crate) fn default_ranges(builtin: Builtin) -> Vec<(i128, i128)> {
     match builtin {
         Builtin::Int8 => vec![(-128, 127)],
         Builtin::Int16 => vec![(-32768, 32767)],
@@ -310,6 +311,8 @@ pub struct Schema {
     module_root: HashMap<String, Module>,
     yang_data_roots: HashMap<String, NodeId>,
     sid_index: HashMap<i64, NodeId>,
+    reachable_typedefs: std::collections::HashSet<TypedefId>,
+    reachable_identities: std::collections::HashSet<IdentityId>,
 }
 
 #[derive(Clone, Copy)]
@@ -373,6 +376,10 @@ impl<'a> NodeRef<'a> {
             .ty
             .as_ref()
             .map(|ty| TypeRef { schema, ty })
+    }
+
+    pub fn path(&self) -> String {
+        node_path_of(&self.schema.nodes, self.id)
     }
 }
 
@@ -496,6 +503,24 @@ impl<'a> IdentityRef<'a> {
     }
 }
 
+fn node_path_of(nodes: &[Node], id: NodeId) -> String {
+    let mut chain = Vec::new();
+    let mut cur = Some(id);
+    while let Some(n) = cur {
+        chain.push(n);
+        cur = nodes[n].parent;
+    }
+    chain.reverse();
+    chain
+        .into_iter()
+        .map(|n| nodes[n].name.as_str())
+        .fold(String::new(), |mut path, name| {
+            path.push('/');
+            path.push_str(name);
+            path
+        })
+}
+
 fn spliced(nodes: &[Node], ids: &[NodeId]) -> Vec<NodeId> {
     let mut out = Vec::new();
     for &id in ids {
@@ -508,18 +533,36 @@ fn spliced(nodes: &[Node], ids: &[NodeId]) -> Vec<NodeId> {
     out
 }
 
-fn find_child_by_local_raw(nodes: &[Node], parent: NodeId, local: &str) -> Option<NodeId> {
+fn node_namespace_module(nodes: &[Node], id: NodeId) -> &str {
+    nodes[id]
+        .name
+        .split_once(':')
+        .map(|(m, _)| m)
+        .unwrap_or(&nodes[id].owner_module)
+}
+
+fn segment_matches(nodes: &[Node], seg: &str, candidate: NodeId) -> bool {
+    match seg.split_once(':') {
+        Some((module, local)) => {
+            nodes[candidate].local_name() == local
+                && node_namespace_module(nodes, candidate) == module
+        }
+        None => nodes[candidate].local_name() == seg,
+    }
+}
+
+fn find_child_by_local_raw(nodes: &[Node], parent: NodeId, seg: &str) -> Option<NodeId> {
     nodes[parent]
         .children
         .iter()
         .copied()
-        .find(|&c| nodes[c].local_name() == local)
+        .find(|&c| segment_matches(nodes, seg, c))
 }
 
-fn find_data_child_by_local_raw(nodes: &[Node], parent: NodeId, local: &str) -> Option<NodeId> {
+fn find_data_child_by_local_raw(nodes: &[Node], parent: NodeId, seg: &str) -> Option<NodeId> {
     spliced(nodes, &nodes[parent].children)
         .into_iter()
-        .find(|&c| nodes[c].local_name() == local)
+        .find(|&c| segment_matches(nodes, seg, c))
 }
 
 fn descend_by_local<'s>(
@@ -529,8 +572,7 @@ fn descend_by_local<'s>(
 ) -> Option<NodeId> {
     let mut cur = start;
     for seg in segs {
-        let local = seg.rsplit_once(':').map(|(_, n)| n).unwrap_or(seg);
-        cur = find_child_by_local_raw(nodes, cur, local)?;
+        cur = find_child_by_local_raw(nodes, cur, seg)?;
     }
     Some(cur)
 }
@@ -542,8 +584,7 @@ fn descend_by_data_local<'s>(
 ) -> Option<NodeId> {
     let mut cur = start;
     for seg in segs {
-        let local = seg.rsplit_once(':').map(|(_, n)| n).unwrap_or(seg);
-        cur = find_data_child_by_local_raw(nodes, cur, local)?;
+        cur = find_data_child_by_local_raw(nodes, cur, seg)?;
     }
     Some(cur)
 }
@@ -593,21 +634,24 @@ impl Schema {
     }
 
     pub fn identity_by_name(&self, module: &str, name: &str) -> Option<IdentityRef<'_>> {
-        self.identities
-            .iter()
-            .position(|i| i.module == module && i.name == name)
-            .map(|id| IdentityRef { schema: self, id })
+        self.identities()
+            .find(|i| i.module == module && i.name == name)
     }
 
     pub fn typedef_by_name(&self, scope: &str, name: &str) -> Option<TypedefRef<'_>> {
-        self.typedefs
-            .iter()
-            .position(|t| t.scope == scope && t.name == name)
-            .map(|id| TypedefRef { schema: self, id })
+        self.typedefs().find(|t| t.scope == scope && t.name == name)
     }
 
     pub fn typedefs(&self) -> impl Iterator<Item = TypedefRef<'_>> + '_ {
-        (0..self.typedefs.len()).map(|id| TypedefRef { schema: self, id })
+        (0..self.typedefs.len())
+            .filter(|id| self.reachable_typedefs.contains(id))
+            .map(|id| TypedefRef { schema: self, id })
+    }
+
+    pub fn identities(&self) -> impl Iterator<Item = IdentityRef<'_>> + '_ {
+        (0..self.identities.len())
+            .filter(|id| self.reachable_identities.contains(id))
+            .map(|id| IdentityRef { schema: self, id })
     }
 
     pub fn modules(&self) -> impl Iterator<Item = ModuleRef<'_>> + '_ {
@@ -641,6 +685,10 @@ impl Schema {
 
     pub fn yang_data_root_by_name(&self, name: &str) -> Option<NodeRef<'_>> {
         self.yang_data_roots.get(name).map(|&id| self.node_ref(id))
+    }
+
+    pub fn yang_data_roots(&self) -> impl Iterator<Item = NodeRef<'_>> + '_ {
+        self.yang_data_roots.values().map(|&id| self.node_ref(id))
     }
 
     pub fn node_by_data_path(&self, path: &str) -> Option<NodeRef<'_>> {
@@ -679,6 +727,18 @@ type R<T> = Result<T, SchemaError>;
 
 fn err(msg: impl Into<String>) -> SchemaError {
     SchemaError(msg.into())
+}
+
+fn read_status(s: &Stmt) -> R<Status> {
+    match s.sub("status") {
+        Some(st) => match st.arg_str() {
+            "current" => Ok(Status::Current),
+            "deprecated" => Ok(Status::Deprecated),
+            "obsolete" => Ok(Status::Obsolete),
+            other => Err(err(format!("unknown status {other:?}"))),
+        },
+        None => Ok(Status::Current),
+    }
 }
 
 struct ModuleCtx {
@@ -997,6 +1057,7 @@ impl<'a> Builder<'a> {
                     true,
                     false,
                 );
+                self.nodes[root].status = Some(read_status(container)?);
                 self.interpret_children(resolve, naming, &[], &container.subs, Some(root))?;
                 // `rc:yang-data` roots aren't children of their module's
                 // node (they're "not part of the datastore" -- see
@@ -1053,15 +1114,8 @@ impl<'a> Builder<'a> {
             self.nodes[node].description = Some(d.arg_str().to_string());
         }
 
-        if let Some(st) = s.sub("status") {
-            self.nodes[node].status = match st.arg_str() {
-                "current" => Some(Status::Current),
-                "deprecated" => Some(Status::Deprecated),
-                "obsolete" => Some(Status::Obsolete),
-                other => return Err(err(format!("unknown status {other:?}"))),
-            }
-        } else if s.keyword != "input" && s.keyword != "output" {
-            self.nodes[node].status = Some(Status::Current);
+        if s.keyword != "input" && s.keyword != "output" {
+            self.nodes[node].status = Some(read_status(s)?);
         }
 
         if let Some(default) = s.sub("default") {
@@ -1346,21 +1400,7 @@ impl<'a> Builder<'a> {
     }
 
     fn schema_node_path_of(&self, id: NodeId) -> String {
-        let mut chain = Vec::new();
-        let mut cur = Some(id);
-        while let Some(n) = cur {
-            chain.push(n);
-            cur = self.nodes[n].parent;
-        }
-        chain.reverse();
-        chain.into_iter().map(|n| self.nodes[n].name.as_str()).fold(
-            String::new(),
-            |mut path, name| {
-                path.push('/');
-                path.push_str(name);
-                path
-            },
-        )
+        node_path_of(&self.nodes, id)
     }
 
     // -- types ---------------------------------------------------------
@@ -1444,6 +1484,7 @@ impl<'a> Builder<'a> {
         let id = self.typedefs.len();
         self.typedefs.push(Typedef {
             name: local.to_string(),
+            module: def_module.to_string(),
             scope: typedef_scope,
             description,
             ty,
@@ -1640,9 +1681,15 @@ impl<'a> Builder<'a> {
                 continue;
             }
             if let Some(mut ty) = self.nodes[id].ty.take() {
-                self.resolve_leafref_in_descriptor(id, &mut ty)?;
+                self.resolve_leafref_in_descriptor(Some(id), &mut ty)?;
                 self.nodes[id].ty = Some(ty);
             }
+        }
+
+        for id in 0..self.typedefs.len() {
+            let mut ty = self.typedefs[id].ty.clone();
+            let _ = self.resolve_leafref_in_descriptor(None, &mut ty);
+            self.typedefs[id].ty = ty;
         }
         Ok(())
     }
@@ -1654,7 +1701,11 @@ impl<'a> Builder<'a> {
         }
     }
 
-    fn resolve_leafref_in_descriptor(&self, node: NodeId, ty: &mut TypeDescriptor) -> R<()> {
+    fn resolve_leafref_in_descriptor(
+        &self,
+        node: Option<NodeId>,
+        ty: &mut TypeDescriptor,
+    ) -> R<()> {
         if ty.builtin == Builtin::Leafref {
             if let Some(path) = ty.leafref_path.clone() {
                 let module = ty
@@ -1662,21 +1713,26 @@ impl<'a> Builder<'a> {
                     .clone()
                     .expect("a leafref's source_module is always set alongside leafref_path");
                 let target = if let Some(abs) = path.trim().strip_prefix('/') {
-                    self.resolve_absolute_schema_node_id(&module, &format!("/{abs}"))?
+                    Some(self.resolve_absolute_schema_node_id(&module, &format!("/{abs}"))?)
                 } else {
-                    self.resolve_relative_leafref(node, &path).ok_or_else(|| {
-                        err(format!(
-                            "leafref path {path:?} (declared in module {module:?}) could not be resolved"
-                        ))
-                    })?
+                    match node {
+                        Some(node) => Some(self.resolve_relative_leafref(node, &path).ok_or_else(|| {
+                            err(format!(
+                                "leafref path {path:?} (declared in module {module:?}) could not be resolved"
+                            ))
+                        })?),
+                        None => None,
+                    }
                 };
-                let target_kw = &self.nodes[target].kw;
-                if target_kw != "leaf" && target_kw != "leaf-list" {
-                    return Err(err(format!(
-                        "leafref path {path:?} (declared in module {module:?}) refers to a {target_kw}, not a leaf or leaf-list"
-                    )));
+                if let Some(target) = target {
+                    let target_kw = &self.nodes[target].kw;
+                    if target_kw != "leaf" && target_kw != "leaf-list" {
+                        return Err(err(format!(
+                            "leafref path {path:?} (declared in module {module:?}) refers to a {target_kw}, not a leaf or leaf-list"
+                        )));
+                    }
+                    ty.leafref_target = Some(target);
                 }
-                ty.leafref_target = Some(target);
             }
         }
         for member in &mut ty.union_members {
@@ -1762,6 +1818,30 @@ impl<'a> Builder<'a> {
             self.index_sids(yd_root, &mut sid_index);
         }
 
+        let mut reachable_typedefs = std::collections::HashSet::new();
+        let mut identity_base_seeds = std::collections::HashSet::new();
+        let all_root_nodes: Vec<NodeId> = self
+            .module_root
+            .values()
+            .flat_map(|m| m.root_nodes.iter().copied())
+            .chain(self.yang_data_roots.values().copied())
+            .collect();
+        for root in all_root_nodes {
+            self.mark_reachable_typedefs_in_subtree(
+                root,
+                &mut reachable_typedefs,
+                &mut identity_base_seeds,
+            );
+        }
+
+        let mut reachable_identities = std::collections::HashSet::new();
+        let mut stack: Vec<IdentityId> = identity_base_seeds.into_iter().collect();
+        while let Some(id) = stack.pop() {
+            if reachable_identities.insert(id) {
+                stack.extend(self.identities[id].derived.iter().copied());
+            }
+        }
+
         Ok(Schema {
             nodes: self.nodes,
             typedefs: self.typedefs,
@@ -1769,7 +1849,40 @@ impl<'a> Builder<'a> {
             module_root: self.module_root,
             yang_data_roots: self.yang_data_roots,
             sid_index,
+            reachable_typedefs,
+            reachable_identities,
         })
+    }
+
+    fn mark_reachable_typedefs_in_subtree(
+        &self,
+        node: NodeId,
+        out: &mut std::collections::HashSet<TypedefId>,
+        identity_base_seeds: &mut std::collections::HashSet<IdentityId>,
+    ) {
+        if let Some(ty) = &self.nodes[node].ty {
+            self.mark_reachable_typedefs(ty, out, identity_base_seeds);
+        }
+        for &c in &self.nodes[node].children {
+            self.mark_reachable_typedefs_in_subtree(c, out, identity_base_seeds);
+        }
+    }
+
+    fn mark_reachable_typedefs(
+        &self,
+        ty: &TypeDescriptor,
+        out: &mut std::collections::HashSet<TypedefId>,
+        identity_base_seeds: &mut std::collections::HashSet<IdentityId>,
+    ) {
+        if let Some(base) = ty.base {
+            if out.insert(base) {
+                self.mark_reachable_typedefs(&self.typedefs[base].ty, out, identity_base_seeds);
+            }
+        }
+        identity_base_seeds.extend(ty.identity_bases.iter().copied());
+        for member in &ty.union_members {
+            self.mark_reachable_typedefs(member, out, identity_base_seeds);
+        }
     }
 
     fn index_sids(&self, node: NodeId, out: &mut HashMap<i64, NodeId>) {
@@ -1805,6 +1918,30 @@ mod tests {
         assert_eq!(bar.status, Some(Status::Current));
         let baz = bar.find_child("baz").unwrap();
         assert_eq!(baz.status, Some(Status::Current));
+    }
+
+    #[test]
+    fn a_yang_data_roots_status_defaults_to_current_too() {
+        // The root is created outside interpret_schema_node's own
+        // default-status handling (see interpret_extension), so it needs
+        // its own path to the same RFC 7950 7.21.2 default.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              rc:yang-data error-template {
+                container error {
+                  leaf message {
+                    type string;
+                  }
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let error_root = schema.yang_data_root_by_name("foo:error").unwrap();
+        assert_eq!(error_root.status, Some(Status::Current));
     }
 
     #[test]
@@ -2060,6 +2197,12 @@ mod tests {
               identity dog {
                 base animal;
               }
+
+              leaf pet {
+                type identityref {
+                  base animal;
+                }
+              }
             }
         "#;
         let schema = build(&[src.to_string()], &[]).unwrap();
@@ -2069,6 +2212,43 @@ mod tests {
         assert_eq!(dog.base().count(), 1);
         assert_eq!(dog.base().next().unwrap().name, "animal");
         assert!(schema.identity_by_name("foo", "no-such-identity").is_none());
+    }
+
+    #[test]
+    fn identities_only_lists_ones_reachable_from_an_identityref_usage() {
+        // schema.identities() must reflect only identities actually
+        // reachable as a legal identityref value from some real node --
+        // an identity declared in a module's text but never named as a
+        // base of any identityref, directly or via derivation, must not
+        // appear. "dog" is reachable only transitively (nothing uses
+        // identityref base dog directly -- it's derived from animal,
+        // which the real usage names), confirming the derived-identity
+        // closure is included too. identity_by_name applies the same
+        // filter (it's a thin wrapper around identities()), so it can't
+        // be used to bypass this.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              identity animal;
+              identity dog {
+                base animal;
+              }
+              identity unused;
+
+              leaf pet {
+                type identityref {
+                  base animal;
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let mut names: Vec<String> = schema.identities().map(|i| i.name.clone()).collect();
+        names.sort();
+        assert_eq!(names, vec!["animal", "dog"]);
+        assert!(schema.identity_by_name("foo", "unused").is_none());
     }
 
     #[test]
@@ -2082,6 +2262,17 @@ mod tests {
                 description "a living creature";
               }
               identity rock;
+
+              leaf pet {
+                type identityref {
+                  base animal;
+                }
+              }
+              leaf collectible {
+                type identityref {
+                  base rock;
+                }
+              }
             }
         "#;
         let schema = build(&[src.to_string()], &[]).unwrap();
@@ -2146,6 +2337,84 @@ mod tests {
         assert_eq!(error_root.sid, Some(38455));
         let message = error_root.find_child("message").unwrap();
         assert_eq!(message.sid, Some(38456));
+    }
+
+    #[test]
+    fn two_modules_augmenting_the_same_target_with_identically_named_children_resolve_independently(
+    ) {
+        // Both bar and baz augment foo:top with their own container
+        // named "thing" -- a schema-node-id/.sid identifier naming one
+        // must never resolve to the other, even though their bare local
+        // names collide.
+        let foo = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              container top;
+            }
+        "#;
+        let bar = r#"
+            module bar {
+              namespace "urn:bar";
+              prefix b;
+              import foo { prefix f; }
+
+              augment "/f:top" {
+                container thing {
+                  leaf x {
+                    type string;
+                  }
+                }
+              }
+            }
+        "#;
+        let baz = r#"
+            module baz {
+              namespace "urn:baz";
+              prefix z;
+              import foo { prefix f; }
+
+              augment "/f:top" {
+                container thing {
+                  leaf y {
+                    type string;
+                  }
+                }
+              }
+            }
+        "#;
+        let sid = r#"{
+            "module-name": "bar",
+            "module-revision": "2026-01-01",
+            "items": [
+                {"namespace": "data", "identifier": "/foo:top/bar:thing", "sid": 7001},
+                {"namespace": "data", "identifier": "/foo:top/bar:thing/x", "sid": 7002}
+            ]
+        }"#;
+        let sid2 = r#"{
+            "module-name": "baz",
+            "module-revision": "2026-01-01",
+            "items": [
+                {"namespace": "data", "identifier": "/foo:top/baz:thing", "sid": 8001},
+                {"namespace": "data", "identifier": "/foo:top/baz:thing/y", "sid": 8002}
+            ]
+        }"#;
+        let schema = build(
+            &[foo.to_string(), bar.to_string(), baz.to_string()],
+            &[sid.to_string(), sid2.to_string()],
+        )
+        .unwrap();
+
+        let bar_thing = schema.node_by_schema_path("/foo:top/bar:thing").unwrap();
+        assert_eq!(bar_thing.sid, Some(7001));
+        assert!(bar_thing.find_child("x").is_some());
+        assert_eq!(bar_thing.find_child("x").unwrap().sid, Some(7002));
+
+        let baz_thing = schema.node_by_schema_path("/foo:top/baz:thing").unwrap();
+        assert_eq!(baz_thing.sid, Some(8001));
+        assert!(baz_thing.find_child("y").is_some());
+        assert_eq!(baz_thing.find_child("y").unwrap().sid, Some(8002));
     }
 
     #[test]
@@ -2308,6 +2577,144 @@ mod tests {
             percent.description.as_deref(),
             Some("a percentage, 0 to 100")
         );
+    }
+
+    #[test]
+    fn a_plain_unreferenced_typedef_is_unreachable() {
+        // Unlike typedefs_excludes_one_whose_only_use_site_is_deviated_
+        // away (a typedef created, then later excluded by reachability
+        // filtering once its use site is removed), a typedef nothing
+        // ever references in the first place is never even created --
+        // resolve_typedef only runs when a `type <name>;` reference is
+        // actually interpreted. Both paths must end in the same place:
+        // absent from typedefs() and typedef_by_name.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              typedef percent {
+                type uint8 {
+                  range "0..100";
+                }
+              }
+
+              leaf bar {
+                type string;
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        assert_eq!(schema.typedefs().count(), 0);
+        assert!(schema.typedef_by_name("foo", "percent").is_none());
+    }
+
+    #[test]
+    fn a_plain_unreferenced_identity_is_unreachable() {
+        // Unlike identities_only_lists_ones_reachable_from_an_identityref_
+        // usage's "unused" case (declared but checked alongside others
+        // that ARE reachable), this is the minimal case on its own: an
+        // identity with zero identityref usage anywhere in the module.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              identity animal;
+
+              leaf bar {
+                type string;
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        assert_eq!(schema.identities().count(), 0);
+        assert!(schema.identity_by_name("foo", "animal").is_none());
+    }
+
+    #[test]
+    fn typedefs_excludes_one_whose_only_use_site_is_deviated_away() {
+        // schema.typedefs() must reflect only typedefs actually
+        // reachable from this device's resolved tree -- a typedef
+        // created as a side effect of building the schema (before
+        // deviations run) but left with no surviving use site must not
+        // appear. typedef_by_name applies the same filter (it's a thin
+        // wrapper around typedefs()), so it can't be used to bypass this.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              typedef percent {
+                type uint8 {
+                  range "0..100";
+                }
+              }
+
+              leaf gone {
+                type percent;
+              }
+
+              deviation /f:gone {
+                deviate not-supported;
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        assert_eq!(schema.typedefs().count(), 0);
+        assert!(schema.typedef_by_name("foo", "percent").is_none());
+    }
+
+    #[test]
+    fn typedefs_and_identities_exclude_ones_severed_by_a_deviate_replace_type() {
+        // The node survives (unlike deviate not-supported) but its own
+        // type substatement is replaced wholesale -- a different way to
+        // sever reachability than removing the node outright. A typedef
+        // or identity whose only real use site had its type replaced
+        // away must stop being reachable too.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              typedef percent {
+                type uint8 {
+                  range "0..100";
+                }
+              }
+              identity animal;
+
+              leaf retyped {
+                type percent;
+              }
+              leaf reidentified {
+                type identityref {
+                  base animal;
+                }
+              }
+
+              deviation /f:retyped {
+                deviate replace {
+                  type uint8;
+                }
+              }
+              deviation /f:reidentified {
+                deviate replace {
+                  type string;
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        assert_eq!(schema.typedefs().count(), 0);
+        assert!(schema.typedef_by_name("foo", "percent").is_none());
+        assert_eq!(schema.identities().count(), 0);
+        assert!(schema.identity_by_name("foo", "animal").is_none());
+
+        let retyped = schema.node_by_data_path("/foo:retyped").unwrap();
+        assert_eq!(retyped.ty().unwrap().builtin, Builtin::Uint8);
+        let reidentified = schema.node_by_data_path("/foo:reidentified").unwrap();
+        assert_eq!(reidentified.ty().unwrap().builtin, Builtin::String);
     }
 
     #[test]
@@ -2611,6 +3018,88 @@ mod tests {
     }
 
     #[test]
+    fn a_typedefs_own_canonical_entry_has_its_leafref_target_resolved_too() {
+        // Unlike a use site, a typedef is never itself walked by the
+        // reachable-node pass -- its own canonical descriptor
+        // (`typedef_by_name`, as opposed to `pick`'s own use-site clone,
+        // already covered by leafref_resolves_through_a_typedef_to_its_
+        // concrete_target) needs its leafref target resolved directly
+        // too, which matters to any consumer (e.g. a resolved-yang-
+        // catalog dump) reading `schema.typedefs()`.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              typedef bar-ref {
+                type leafref {
+                  path "/f:bar/f:name";
+                }
+              }
+
+              list bar {
+                key "name";
+                leaf name {
+                  type string;
+                }
+              }
+
+              leaf pick {
+                type bar-ref;
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let bar_ref = schema.typedef_by_name("foo", "bar-ref").unwrap();
+        let target = bar_ref.ty().leafref_target().unwrap();
+        assert_eq!(target.kw, "leaf");
+        assert_eq!(target.local_name(), "name");
+    }
+
+    #[test]
+    fn a_typedefs_own_leafref_pointing_at_a_deviated_away_node_is_not_an_error() {
+        // Mirrors a_dangling_leafref_on_a_deviated_away_node_is_not_an_error,
+        // but for a typedef whose only use site is itself deviated away
+        // -- the typedef is still created (as a side effect of building
+        // the schema tree, before deviations run) but is now reachable
+        // from nowhere, so its own dangling leafref is inert. Nothing
+        // live ever needs it resolved, and typedefs_excludes_one_whose_
+        // only_use_site_is_deviated_away already covers that it's
+        // correctly excluded from lookup -- this just confirms the
+        // dangling leafref doesn't hard-error the whole build.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              typedef removed-ref {
+                type leafref {
+                  path "/f:removed/f:name";
+                }
+              }
+
+              container removed {
+                leaf name {
+                  type string;
+                }
+              }
+
+              leaf pick {
+                type removed-ref;
+              }
+
+              deviation /f:removed {
+                deviate not-supported;
+              }
+              deviation /f:pick {
+                deviate not-supported;
+              }
+            }
+        "#;
+        assert!(build(&[src.to_string()], &[]).is_ok());
+    }
+
+    #[test]
     fn an_unresolvable_leafref_path_is_a_schema_error() {
         let src = r#"
             module foo {
@@ -2687,6 +3176,58 @@ mod tests {
             }
         "#;
         assert!(build(&[src.to_string()], &[]).is_ok());
+    }
+
+    #[test]
+    fn a_deviated_away_node_is_unreachable_through_every_lookup() {
+        // node_by_sid/node_by_schema_path/node_by_data_path must all
+        // fail to find a node deviate not-supported removed -- none of
+        // them should still walk to it via a stale sid_index entry or a
+        // path that happens to still resolve.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              container gone {
+                leaf x {
+                  type string;
+                }
+              }
+            }
+        "#;
+        let sid = r#"{
+            "module-name": "foo",
+            "module-revision": "2026-01-01",
+            "items": [
+                {"namespace": "data", "identifier": "/foo:gone", "sid": 5000}
+            ]
+        }"#;
+        let present = build(&[src.to_string()], &[sid.to_string()]).unwrap();
+        assert!(present.node_by_sid(5000).is_some());
+        assert!(present.node_by_schema_path("/foo:gone").is_some());
+        assert!(present.node_by_data_path("/foo:gone").is_some());
+
+        let src_deviated = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              container gone {
+                leaf x {
+                  type string;
+                }
+              }
+
+              deviation /f:gone {
+                deviate not-supported;
+              }
+            }
+        "#;
+        let deviated = build(&[src_deviated.to_string()], &[sid.to_string()]).unwrap();
+        assert!(deviated.node_by_sid(5000).is_none());
+        assert!(deviated.node_by_schema_path("/foo:gone").is_none());
+        assert!(deviated.node_by_data_path("/foo:gone").is_none());
     }
 
     #[test]

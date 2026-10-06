@@ -7,7 +7,7 @@
   "type": "object",
   "required": [
     "schema-version", "yang-catalog", "modules", "typedefs",
-    "identities", "features", "schema-nodes", "yang-data", "sid-index"
+    "identities", "schema-nodes", "yang-data", "sid-index"
   ],
   "properties": {
     "$schema": {
@@ -49,14 +49,6 @@
       "description": "Every YANG identity used in this catalog, keyed by \"module:identity-name\".",
       "patternProperties": {
         "^[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*$": { "$ref": "#/$defs/identity" }
-      }
-    },
-
-    "features": {
-      "type": "object",
-      "description": "Every YANG feature this device supports, keyed by \"module:feature-name\".",
-      "patternProperties": {
-        "^[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*$": { "$ref": "#/$defs/feature" }
       }
     },
 
@@ -367,23 +359,19 @@
 
     "typedef": {
       "description": "A named YANG type.",
-      "allOf": [
-        { "$ref": "#/$defs/type-descriptor" },
-        {
-          "type": "object",
-          "required": ["module", "name"],
-          "properties": {
-            "module": { "$ref": "#/$defs/module-name" },
-            "name": { "type": "string" },
-            "description": { "type": "string" },
-            "default": {
-              "type": "string",
-              "description": "This typedef's own default value, if any."
-            },
-            "units": { "type": "string" }
-          }
-        }
-      ]
+      "type": "object",
+      "required": ["module", "name", "type"],
+      "properties": {
+        "module": { "$ref": "#/$defs/module-name" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "type": { "$ref": "#/$defs/type-descriptor" },
+        "default": {
+          "type": "string",
+          "description": "This typedef's own default value, if any."
+        },
+        "units": { "type": "string" }
+      }
     },
 
     "identity": {
@@ -406,17 +394,6 @@
           "items": { "$ref": "#/$defs/qualified-name" },
           "description": "Every identity that declares this one as a base."
         }
-      }
-    },
-
-    "feature": {
-      "type": "object",
-      "required": ["module", "name", "sid"],
-      "properties": {
-        "module": { "$ref": "#/$defs/module-name" },
-        "name": { "type": "string" },
-        "description": { "type": "string" },
-        "sid": { "$ref": "#/$defs/sid-string" }
       }
     },
 
@@ -484,7 +461,7 @@
       "allOf": [
         {
           "type": "object",
-          "required": ["keyword", "name", "module", "parent", "children", "data-children", "status", "sid", "synthetic"],
+          "required": ["keyword", "name", "module", "parent", "children", "data-children", "synthetic"],
           "properties": {
             "keyword": {
               "enum": [
@@ -534,7 +511,7 @@
             {
               "title": "Container",
               "type": "object",
-              "required": ["config"],
+              "required": ["config", "status", "sid"],
               "properties": {
                 "keyword": { "const": "container" },
                 "config": { "type": "boolean" }
@@ -543,7 +520,7 @@
             {
               "title": "Leaf",
               "type": "object",
-              "required": ["config", "type", "mandatory"],
+              "required": ["config", "type", "mandatory", "status", "sid"],
               "properties": {
                 "keyword": { "const": "leaf" },
                 "config": { "type": "boolean" },
@@ -556,7 +533,7 @@
             {
               "title": "Leaf-list",
               "type": "object",
-              "required": ["config", "type"],
+              "required": ["config", "type", "status", "sid"],
               "properties": {
                 "keyword": { "const": "leaf-list" },
                 "config": { "type": "boolean" },
@@ -568,7 +545,7 @@
             {
               "title": "List",
               "type": "object",
-              "required": ["config", "keys"],
+              "required": ["config", "keys", "status", "sid"],
               "properties": {
                 "keyword": { "const": "list" },
                 "config": { "type": "boolean" },
@@ -582,7 +559,7 @@
             {
               "title": "Choice",
               "type": "object",
-              "required": ["config", "mandatory"],
+              "required": ["config", "mandatory", "status"],
               "properties": {
                 "keyword": { "const": "choice" },
                 "config": { "type": "boolean" },
@@ -596,37 +573,43 @@
             {
               "title": "Case",
               "type": "object",
+              "required": ["status"],
               "properties": { "keyword": { "const": "case" } }
             },
             {
               "title": "Rpc",
               "type": "object",
+              "required": ["status", "sid"],
               "properties": { "keyword": { "const": "rpc" } }
             },
             {
               "title": "Action",
               "type": "object",
+              "required": ["status", "sid"],
               "properties": { "keyword": { "const": "action" } }
             },
             {
               "title": "Input",
               "type": "object",
+              "required": ["sid"],
               "properties": { "keyword": { "const": "input" } }
             },
             {
               "title": "Output",
               "type": "object",
+              "required": ["sid"],
               "properties": { "keyword": { "const": "output" } }
             },
             {
               "title": "Notification",
               "type": "object",
+              "required": ["status", "sid"],
               "properties": { "keyword": { "const": "notification" } }
             },
             {
               "title": "Anydata",
               "type": "object",
-              "required": ["config", "mandatory"],
+              "required": ["config", "mandatory", "status", "sid"],
               "properties": {
                 "keyword": { "const": "anydata" },
                 "config": { "type": "boolean" },
@@ -636,7 +619,7 @@
             {
               "title": "Anyxml",
               "type": "object",
-              "required": ["config", "mandatory"],
+              "required": ["config", "mandatory", "status", "sid"],
               "properties": {
                 "keyword": { "const": "anyxml" },
                 "config": { "type": "boolean" },

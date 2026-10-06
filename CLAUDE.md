@@ -54,6 +54,15 @@ new behavior (directly or transitively) before adding a redundant test — see
 either untested or untestable; both are a problem to fix before committing,
 not after.
 
+## Generated JSON documents: test cross-references both directions
+
+Any time code generates a JSON document where one field's value is meant to
+be a key that exists elsewhere in the same document (e.g. a path, a typedef
+key, a qualified name), the test suite must check two properties:
+- Referential integrity - every such reference actually resolves to a real entry.
+- Reachability - every such object is actually referenced by something reachable
+  from the document roots
+
 ## Verify against ground truth, don't assume
 
 Before asserting why some code behaves a certain way, check: the git history,
