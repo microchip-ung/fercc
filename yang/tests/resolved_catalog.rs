@@ -311,8 +311,10 @@ fn the_document_has_no_orphan_schema_nodes_or_yang_data() {
             .collect();
         while let Some(path) = stack.pop() {
             if visited.insert(path.to_string()) {
-                for child in map[path]["children"].as_array().unwrap() {
-                    stack.push(child.as_str().unwrap());
+                if let Some(children) = map[path].get("children").and_then(Json::as_array) {
+                    for child in children {
+                        stack.push(child.as_str().unwrap());
+                    }
                 }
             }
         }
@@ -613,4 +615,23 @@ fn sid_index_round_trips_a_real_module_entry() {
         d["sid-index"][&module_sid],
         serde_json::json!({"namespace": "module", "identifier": "ietf-ip"})
     );
+}
+
+#[test]
+fn leaf_and_leaf_list_nodes_have_no_children_fields() {
+    // leaf/leaf-list/anydata/anyxml have no child schema-node
+    // substatements per RFC 7950's grammar, so unlike every other
+    // keyword they must not carry `children`/`data-children` at all --
+    // not even as empty arrays.
+    let d = doc();
+    let leaf = &d["schema-nodes"]["/ietf-interfaces:interfaces/interface/name"];
+    assert_eq!(leaf["keyword"], "leaf");
+    assert!(leaf.get("children").is_none());
+    assert!(leaf.get("data-children").is_none());
+
+    let leaf_list = &d["schema-nodes"]
+        ["/ieee802-dot1cb-stream-identification:stream-identity/out-facing/input-port"];
+    assert_eq!(leaf_list["keyword"], "leaf-list");
+    assert!(leaf_list.get("children").is_none());
+    assert!(leaf_list.get("data-children").is_none());
 }

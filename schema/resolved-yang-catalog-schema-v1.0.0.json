@@ -461,7 +461,7 @@
       "allOf": [
         {
           "type": "object",
-          "required": ["keyword", "name", "module", "parent", "children", "data-children", "synthetic"],
+          "required": ["keyword", "name", "module", "parent", "synthetic"],
           "properties": {
             "keyword": {
               "enum": [
@@ -484,16 +484,6 @@
               ],
               "description": "The parent's schema-node-path, or null at a module's top level."
             },
-            "children": {
-              "type": "array",
-              "items": { "$ref": "#/$defs/schema-node-path" },
-              "description": "Direct children's paths, in declaration order."
-            },
-            "data-children": {
-              "type": "array",
-              "items": { "$ref": "#/$defs/schema-node-path" },
-              "description": "Direct children's paths with choice/case spliced out (each replaced by its own data-children, recursively), in declaration order."
-            },
             "status": {
               "enum": ["current", "deprecated", "obsolete"],
               "description": "current: safe to use. deprecated: still usable but scheduled for removal. obsolete: no longer usable."
@@ -511,10 +501,12 @@
             {
               "title": "Container",
               "type": "object",
-              "required": ["config", "status", "sid"],
+              "required": ["config", "children", "data-children", "status", "sid"],
               "properties": {
                 "keyword": { "const": "container" },
-                "config": { "type": "boolean" }
+                "config": { "type": "boolean" },
+                "children": { "$ref": "#/$defs/node-children" },
+                "data-children": { "$ref": "#/$defs/node-data-children" }
               }
             },
             {
@@ -545,10 +537,12 @@
             {
               "title": "List",
               "type": "object",
-              "required": ["config", "keys", "status", "sid"],
+              "required": ["config", "children", "data-children", "keys", "status", "sid"],
               "properties": {
                 "keyword": { "const": "list" },
                 "config": { "type": "boolean" },
+                "children": { "$ref": "#/$defs/node-children" },
+                "data-children": { "$ref": "#/$defs/node-data-children" },
                 "keys": {
                   "type": "array",
                   "items": { "$ref": "#/$defs/schema-node-path" },
@@ -559,10 +553,12 @@
             {
               "title": "Choice",
               "type": "object",
-              "required": ["config", "mandatory", "status"],
+              "required": ["config", "children", "data-children", "mandatory", "status"],
               "properties": {
                 "keyword": { "const": "choice" },
                 "config": { "type": "boolean" },
+                "children": { "$ref": "#/$defs/node-children" },
+                "data-children": { "$ref": "#/$defs/node-data-children" },
                 "mandatory": { "type": "boolean" },
                 "default": {
                   "$ref": "#/$defs/schema-node-path",
@@ -573,38 +569,62 @@
             {
               "title": "Case",
               "type": "object",
-              "required": ["status"],
-              "properties": { "keyword": { "const": "case" } }
+              "required": ["children", "data-children", "status"],
+              "properties": {
+                "keyword": { "const": "case" },
+                "children": { "$ref": "#/$defs/node-children" },
+                "data-children": { "$ref": "#/$defs/node-data-children" }
+              }
             },
             {
               "title": "Rpc",
               "type": "object",
-              "required": ["status", "sid"],
-              "properties": { "keyword": { "const": "rpc" } }
+              "required": ["children", "data-children", "status", "sid"],
+              "properties": {
+                "keyword": { "const": "rpc" },
+                "children": { "$ref": "#/$defs/node-children" },
+                "data-children": { "$ref": "#/$defs/node-data-children" }
+              }
             },
             {
               "title": "Action",
               "type": "object",
-              "required": ["status", "sid"],
-              "properties": { "keyword": { "const": "action" } }
+              "required": ["children", "data-children", "status", "sid"],
+              "properties": {
+                "keyword": { "const": "action" },
+                "children": { "$ref": "#/$defs/node-children" },
+                "data-children": { "$ref": "#/$defs/node-data-children" }
+              }
             },
             {
               "title": "Input",
               "type": "object",
-              "required": ["sid"],
-              "properties": { "keyword": { "const": "input" } }
+              "required": ["children", "data-children", "sid"],
+              "properties": {
+                "keyword": { "const": "input" },
+                "children": { "$ref": "#/$defs/node-children" },
+                "data-children": { "$ref": "#/$defs/node-data-children" }
+              }
             },
             {
               "title": "Output",
               "type": "object",
-              "required": ["sid"],
-              "properties": { "keyword": { "const": "output" } }
+              "required": ["children", "data-children", "sid"],
+              "properties": {
+                "keyword": { "const": "output" },
+                "children": { "$ref": "#/$defs/node-children" },
+                "data-children": { "$ref": "#/$defs/node-data-children" }
+              }
             },
             {
               "title": "Notification",
               "type": "object",
-              "required": ["status", "sid"],
-              "properties": { "keyword": { "const": "notification" } }
+              "required": ["children", "data-children", "status", "sid"],
+              "properties": {
+                "keyword": { "const": "notification" },
+                "children": { "$ref": "#/$defs/node-children" },
+                "data-children": { "$ref": "#/$defs/node-data-children" }
+              }
             },
             {
               "title": "Anydata",
@@ -629,6 +649,18 @@
           ]
         }
       ]
+    },
+
+    "node-children": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/schema-node-path" },
+      "description": "Direct children's paths, in declaration order."
+    },
+
+    "node-data-children": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/schema-node-path" },
+      "description": "Direct children's paths with choice/case spliced out (each replaced by its own data-children, recursively), in declaration order."
     }
   }
 }

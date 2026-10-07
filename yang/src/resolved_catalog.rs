@@ -274,14 +274,19 @@ fn schema_node_entry(node: NodeRef<'_>) -> R<Json> {
         "parent".to_string(),
         node.parent().map(|p| s(p.path())).unwrap_or(Json::Null),
     );
-    m.insert(
-        "children".to_string(),
-        arr(node.children().map(|c| s(c.path())).collect()),
-    );
-    m.insert(
-        "data-children".to_string(),
-        arr(node.data_children().map(|c| s(c.path())).collect()),
-    );
+    if !matches!(
+        node.kw.as_str(),
+        "leaf" | "leaf-list" | "anydata" | "anyxml"
+    ) {
+        m.insert(
+            "children".to_string(),
+            arr(node.children().map(|c| s(c.path())).collect()),
+        );
+        m.insert(
+            "data-children".to_string(),
+            arr(node.data_children().map(|c| s(c.path())).collect()),
+        );
+    }
     if let Some(status) = node.status {
         m.insert("status".to_string(), s(status_str(status)));
     }
