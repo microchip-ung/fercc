@@ -2544,6 +2544,52 @@ mod tests {
     }
 
     #[test]
+    fn a_leaf_using_a_typedef_derived_from_another_typedef_has_both_base_hops() {
+        // typedef narrow derived-from typedef wide, and a leaf uses
+        // narrow -- the leaf's own base must point at narrow (one hop),
+        // and narrow's own canonical entry's base must point at wide
+        // (the next hop), not either flattened into the other.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              typedef wide {
+                type uint8 {
+                  range "0..100";
+                }
+              }
+
+              typedef narrow {
+                type wide {
+                  range "0..50";
+                }
+              }
+
+              leaf bar {
+                type narrow;
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+
+        let bar = schema.node_by_data_path("/foo:bar").unwrap();
+        let bar_ty = bar.ty().unwrap();
+        let bar_base = bar_ty.base().unwrap();
+        assert_eq!(bar_base.name, "narrow");
+        assert_eq!(bar_ty.ranges, vec![(0, 50)]);
+
+        let narrow = schema.typedef_by_name("foo", "narrow").unwrap();
+        assert_eq!(narrow.ty().ranges, vec![(0, 50)]);
+        let narrow_base = narrow.ty().base().unwrap();
+        assert_eq!(narrow_base.name, "wide");
+
+        let wide = schema.typedef_by_name("foo", "wide").unwrap();
+        assert_eq!(wide.ty().ranges, vec![(0, 100)]);
+        assert!(wide.ty().base().is_none());
+    }
+
+    #[test]
     fn typedefs_lists_every_named_typedef_exactly_once_with_its_description() {
         let src = r#"
             module foo {
