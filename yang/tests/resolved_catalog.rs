@@ -493,7 +493,7 @@ fn typedef_entry_nests_its_type_descriptor_under_type() {
     // canonical descriptor's target must be resolved even though
     // nothing walks typedefs the way reachable schema nodes are walked.
     let d = doc();
-    let t = &d["typedefs"]["ietf-interfaces interface-ref"];
+    let t = &d["typedefs"]["ietf-interfaces:interface-ref"];
     assert_eq!(t["module"], "ietf-interfaces");
     assert_eq!(t["name"], "interface-ref");
     assert!(
@@ -518,14 +518,14 @@ fn an_unreachable_typedef_is_excluded_from_the_document() {
     // description for that collection.
     let d = doc();
     assert!(d["typedefs"]
-        .get("ietf-interfaces interface-state-ref")
+        .get("ietf-interfaces:interface-state-ref")
         .is_none());
     let module_typedefs = d["modules"]["ietf-interfaces"]["typedefs"]
         .as_array()
         .unwrap();
     assert!(!module_typedefs
         .iter()
-        .any(|v| v == "ietf-interfaces interface-state-ref"));
+        .any(|v| v == "ietf-interfaces:interface-state-ref"));
 }
 
 #[test]

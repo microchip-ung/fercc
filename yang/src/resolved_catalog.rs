@@ -72,7 +72,11 @@ fn qualified_name(module: &str, name: &str) -> String {
 }
 
 fn typedef_key(scope: &str, name: &str) -> String {
-    format!("{scope} {name}")
+    if scope.starts_with('/') {
+        format!("{scope} {name}")
+    } else {
+        format!("{scope}:{name}")
+    }
 }
 
 fn sid_string(sid: Option<i64>, what: &str) -> R<String> {
@@ -497,4 +501,71 @@ pub fn to_resolved_catalog(schema: &Schema, yang_catalog: &str) -> R<Json> {
     doc.insert("yang-data".to_string(), Json::Object(yang_data));
     doc.insert("sid-index".to_string(), Json::Object(sid_index));
     Ok(Json::Object(doc))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn typedef_key_uses_module_colon_name_for_a_top_level_typedef_but_space_form_when_nested() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              typedef percent {
+                type uint8 {
+                  range "0..100";
+                }
+              }
+
+              container bar {
+                typedef inner-percent {
+                  type uint8 {
+                    range "0..50";
+                  }
+                }
+                leaf a {
+                  type percent;
+                }
+                leaf b {
+                  type inner-percent;
+                }
+              }
+            }
+        "#;
+        let sid_src = r#"{
+            "module-name": "foo",
+            "module-revision": "2026-01-01",
+            "items": [
+                {"namespace": "module", "identifier": "foo", "sid": 1000},
+                {"namespace": "data", "identifier": "/foo:bar", "sid": 1001},
+                {"namespace": "data", "identifier": "/foo:bar/a", "sid": 1002},
+                {"namespace": "data", "identifier": "/foo:bar/b", "sid": 1003}
+            ]
+        }"#;
+        let schema = crate::schema::build(&[src.to_string()], &[sid_src.to_string()]).unwrap();
+        let doc = to_resolved_catalog(&schema, "deadbeef").unwrap();
+
+        assert!(doc["typedefs"].get("foo:percent").is_some());
+        assert!(doc["typedefs"].get("/foo:bar inner-percent").is_some());
+        assert_eq!(
+            doc["modules"]["foo"]["typedefs"],
+            serde_json::json!(["foo:percent", "/foo:bar inner-percent"])
+        );
+
+        let schema_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("schema")
+            .join("resolved-yang-catalog-schema-v1.0.0.json");
+        let schema_text = std::fs::read_to_string(schema_path).unwrap();
+        let json_schema: Json = serde_json::from_str(&schema_text).unwrap();
+        let validator = jsonschema::validator_for(&json_schema).unwrap();
+        let errors: Vec<_> = validator.iter_errors(&doc).collect();
+        assert!(
+            errors.is_empty(),
+            "document fails schema validation: {errors:?}"
+        );
+    }
 }

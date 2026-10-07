@@ -40,7 +40,7 @@
       "type": "object",
       "description": "Every named type used in this catalog, keyed by typedef-key.",
       "patternProperties": {
-        "^\\S+ \\S+$": { "$ref": "#/$defs/typedef" }
+        "^([A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*|/\\S+ \\S+)$": { "$ref": "#/$defs/typedef" }
       }
     },
 
@@ -112,8 +112,8 @@
 
     "typedef-key": {
       "type": "string",
-      "pattern": "^\\S+ \\S+$",
-      "description": "A reference into `typedefs`: \"<scope> <local-name>\". <scope> is a module name (module-top-level typedef) or a schema-node-path (typedef nested in a container/list/grouping/etc.)."
+      "pattern": "^([A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*|/\\S+ \\S+)$",
+      "description": "A reference into `typedefs`. A module-level typedef looks like \"module-name:local-name\" form. A nested typedef uses \"<schema-node-path> <local-name>\"."
     },
 
     "range": {
