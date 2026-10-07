@@ -1059,6 +1059,7 @@ impl<'a> Builder<'a> {
                 );
                 self.nodes[root].status = Some(read_status(container)?);
                 self.interpret_children(resolve, naming, &[], &container.subs, Some(root))?;
+                self.clear_config_in_subtree(root);
                 // `rc:yang-data` roots aren't children of their module's
                 // node (they're "not part of the datastore" -- see
                 // finish()'s comment -- so must stay out of module_root's
@@ -1072,6 +1073,13 @@ impl<'a> Builder<'a> {
             }
         }
         Ok(())
+    }
+
+    fn clear_config_in_subtree(&mut self, root: NodeId) {
+        self.nodes[root].config = false;
+        for child in self.nodes[root].children.clone() {
+            self.clear_config_in_subtree(child);
+        }
     }
 
     fn qualify_top_level(&self, module: &str, local: &str) -> String {
@@ -1942,6 +1950,35 @@ mod tests {
         let schema = build(&[src.to_string()], &[]).unwrap();
         let error_root = schema.yang_data_root_by_name("foo:error").unwrap();
         assert_eq!(error_root.status, Some(Status::Current));
+    }
+
+    #[test]
+    fn a_yang_data_roots_config_is_always_false_even_with_an_explicit_config_true() {
+        // RFC 8040 Sec. 8: "The config-stmt is ignored if present" inside
+        // a yang-data extension's content -- an explicit `config true`
+        // must not survive into the resulting node, unlike an ordinary
+        // schema node where it would.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              rc:yang-data error-template {
+                container error {
+                  config true;
+                  leaf message {
+                    config true;
+                    type string;
+                  }
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[]).unwrap();
+        let error_root = schema.yang_data_root_by_name("foo:error").unwrap();
+        assert!(!error_root.config);
+        let message = error_root.find_child("message").unwrap();
+        assert!(!message.config);
     }
 
     #[test]

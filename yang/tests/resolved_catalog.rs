@@ -121,11 +121,21 @@ fn every_cross_reference_in_the_document_resolves() {
     for (own_map, map_name) in [(schema_nodes, "schema-nodes"), (yang_data, "yang-data")] {
         for (path, node) in own_map {
             let from = format!("{map_name}[{path:?}]");
-            if let Some(parent) = node["parent"].as_str() {
+            if let Some(parent) = node.get("parent").and_then(Json::as_str) {
                 if let Some(e) =
                     check_node_path(parent, own_map, map_name, &format!("{from}.parent"))
                 {
                     errors.push(e);
+                } else if !own_map[parent]
+                    .get("children")
+                    .and_then(Json::as_array)
+                    .is_some_and(|children| {
+                        children.iter().any(|c| c.as_str() == Some(path.as_str()))
+                    })
+                {
+                    errors.push(format!(
+                        "{from}.parent is {parent:?}, but {parent:?}.children does not list {path:?} back"
+                    ));
                 }
             }
             for field in ["children", "data-children", "keys"] {
@@ -136,6 +146,13 @@ fn every_cross_reference_in_the_document_resolves() {
                             check_node_path(p, own_map, map_name, &format!("{from}.{field}"))
                         {
                             errors.push(e);
+                        } else if field == "children"
+                            && own_map[p].get("parent").and_then(Json::as_str)
+                                != Some(path.as_str())
+                        {
+                            errors.push(format!(
+                                "{from}.children lists {p:?}, but {p:?}.parent is not {path:?}"
+                            ));
                         }
                     }
                 }
@@ -296,9 +313,9 @@ fn the_document_has_no_orphan_schema_nodes_or_yang_data() {
     // Complements every_cross_reference_in_the_document_resolves's
     // forward direction (nothing is referenced that's absent) with the
     // reverse: nothing is present that isn't reachable by walking
-    // "children" from a root (parent: null) -- purely from the
-    // document's own fields, no Schema call involved. Together the two
-    // tests prove the node set is exactly the tree implied by the
+    // "children" from a root (no "parent" field at all) -- purely from
+    // the document's own fields, no Schema call involved. Together the
+    // two tests prove the node set is exactly the tree implied by the
     // document's own parent/children links, not more and not fewer.
     let d = doc();
     for (map_name, map_key) in [("schema-nodes", "schema-nodes"), ("yang-data", "yang-data")] {
@@ -306,7 +323,7 @@ fn the_document_has_no_orphan_schema_nodes_or_yang_data() {
         let mut visited = std::collections::HashSet::new();
         let mut stack: Vec<&str> = map
             .iter()
-            .filter(|(_, node)| node["parent"].is_null())
+            .filter(|(_, node)| node.get("parent").is_none())
             .map(|(path, _)| path.as_str())
             .collect();
         while let Some(path) = stack.pop() {
@@ -322,6 +339,54 @@ fn the_document_has_no_orphan_schema_nodes_or_yang_data() {
         assert_eq!(
             visited, all_keys,
             "{map_name} has entries unreachable by walking children from a root"
+        );
+    }
+}
+
+#[test]
+fn module_level_nodes_have_no_parent_and_nested_nodes_always_do() {
+    // "parent" is absent exactly at a module's top level and present
+    // everywhere else -- never the reverse, and never both at once.
+    // For schema-nodes, "module-level" is independently defined by
+    // modules[*].root-nodes; for yang-data (which has no such listing
+    // field), "module-level" is independently defined as "not named by
+    // any entry's own children" -- every yang-data entry here IS a
+    // root (RFC 8040's yang-data extension is only ever a top-level
+    // module statement, so one can never nest inside another).
+    let d = doc();
+    let schema_nodes = d["schema-nodes"].as_object().unwrap();
+    let modules = d["modules"].as_object().unwrap();
+
+    let mut root_nodes = std::collections::HashSet::new();
+    for module in modules.values() {
+        for item in module["root-nodes"].as_array().unwrap() {
+            root_nodes.insert(item.as_str().unwrap());
+        }
+    }
+    for (path, node) in schema_nodes {
+        let is_root = root_nodes.contains(path.as_str());
+        let has_parent = node.get("parent").is_some();
+        assert_ne!(
+            is_root, has_parent,
+            "schema-nodes[{path:?}]: listed as a module root-node ({is_root}) must disagree with carrying a parent ({has_parent})"
+        );
+    }
+
+    let yang_data = d["yang-data"].as_object().unwrap();
+    let mut named_as_child = std::collections::HashSet::new();
+    for node in yang_data.values() {
+        if let Some(children) = node.get("children").and_then(Json::as_array) {
+            for child in children {
+                named_as_child.insert(child.as_str().unwrap());
+            }
+        }
+    }
+    for (path, node) in yang_data {
+        let is_root = !named_as_child.contains(path.as_str());
+        let has_parent = node.get("parent").is_some();
+        assert_ne!(
+            is_root, has_parent,
+            "yang-data[{path:?}]: not named as anyone's child ({is_root}) must disagree with carrying a parent ({has_parent})"
         );
     }
 }
@@ -486,6 +551,51 @@ fn resolved_catalog_validates_against_the_real_schema() {
 }
 
 #[test]
+fn yang_data_keys_must_be_schema_node_paths_not_bare_qualified_names() {
+    // patternProperties alone can't make the schema validator reject an
+    // unrecognized key shape -- a key matching no pattern is simply
+    // skipped, not flagged (there's no additionalProperties/
+    // unevaluatedProperties closing yang-data, by deliberate forward-
+    // compat policy). So this has to be covered by hand on two fronts:
+    // the schema's own pattern actually constrains the real key shape
+    // (checked against a synthetic malformed entry below), and the
+    // real document never regresses to the stale bare-qualified-name
+    // shape in the first place (checked directly against real data --
+    // such a key appearing for real would be a generator bug, not an
+    // acceptable gap, so it must fail this test, not be tolerated).
+    let d = doc();
+    for key in d["yang-data"].as_object().unwrap().keys() {
+        assert!(
+            key.starts_with('/'),
+            "yang-data key {key:?} is not a schema-node-path -- \
+             real yang-data keys must always start with \"/\""
+        );
+    }
+
+    let v = validator();
+    let base = serde_json::json!({
+        "$schema": "urn:fercc:resolved-yang-catalog-schema:1.0.0",
+        "schema-version": "1.0.0",
+        "yang-catalog": "deadbeef",
+        "modules": {},
+        "typedefs": {},
+        "identities": {},
+        "schema-nodes": {},
+        "sid-index": {}
+    });
+
+    let malformed_entry = serde_json::json!({"this is not a schema-node": true});
+
+    let mut with_real_key_shape = base;
+    with_real_key_shape["yang-data"] =
+        serde_json::json!({ "/ietf-coreconf:error": malformed_entry });
+    assert!(
+        v.iter_errors(&with_real_key_shape).next().is_some(),
+        "a malformed entry under the real \"/module:name\" key shape must fail validation"
+    );
+}
+
+#[test]
 fn typedef_entry_nests_its_type_descriptor_under_type() {
     // A typedef is not itself a type (RFC 7950 7.3): it names one via
     // its own "type" substatement. "interface-ref" is also a real
@@ -605,6 +715,21 @@ fn yang_data_root_is_present_and_separate_from_schema_nodes() {
     assert_eq!(error_root["keyword"], "container");
     assert!(error_root["sid"].is_string());
     assert!(d["schema-nodes"].get("/ietf-coreconf:error").is_none());
+}
+
+#[test]
+fn every_yang_data_node_reports_config_false() {
+    // RFC 8040 Sec. 8: "The config-stmt is ignored if present" inside a
+    // yang-data extension's content -- it isn't real config/state
+    // data, so config must read false everywhere in a yang-data
+    // subtree, never the ordinary config:true default a schema node
+    // gets when nothing says otherwise.
+    let d = doc();
+    for (path, node) in d["yang-data"].as_object().unwrap() {
+        if let Some(config) = node.get("config") {
+            assert_eq!(config, false, "yang-data[{path:?}].config must be false");
+        }
+    }
 }
 
 #[test]

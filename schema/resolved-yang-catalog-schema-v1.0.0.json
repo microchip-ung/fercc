@@ -64,9 +64,11 @@
 
     "yang-data": {
       "type": "object",
-      "description": "Every YANG data template (RFC 8040's yang-data extension, used e.g. by ietf-coreconf's error structure), keyed by \"module:name\".",
+      "description": "Every YANG data template (RFC 8040's yang-data extension, used e.g. by ietf-coreconf's error structure), keyed by schema-node-path.",
       "patternProperties": {
-        "^[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*$": { "$ref": "#/$defs/schema-node" }
+        "^/[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*(/[A-Za-z_][A-Za-z0-9_.-]*(:[A-Za-z_][A-Za-z0-9_.-]*)?)*$": {
+          "$ref": "#/$defs/schema-node"
+        }
       }
     },
 
@@ -461,7 +463,7 @@
       "allOf": [
         {
           "type": "object",
-          "required": ["keyword", "name", "module", "parent", "synthetic"],
+          "required": ["keyword", "name", "module", "synthetic"],
           "properties": {
             "keyword": {
               "enum": [
@@ -478,11 +480,8 @@
               "description": "This node's defining module."
             },
             "parent": {
-              "oneOf": [
-                { "$ref": "#/$defs/schema-node-path" },
-                { "type": "null" }
-              ],
-              "description": "The parent's schema-node-path, or null at a module's top level."
+              "$ref": "#/$defs/schema-node-path",
+              "description": "The schema node's parent. Absent at a module's top level."
             },
             "status": {
               "enum": ["current", "deprecated", "obsolete"],

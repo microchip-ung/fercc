@@ -274,10 +274,7 @@ fn schema_node_entry(node: NodeRef<'_>) -> R<Json> {
     m.insert("keyword".to_string(), s(node.kw.clone()));
     m.insert("name".to_string(), s(node.local_name().to_string()));
     m.insert("module".to_string(), s(node.owner_module.clone()));
-    m.insert(
-        "parent".to_string(),
-        node.parent().map(|p| s(p.path())).unwrap_or(Json::Null),
-    );
+    opt_insert(&mut m, "parent", node.parent().map(|p| s(p.path())));
     if !matches!(
         node.kw.as_str(),
         "leaf" | "leaf-list" | "anydata" | "anyxml"
