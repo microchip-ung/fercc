@@ -57,7 +57,8 @@ fn schema() -> &'static Schema {
                 _ => {}
             }
         }
-        yang::schema::build(&yang_sources, &sid_sources).expect("build schema from bundled catalog")
+        yang::schema::build(&yang_sources, &sid_sources, &["/ietf-coreconf:error"])
+            .expect("build schema from bundled catalog")
     })
 }
 

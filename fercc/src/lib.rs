@@ -29,6 +29,8 @@ use yang::schema::Schema;
 /// `ietf-constrained-yang-library:yang-library/checksum` (mup1cc:78).
 const SID_CHECKSUM: i64 = 29304;
 
+const IMPLEMENTED_YANG_DATA_ROOTS: &[&str] = &["/ietf-coreconf:error"];
+
 pub fn run() -> Result<(), String> {
     let opts = Opts::parse();
 
@@ -132,7 +134,8 @@ pub fn load_workspace_schema(verbose: bool) -> Result<Schema, String> {
         eprintln!("workspace root: {}", repo_root.display());
     }
     let files = yang::catalog::load_workspace(&repo_root).map_err(|e| e.to_string())?;
-    yang::schema::build(&files.yang, &files.sid).map_err(|e| e.to_string())
+    yang::schema::build(&files.yang, &files.sid, IMPLEMENTED_YANG_DATA_ROOTS)
+        .map_err(|e| e.to_string())
 }
 
 fn load_downloaded_schema(
@@ -153,7 +156,8 @@ fn load_schema_by_checksum(
     verbose: bool,
 ) -> Result<Schema, String> {
     let files = load_catalog_files_by_checksum(checksum, catalog_fetcher, verbose)?;
-    yang::schema::build(&files.yang, &files.sid).map_err(|e| e.to_string())
+    yang::schema::build(&files.yang, &files.sid, IMPLEMENTED_YANG_DATA_ROOTS)
+        .map_err(|e| e.to_string())
 }
 
 fn load_catalog_files_by_checksum(
@@ -218,7 +222,8 @@ pub fn build_explicit_schema(yangs: &[String], sids: &[String]) -> Result<Schema
     };
     let yang_sources = read_all(yangs)?;
     let sid_sources = read_all(sids)?;
-    yang::schema::build(&yang_sources, &sid_sources).map_err(|e| e.to_string())
+    yang::schema::build(&yang_sources, &sid_sources, IMPLEMENTED_YANG_DATA_ROOTS)
+        .map_err(|e| e.to_string())
 }
 
 fn read_data_file_or_stdin_text(data_file: Option<&str>) -> Result<String, String> {

@@ -274,6 +274,13 @@ pub struct Module {
     root_nodes: Vec<NodeId>,
 }
 
+pub struct ImportOnlyModule {
+    pub name: String,
+    pub namespace: String,
+    pub import_revision_date: Option<String>,
+    pub sid: Option<i64>,
+}
+
 #[derive(Clone, Copy)]
 pub struct ModuleRef<'a> {
     schema: &'a Schema,
@@ -309,6 +316,7 @@ pub struct Schema {
     typedefs: Vec<Typedef>,
     identities: Vec<Identity>,
     module_root: HashMap<String, Module>,
+    import_only_modules: Vec<ImportOnlyModule>,
     yang_data_roots: HashMap<String, NodeId>,
     sid_index: HashMap<i64, NodeId>,
     reachable_typedefs: std::collections::HashSet<TypedefId>,
@@ -678,6 +686,10 @@ impl Schema {
             })
     }
 
+    pub fn import_only_modules(&self) -> impl Iterator<Item = &ImportOnlyModule> + '_ {
+        self.import_only_modules.iter()
+    }
+
     pub fn node_by_schema_path(&self, path: &str) -> Option<NodeRef<'_>> {
         let id = resolve_schema_path(&self.nodes, &self.module_root, path)?;
         Some(self.node_ref(id))
@@ -764,12 +776,24 @@ struct Builder<'a> {
     typedef_cache: HashMap<(String, String), TypedefId>,
     module_root: HashMap<String, Module>,
     yang_data_roots: HashMap<String, NodeId>,
+    implemented_yang_data_roots: std::collections::HashSet<String>,
 }
 
 /// Parse `.yang` sources and build the full schema, including flattening
 /// and SID attachment from `.sid` sources. Fresh every call -- no
 /// caching, by design.
-pub fn build(yang_sources: &[String], sid_sources: &[String]) -> R<Schema> {
+///
+/// `implemented_yang_data_roots` is the device-specific allow-list of
+/// yang-data/structure root schema-node paths (e.g.
+/// "/ietf-coreconf:error") that this device's wire protocol actually
+/// serves -- see `finish()`. Whether a given root is "protocol
+/// accessible" can't be derived from the YANG text itself, so the
+/// caller must supply this real, separately-maintained fact.
+pub fn build(
+    yang_sources: &[String],
+    sid_sources: &[String],
+    implemented_yang_data_roots: &[&str],
+) -> R<Schema> {
     let parsed: Vec<Stmt> = yang_sources
         .iter()
         .map(|s| parser::parse_module(s).map_err(|e| err(e.to_string())))
@@ -807,6 +831,10 @@ pub fn build(yang_sources: &[String], sid_sources: &[String]) -> R<Schema> {
         typedef_cache: HashMap::new(),
         module_root: HashMap::new(),
         yang_data_roots: HashMap::new(),
+        implemented_yang_data_roots: implemented_yang_data_roots
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
     };
 
     let module_names: Vec<String> = parsed.iter().map(|m| m.arg_str().to_string()).collect();
@@ -1047,30 +1075,44 @@ impl<'a> Builder<'a> {
         // "ietf-coreconf:coreconf-error"). Matches yang-utils.rb:255-256
         // (`container_stmt.arg.prepend(self.name, ':')`).
         if s.keyword == "yang-data" {
-            if let Some(container) = s.sub("container") {
-                let name = format!("{naming}:{}", container.arg_str());
-                let root = self.new_node(
-                    "container",
-                    name.clone(),
-                    naming.to_string(),
-                    None,
-                    true,
-                    false,
-                );
-                self.nodes[root].status = Some(read_status(container)?);
-                self.interpret_children(resolve, naming, &[], &container.subs, Some(root))?;
-                self.clear_config_in_subtree(root);
-                // `rc:yang-data` roots aren't children of their module's
-                // node (they're "not part of the datastore" -- see
-                // finish()'s comment -- so must stay out of module_root's
-                // children, which finish() flattens into the real
-                // datastore tree) but their own `.sid` file entries (e.g.
-                // "/ietf-coreconf:error") still need to resolve to them,
-                // since real error responses are addressed by exactly
-                // these SIDs on the wire. Register separately so
-                // resolve_sid_data_identifier can still find them.
-                self.yang_data_roots.insert(name, root);
+            let scratch = self.new_node(
+                "container",
+                String::new(),
+                naming.to_string(),
+                None,
+                true,
+                true,
+            );
+            self.interpret_children(resolve, naming, &[], &s.subs, Some(scratch))?;
+            let children = self.nodes[scratch].children.clone();
+            let &[root] = children.as_slice() else {
+                return Err(err(format!(
+                    "yang-data {:?} must contain exactly one data node, found {}",
+                    s.arg_str(),
+                    children.len()
+                )));
+            };
+            if self.nodes[root].kw != "container" {
+                return Err(err(format!(
+                    "yang-data {:?} must contain a container, found a {:?}",
+                    s.arg_str(),
+                    self.nodes[root].kw
+                )));
             }
+            let name = format!("{naming}:{}", self.nodes[root].name);
+            self.nodes[root].parent = None;
+            self.nodes[root].name = name.clone();
+            self.clear_config_in_subtree(root);
+            // `rc:yang-data` roots aren't children of their module's
+            // node (they're "not part of the datastore" -- see
+            // finish()'s comment -- so must stay out of module_root's
+            // children, which finish() flattens into the real
+            // datastore tree) but their own `.sid` file entries (e.g.
+            // "/ietf-coreconf:error") still need to resolve to them,
+            // since real error responses are addressed by exactly
+            // these SIDs on the wire. Register separately so
+            // resolve_sid_data_identifier can still find them.
+            self.yang_data_roots.insert(name, root);
         }
         Ok(())
     }
@@ -1806,7 +1848,71 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
-    fn finish(self) -> R<Schema> {
+    fn finish(mut self) -> R<Schema> {
+        let implemented_yang_data_root_ids: std::collections::HashSet<NodeId> = self
+            .yang_data_roots
+            .values()
+            .copied()
+            .filter(|&id| {
+                self.implemented_yang_data_roots
+                    .contains(&self.schema_node_path_of(id))
+            })
+            .collect();
+        self.yang_data_roots
+            .retain(|_, id| implemented_yang_data_root_ids.contains(id));
+
+        let yang_data_owners: std::collections::HashSet<&str> = self
+            .yang_data_roots
+            .values()
+            .map(|&id| self.nodes[id].owner_module.as_str())
+            .collect();
+
+        let implemented_names: std::collections::HashSet<String> = self
+            .raw_modules
+            .iter()
+            .filter(|(name, raw)| {
+                let module = &self.module_root[name.as_str()];
+                let has_root_nodes = !module.root_nodes.is_empty();
+                let has_surviving_augment = raw.subs_of("augment").any(|aug| {
+                    self.resolve_absolute_schema_node_id(name, aug.arg_str())
+                        .is_ok()
+                });
+                let has_deviation = raw.sub("deviation").is_some();
+                let has_yang_data = yang_data_owners.contains(name.as_str());
+                has_root_nodes || has_surviving_augment || has_deviation || has_yang_data
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        let mut import_only_modules: Vec<ImportOnlyModule> = Vec::new();
+        let mut seen_keys = std::collections::HashSet::new();
+        let mut visited = std::collections::HashSet::new();
+        let mut stack: Vec<&str> = implemented_names.iter().map(|name| name.as_str()).collect();
+        while let Some(name) = stack.pop() {
+            if !visited.insert(name) {
+                continue;
+            }
+            let raw = self.raw_modules[name];
+            for imp in raw.subs_of("import") {
+                let imp_name = imp.arg_str();
+                if !implemented_names.contains(imp_name) {
+                    let revision_date = imp.sub("revision-date").map(|r| r.arg_str().to_string());
+                    if seen_keys.insert((imp_name.to_string(), revision_date.clone())) {
+                        let imported = &self.module_root[imp_name];
+                        import_only_modules.push(ImportOnlyModule {
+                            name: imported.name.clone(),
+                            namespace: imported.namespace.clone(),
+                            import_revision_date: revision_date,
+                            sid: imported.sid,
+                        });
+                    }
+                    stack.push(imp_name);
+                }
+            }
+        }
+        self.module_root
+            .retain(|name, _| implemented_names.contains(name));
+
         let mut sid_index = HashMap::new();
         let all_root_nodes: Vec<NodeId> = self
             .module_root
@@ -1855,6 +1961,7 @@ impl<'a> Builder<'a> {
             typedefs: self.typedefs,
             identities: self.identities,
             module_root: self.module_root,
+            import_only_modules,
             yang_data_roots: self.yang_data_roots,
             sid_index,
             reachable_typedefs,
@@ -1921,7 +2028,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         let bar = schema.node_by_data_path("/foo:bar").unwrap();
         assert_eq!(bar.status, Some(Status::Current));
         let baz = bar.find_child("baz").unwrap();
@@ -1932,9 +2039,13 @@ mod tests {
     fn a_yang_data_roots_status_defaults_to_current_too() {
         // The root is created outside interpret_schema_node's own
         // default-status handling (see interpret_extension), so it needs
-        // its own path to the same RFC 7950 7.21.2 default.
+        // its own path to the same RFC 7950 7.21.2 default. Module/root
+        // named to land on IMPLEMENTED_YANG_DATA_ROOTS's one real entry
+        // ("/ietf-coreconf:error"), since only an allow-listed yang-data
+        // root is exposed at all -- see
+        // a_yang_data_root_not_on_the_allow_list_is_absent_entirely.
         let src = r#"
-            module foo {
+            module ietf-coreconf {
               namespace "urn:foo";
               prefix f;
 
@@ -1947,8 +2058,10 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
-        let error_root = schema.yang_data_root_by_name("foo:error").unwrap();
+        let schema = build(&[src.to_string()], &[], &["/ietf-coreconf:error"]).unwrap();
+        let error_root = schema
+            .yang_data_root_by_name("ietf-coreconf:error")
+            .unwrap();
         assert_eq!(error_root.status, Some(Status::Current));
     }
 
@@ -1957,9 +2070,11 @@ mod tests {
         // RFC 8040 Sec. 8: "The config-stmt is ignored if present" inside
         // a yang-data extension's content -- an explicit `config true`
         // must not survive into the resulting node, unlike an ordinary
-        // schema node where it would.
+        // schema node where it would. Module/root named to land on
+        // IMPLEMENTED_YANG_DATA_ROOTS's one real entry, same reason as
+        // a_yang_data_roots_status_defaults_to_current_too above.
         let src = r#"
-            module foo {
+            module ietf-coreconf {
               namespace "urn:foo";
               prefix f;
 
@@ -1974,8 +2089,10 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
-        let error_root = schema.yang_data_root_by_name("foo:error").unwrap();
+        let schema = build(&[src.to_string()], &[], &["/ietf-coreconf:error"]).unwrap();
+        let error_root = schema
+            .yang_data_root_by_name("ietf-coreconf:error")
+            .unwrap();
         assert!(!error_root.config);
         let message = error_root.find_child("message").unwrap();
         assert!(!message.config);
@@ -1997,7 +2114,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         let bar = schema.node_by_data_path("/foo:bar").unwrap();
         assert_eq!(bar.status, Some(Status::Deprecated));
         let baz = bar.find_child("baz").unwrap();
@@ -2017,7 +2134,7 @@ mod tests {
               }
             }
         "#;
-        let err = build(&[src.to_string()], &[]).err().unwrap();
+        let err = build(&[src.to_string()], &[], &[]).err().unwrap();
         assert!(err.0.contains("future-proofed"), "{}", err.0);
     }
 
@@ -2041,7 +2158,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         // choice/case are spliced out of the flattened data-node-path
         // tree, so resolve via schema-node-path to see the synthesized
         // case node.
@@ -2075,7 +2192,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         let input = schema.node_by_schema_path("/foo:bar/input").unwrap();
         let output = schema.node_by_schema_path("/foo:bar/output").unwrap();
         assert_eq!(input.status, None);
@@ -2126,7 +2243,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
 
         let bar_input = schema.node_by_schema_path("/foo:bar/input").unwrap();
         let bar_output = schema.node_by_schema_path("/foo:bar/output").unwrap();
@@ -2174,7 +2291,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         assert!(schema.node_by_data_path("/foo:c/x").is_some());
     }
 
@@ -2211,7 +2328,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         let outer = schema.node_by_data_path("/foo:outer").unwrap();
         let c = outer.find_child("c").unwrap();
         let x = c.find_child("x");
@@ -2242,7 +2359,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         let animal = schema.identity_by_name("foo", "animal").unwrap();
         assert_eq!(animal.name, "animal");
         let dog = schema.identity_by_name("foo", "dog").unwrap();
@@ -2281,7 +2398,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         let mut names: Vec<String> = schema.identities().map(|i| i.name.clone()).collect();
         names.sort();
         assert_eq!(names, vec!["animal", "dog"]);
@@ -2312,7 +2429,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         let animal = schema.identity_by_name("foo", "animal").unwrap();
         assert_eq!(animal.description.as_deref(), Some("a living creature"));
         let rock = schema.identity_by_name("foo", "rock").unwrap();
@@ -2325,6 +2442,10 @@ mod tests {
             module foo {
               namespace "urn:foo";
               prefix f;
+
+              leaf bar {
+                type string;
+              }
             }
         "#;
         let sid = r#"{
@@ -2334,7 +2455,7 @@ mod tests {
                 {"namespace": "module", "identifier": "foo", "sid": 5000}
             ]
         }"#;
-        let schema = build(&[src.to_string()], &[sid.to_string()]).unwrap();
+        let schema = build(&[src.to_string()], &[sid.to_string()], &[]).unwrap();
         let module = schema.module_by_sid(5000).unwrap();
         assert_eq!(module.name, "foo");
         assert!(schema.module_by_sid(9999).is_none());
@@ -2347,8 +2468,11 @@ mod tests {
         // "/ietf-coreconf:error") -- confirmed against a real catalog's
         // ietf-coreconf@*.sid. Attaching that SID must reach the
         // yang-data root, not just ordinary module schema nodes.
+        // Module/root named to land on IMPLEMENTED_YANG_DATA_ROOTS's one
+        // real entry, same reason as
+        // a_yang_data_roots_status_defaults_to_current_too above.
         let src = r#"
-            module foo {
+            module ietf-coreconf {
               namespace "urn:foo";
               prefix f;
 
@@ -2362,15 +2486,22 @@ mod tests {
             }
         "#;
         let sid = r#"{
-            "module-name": "foo",
+            "module-name": "ietf-coreconf",
             "module-revision": "2026-01-01",
             "items": [
-                {"namespace": "data", "identifier": "/foo:error", "sid": 38455},
-                {"namespace": "data", "identifier": "/foo:error/message", "sid": 38456}
+                {"namespace": "data", "identifier": "/ietf-coreconf:error", "sid": 38455},
+                {"namespace": "data", "identifier": "/ietf-coreconf:error/message", "sid": 38456}
             ]
         }"#;
-        let schema = build(&[src.to_string()], &[sid.to_string()]).unwrap();
-        let error_root = schema.yang_data_root_by_name("foo:error").unwrap();
+        let schema = build(
+            &[src.to_string()],
+            &[sid.to_string()],
+            &["/ietf-coreconf:error"],
+        )
+        .unwrap();
+        let error_root = schema
+            .yang_data_root_by_name("ietf-coreconf:error")
+            .unwrap();
         assert_eq!(error_root.sid, Some(38455));
         let message = error_root.find_child("message").unwrap();
         assert_eq!(message.sid, Some(38456));
@@ -2440,6 +2571,7 @@ mod tests {
         let schema = build(
             &[foo.to_string(), bar.to_string(), baz.to_string()],
             &[sid.to_string(), sid2.to_string()],
+            &[],
         )
         .unwrap();
 
@@ -2469,7 +2601,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         let module = schema.module_by_name("foo").unwrap();
         let names: Vec<String> = module
             .root_nodes()
@@ -2507,7 +2639,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         let percent = schema.typedef_by_name("foo", "percent").unwrap();
         assert_eq!(percent.ty().ranges, vec![(0, 100)]);
 
@@ -2535,7 +2667,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         assert!(schema.typedef_by_name("foo", "string").is_none());
         assert!(schema.typedef_by_name("foo", "no-such-typedef").is_none());
     }
@@ -2568,7 +2700,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         let bar = schema.node_by_data_path("/foo:bar").unwrap();
 
         let inline = bar.find_child("inline").unwrap().ty().unwrap();
@@ -2608,7 +2740,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
 
         let bar = schema.node_by_data_path("/foo:bar").unwrap();
         let bar_ty = bar.ty().unwrap();
@@ -2652,7 +2784,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         let names: Vec<String> = schema.typedefs().map(|t| t.name.clone()).collect();
         assert_eq!(names, vec!["percent"]);
         let percent = schema.typedef_by_name("foo", "percent").unwrap();
@@ -2687,7 +2819,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         assert_eq!(schema.typedefs().count(), 0);
         assert!(schema.typedef_by_name("foo", "percent").is_none());
     }
@@ -2710,7 +2842,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         assert_eq!(schema.identities().count(), 0);
         assert!(schema.identity_by_name("foo", "animal").is_none());
     }
@@ -2743,7 +2875,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         assert_eq!(schema.typedefs().count(), 0);
         assert!(schema.typedef_by_name("foo", "percent").is_none());
     }
@@ -2788,7 +2920,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         assert_eq!(schema.typedefs().count(), 0);
         assert!(schema.typedef_by_name("foo", "percent").is_none());
         assert_eq!(schema.identities().count(), 0);
@@ -2819,7 +2951,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         let x = schema.node_by_data_path("/foo:bar/x").unwrap();
         let ty = x.ty().unwrap();
         assert_eq!(ty.ranges, vec![(0, 100)]);
@@ -2860,7 +2992,7 @@ mod tests {
               }
             }
         "#;
-        let err = build(&[src.to_string()], &[]).err().unwrap();
+        let err = build(&[src.to_string()], &[], &[]).err().unwrap();
         assert!(err.0.contains("percent"), "{}", err.0);
     }
 
@@ -2911,7 +3043,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
 
         let list_x = schema.node_by_data_path("/foo:entry/x").unwrap();
         assert_eq!(list_x.ty().unwrap().ranges, vec![(0, 100)]);
@@ -2943,7 +3075,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         assert!(schema.node_by_data_path("/foo:bar/inner/x").is_some());
     }
 
@@ -2967,7 +3099,7 @@ mod tests {
               }
             }
         "#;
-        let err = build(&[src.to_string()], &[]).err().unwrap();
+        let err = build(&[src.to_string()], &[], &[]).err().unwrap();
         assert!(err.0.contains("g"), "{}", err.0);
     }
 
@@ -2998,7 +3130,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         assert!(schema.node_by_data_path("/foo:bar/x").is_some());
     }
 
@@ -3035,7 +3167,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
 
         let bar_x = schema.node_by_data_path("/foo:bar/x").unwrap();
         let bar_base = bar_x.ty().unwrap().base().unwrap();
@@ -3093,7 +3225,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         let pick = schema.node_by_data_path("/foo:pick").unwrap();
         let target = pick.ty().unwrap().leafref_target().unwrap();
         assert_eq!(target.kw, "leaf");
@@ -3132,7 +3264,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         let bar_ref = schema.typedef_by_name("foo", "bar-ref").unwrap();
         let target = bar_ref.ty().leafref_target().unwrap();
         assert_eq!(target.kw, "leaf");
@@ -3179,7 +3311,7 @@ mod tests {
               }
             }
         "#;
-        assert!(build(&[src.to_string()], &[]).is_ok());
+        assert!(build(&[src.to_string()], &[], &[]).is_ok());
     }
 
     #[test]
@@ -3196,7 +3328,7 @@ mod tests {
               }
             }
         "#;
-        let err = build(&[src.to_string()], &[]).err().unwrap();
+        let err = build(&[src.to_string()], &[], &[]).err().unwrap();
         assert!(err.0.contains("no-such-node"), "{}", err.0);
     }
 
@@ -3220,7 +3352,7 @@ mod tests {
               }
             }
         "#;
-        let err = build(&[src.to_string()], &[]).err().unwrap();
+        let err = build(&[src.to_string()], &[], &[]).err().unwrap();
         assert!(err.0.contains("container"), "{}", err.0);
     }
 
@@ -3258,7 +3390,7 @@ mod tests {
               }
             }
         "#;
-        assert!(build(&[src.to_string()], &[]).is_ok());
+        assert!(build(&[src.to_string()], &[], &[]).is_ok());
     }
 
     #[test]
@@ -3286,7 +3418,7 @@ mod tests {
                 {"namespace": "data", "identifier": "/foo:gone", "sid": 5000}
             ]
         }"#;
-        let present = build(&[src.to_string()], &[sid.to_string()]).unwrap();
+        let present = build(&[src.to_string()], &[sid.to_string()], &[]).unwrap();
         assert!(present.node_by_sid(5000).is_some());
         assert!(present.node_by_schema_path("/foo:gone").is_some());
         assert!(present.node_by_data_path("/foo:gone").is_some());
@@ -3307,7 +3439,7 @@ mod tests {
               }
             }
         "#;
-        let deviated = build(&[src_deviated.to_string()], &[sid.to_string()]).unwrap();
+        let deviated = build(&[src_deviated.to_string()], &[sid.to_string()], &[]).unwrap();
         assert!(deviated.node_by_sid(5000).is_none());
         assert!(deviated.node_by_schema_path("/foo:gone").is_none());
         assert!(deviated.node_by_data_path("/foo:gone").is_none());
@@ -3331,7 +3463,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
 
         let via_schema_path = schema
             .node_by_schema_path("/foo:bar/pick/picked/sub")
@@ -3391,7 +3523,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string(), src2.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string(), src2.to_string()], &[], &[]).unwrap();
 
         let foo_shared = schema.node_by_schema_path("/foo:shared").unwrap();
         assert!(foo_shared.find_child("x").is_some());
@@ -3411,9 +3543,11 @@ mod tests {
         // A yang-data root is its own separate document (RFC 8040 Sec.
         // 8), never reachable by walking any module's own schema tree --
         // so it has no schema-node-path and no data-node-path, and needs
-        // its own dedicated entry point.
+        // its own dedicated entry point. Module/root named to land on
+        // IMPLEMENTED_YANG_DATA_ROOTS's one real entry, same reason as
+        // a_yang_data_roots_status_defaults_to_current_too above.
         let src = r#"
-            module foo {
+            module ietf-coreconf {
               namespace "urn:foo";
               prefix f;
 
@@ -3426,13 +3560,15 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
-        let error_root = schema.yang_data_root_by_name("foo:error").unwrap();
+        let schema = build(&[src.to_string()], &[], &["/ietf-coreconf:error"]).unwrap();
+        let error_root = schema
+            .yang_data_root_by_name("ietf-coreconf:error")
+            .unwrap();
         assert_eq!(error_root.kw, "container");
         assert!(error_root.find_child("message").is_some());
 
-        assert!(schema.node_by_schema_path("/foo:error").is_none());
-        assert!(schema.node_by_data_path("/foo:error").is_none());
+        assert!(schema.node_by_schema_path("/ietf-coreconf:error").is_none());
+        assert!(schema.node_by_data_path("/ietf-coreconf:error").is_none());
     }
 
     #[test]
@@ -3447,7 +3583,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         assert!(schema.node_by_schema_path("/foo:no-such-node").is_none());
         assert!(schema.node_by_schema_path("/no-such-module:bar").is_none());
         assert!(schema.node_by_data_path("/foo:no-such-node").is_none());
@@ -3462,9 +3598,13 @@ mod tests {
               namespace "urn:foo";
               prefix f;
               revision 2026-01-01;
+
+              leaf bar {
+                type string;
+              }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         let module = schema.module_by_name("foo").unwrap();
         assert_eq!(module.namespace, "urn:foo");
         assert_eq!(module.revision.as_deref(), Some("2026-01-01"));
@@ -3476,11 +3616,696 @@ mod tests {
             module foo {
               namespace "urn:foo";
               prefix f;
+
+              leaf bar {
+                type string;
+              }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         let module = schema.module_by_name("foo").unwrap();
         assert_eq!(module.revision, None);
+    }
+
+    #[test]
+    fn a_module_whose_only_content_is_fully_deviated_away_is_import_only() {
+        // RFC 7950 5.6.5: a server implements a module if it implements
+        // the module's own data nodes/RPCs/actions/notifications/
+        // deviations. "foo" declares a real container, but "foo-dev"
+        // (which has no data nodes of its own, only a deviation)
+        // deviates it away entirely with deviate not-supported -- so
+        // "foo" implements nothing live and must be import-only, even
+        // though its raw text alone would look like a real module.
+        // "foo-dev" stays implemented, since the deviation statement
+        // itself counts even without any node of its own.
+        let foo = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              container bar {
+                leaf baz {
+                  type string;
+                }
+              }
+            }
+        "#;
+        let foo_dev = r#"
+            module foo-dev {
+              namespace "urn:foo-dev";
+              prefix fd;
+
+              import foo {
+                prefix f;
+              }
+
+              deviation "/f:bar" {
+                deviate not-supported;
+              }
+            }
+        "#;
+        let schema = build(&[foo.to_string(), foo_dev.to_string()], &[], &[]).unwrap();
+        assert!(schema.module_by_name("foo").is_none());
+        assert!(schema.module_by_name("foo-dev").is_some());
+        let import_only_names: Vec<&str> = schema
+            .import_only_modules()
+            .map(|m| m.name.as_str())
+            .collect();
+        assert_eq!(import_only_names, vec!["foo"]);
+    }
+
+    #[test]
+    fn an_augmenting_modules_own_live_nodes_make_it_implemented_even_with_empty_root_nodes() {
+        // RFC 7950 4.2.8/7.17: a node placed into another module's tree
+        // via augment is still owned by the augmenting module, not the
+        // target -- "bar" has no top-level schema node of its own (its
+        // only content is the augment), but the augmented leaf is real,
+        // live data that "bar" implements, so "bar" must still be
+        // implemented, not import-only.
+        let foo = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              container top {
+              }
+            }
+        "#;
+        let bar = r#"
+            module bar {
+              namespace "urn:bar";
+              prefix b;
+
+              import foo {
+                prefix f;
+              }
+
+              augment "/f:top" {
+                leaf added {
+                  type string;
+                }
+              }
+            }
+        "#;
+        let schema = build(&[foo.to_string(), bar.to_string()], &[], &[]).unwrap();
+        assert!(schema.module_by_name("bar").is_some());
+        assert!(schema.import_only_modules().all(|m| m.name != "bar"));
+    }
+
+    #[test]
+    fn a_module_whose_only_top_level_content_is_a_uses_is_implemented() {
+        // "foo" declares no bare container/leaf/etc. of its own -- its
+        // only top-level statement is `uses l:g;`, instantiating a
+        // grouping defined in "lib". RFC 7950 7.13 treats a uses body
+        // as copied in place, so "foo" ends up owning real data nodes
+        // of its own (not "lib"'s) once the grouping is spliced in, and
+        // must be implemented -- not import-only merely because its
+        // own text has no bare data-definition keyword.
+        let lib = r#"
+            module lib {
+              namespace "urn:lib";
+              prefix l;
+
+              grouping g {
+                container c {
+                  leaf x {
+                    type string;
+                  }
+                }
+              }
+            }
+        "#;
+        let foo = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              import lib {
+                prefix l;
+              }
+
+              uses l:g;
+            }
+        "#;
+        let schema = build(&[lib.to_string(), foo.to_string()], &[], &[]).unwrap();
+        assert!(schema.module_by_name("foo").is_some());
+        assert!(schema.import_only_modules().all(|m| m.name != "foo"));
+        // And "lib" itself (declares only the grouping, never used
+        // locally) must be import-only -- confirming the spliced
+        // container/leaf are attributed to "foo", not misattributed
+        // back to "lib".
+        assert!(schema.module_by_name("lib").is_none());
+        assert!(schema.import_only_modules().any(|m| m.name == "lib"));
+    }
+
+    #[test]
+    fn a_module_whose_only_content_is_an_allow_listed_yang_data_root_is_implemented() {
+        // Whether a yang-data root is "protocol accessible" (this
+        // device's own ietf-constrained-yang-library's wording for
+        // what distinguishes a real module from an import-only one)
+        // can't be derived from the YANG text or from whether fercc's
+        // interpreter happens to build the node -- it's a real,
+        // separately-maintained fact about what this device's wire
+        // protocol actually serves (IMPLEMENTED_YANG_DATA_ROOTS).
+        // "ietf-coreconf" declares nothing but this one rc:yang-data
+        // template, with an inline container -- no ordinary schema
+        // node, no augment, no deviation -- so it's implemented only
+        // because "/ietf-coreconf:error" is on that allow-list.
+        let src = r#"
+            module ietf-coreconf {
+              namespace "urn:foo";
+              prefix f;
+
+              rc:yang-data error {
+                container error {
+                  leaf message {
+                    type string;
+                  }
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[], &["/ietf-coreconf:error"]).unwrap();
+        assert!(schema.module_by_name("ietf-coreconf").is_some());
+        assert!(schema
+            .import_only_modules()
+            .all(|m| m.name != "ietf-coreconf"));
+    }
+
+    #[test]
+    fn a_module_whose_only_content_is_a_built_but_not_allow_listed_yang_data_root_is_import_only() {
+        // Same shape as the allow-listed case above, but under a
+        // different module/root name that was never added to
+        // IMPLEMENTED_YANG_DATA_ROOTS -- successfully building the
+        // node is not enough on its own; the real-catalog
+        // "ietf-restconf" case (whose own yang-errors/yang-api
+        // templates build real nodes just like any other rc:yang-data
+        // body, but must never flip this module to implemented, since
+        // this device never implements RESTCONF). "bar" imports "foo"
+        // so it's actually listed (an import-only module nothing
+        // imports appears in neither collection, see
+        // a_standalone_module_shaped_like_import_only_and_imported_by_
+        // nothing_is_in_neither_set).
+        let foo = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              rc:yang-data error-template {
+                container error {
+                  leaf message {
+                    type string;
+                  }
+                }
+              }
+            }
+        "#;
+        let bar = r#"
+            module bar {
+              namespace "urn:bar";
+              prefix b;
+
+              import foo {
+                prefix f;
+              }
+
+              leaf real {
+                type string;
+              }
+            }
+        "#;
+        let schema = build(&[foo.to_string(), bar.to_string()], &[], &[]).unwrap();
+        assert!(schema.module_by_name("foo").is_none());
+        assert!(schema.import_only_modules().any(|m| m.name == "foo"));
+    }
+
+    #[test]
+    fn a_yang_data_root_not_on_the_allow_list_is_absent_entirely() {
+        // schema.rs must not distinguish between "implemented
+        // yang-data" and "yang-data" -- the only yang-data a Schema
+        // exposes at all, through any accessor, is the allow-listed
+        // kind. "foo"'s template is successfully built (a real,
+        // well-formed container) but isn't on
+        // IMPLEMENTED_YANG_DATA_ROOTS, so it must not merely fail to
+        // count toward "implemented" -- it must not exist in
+        // yang_data_roots() or be reachable by name at all.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              rc:yang-data error-template {
+                container error {
+                  leaf message {
+                    type string;
+                  }
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        assert_eq!(schema.yang_data_roots().count(), 0);
+        assert!(schema.yang_data_root_by_name("foo:error").is_none());
+    }
+
+    #[test]
+    fn a_yang_data_bodys_uses_is_spliced_just_like_a_direct_container() {
+        // RFC 7950 7.13 treats a uses body as copied in place, so a
+        // yang-data body of `uses reusable;` must splice through to the
+        // grouping's own container exactly like a direct one would --
+        // the real-catalog "ietf-restconf" case: `rc:yang-data
+        // yang-errors { uses errors; }`. Module/root named to land on
+        // IMPLEMENTED_YANG_DATA_ROOTS's one real entry
+        // ("/ietf-coreconf:error") so the spliced result is actually
+        // observable through the public API (which exposes only
+        // allow-listed yang-data roots -- see
+        // a_yang_data_root_not_on_the_allow_list_is_absent_entirely).
+        let src = r#"
+            module ietf-coreconf {
+              namespace "urn:foo";
+              prefix f;
+
+              grouping reusable {
+                container error {
+                  leaf message {
+                    type string;
+                  }
+                }
+              }
+
+              rc:yang-data error {
+                uses reusable;
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[], &["/ietf-coreconf:error"]).unwrap();
+        let root = schema
+            .yang_data_root_by_name("ietf-coreconf:error")
+            .expect("uses-spliced yang-data container must be built");
+        assert_eq!(root.children().count(), 1);
+        assert!(schema.module_by_name("ietf-coreconf").is_some());
+        assert!(schema
+            .import_only_modules()
+            .all(|m| m.name != "ietf-coreconf"));
+    }
+
+    #[test]
+    fn a_yang_data_body_with_more_than_one_data_node_is_rejected() {
+        // RFC 8040 8: "It MUST contain data definition statements that
+        // result in exactly one container data node definition."
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              rc:yang-data two-nodes {
+                container a {
+                }
+                container b {
+                }
+              }
+            }
+        "#;
+        assert!(build(&[src.to_string()], &[], &[]).is_err());
+    }
+
+    #[test]
+    fn a_yang_data_body_whose_one_node_is_not_a_container_is_rejected() {
+        // RFC 8040 8's "exactly one container" requirement rules out a
+        // body whose single top-level node is some other kind, e.g. a
+        // bare leaf.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              rc:yang-data not-a-container {
+                leaf x {
+                  type string;
+                }
+              }
+            }
+        "#;
+        assert!(build(&[src.to_string()], &[], &[]).is_err());
+    }
+
+    #[test]
+    fn no_module_name_is_ever_listed_in_both_modules_and_import_only_modules() {
+        // modules() and import_only_modules() must partition disjointly
+        // -- a name identifying something structurally different
+        // (root-nodes/data-root-nodes vs. none) can never satisfy both.
+        let lib = r#"
+            module lib {
+              namespace "urn:lib";
+              prefix l;
+
+              typedef percent {
+                type uint8 {
+                  range "0..100";
+                }
+              }
+            }
+        "#;
+        let mid = r#"
+            module mid {
+              namespace "urn:mid";
+              prefix m;
+
+              import lib {
+                prefix l;
+              }
+
+              typedef percent {
+                type l:percent;
+              }
+            }
+        "#;
+        let foo = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              import mid {
+                prefix m;
+              }
+
+              leaf bar {
+                type m:percent;
+              }
+            }
+        "#;
+        let schema = build(
+            &[lib.to_string(), mid.to_string(), foo.to_string()],
+            &[],
+            &[],
+        )
+        .unwrap();
+        let implemented: std::collections::HashSet<String> =
+            schema.modules().map(|m| m.name.clone()).collect();
+        let import_only: std::collections::HashSet<String> = schema
+            .import_only_modules()
+            .map(|m| m.name.clone())
+            .collect();
+        assert!(
+            implemented.is_disjoint(&import_only),
+            "overlap: {:?}",
+            implemented.intersection(&import_only).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            implemented,
+            std::collections::HashSet::from(["foo".to_string()])
+        );
+        assert_eq!(
+            import_only,
+            std::collections::HashSet::from(["lib".to_string(), "mid".to_string()])
+        );
+    }
+
+    #[test]
+    fn an_import_only_module_needed_by_an_implemented_one_is_listed_separately() {
+        // "lib" declares nothing but a typedef -- a textbook import-only
+        // module (RFC 8525's import-only-module concept): no top-level
+        // schema node, uses, augment, deviation, or yang-data of its
+        // own. "foo" genuinely implements something and imports "lib",
+        // so "lib" must appear in import_only_modules, not modules --
+        // and must stay out of modules() entirely, since it has no
+        // root-nodes/data-root-nodes to speak of.
+        let lib = r#"
+            module lib {
+              namespace "urn:lib";
+              prefix l;
+
+              typedef percent {
+                type uint8 {
+                  range "0..100";
+                }
+              }
+            }
+        "#;
+        let foo = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              import lib {
+                prefix l;
+              }
+
+              leaf bar {
+                type l:percent;
+              }
+            }
+        "#;
+        let schema = build(&[lib.to_string(), foo.to_string()], &[], &[]).unwrap();
+        assert!(schema.module_by_name("lib").is_none());
+        assert!(schema.module_by_name("foo").is_some());
+
+        let import_only: Vec<&ImportOnlyModule> = schema.import_only_modules().collect();
+        assert_eq!(import_only.len(), 1);
+        assert_eq!(import_only[0].name, "lib");
+        assert_eq!(import_only[0].namespace, "urn:lib");
+        assert_eq!(import_only[0].import_revision_date, None);
+    }
+
+    #[test]
+    fn a_standalone_module_shaped_like_import_only_and_imported_by_nothing_is_in_neither_set() {
+        // "lib" doesn't implement any data node/RPC/action/
+        // notification/deviation of its own (RFC 7950 5.6.5's positive
+        // criterion for "implements" never applies to it), so it's not
+        // in modules() -- but nothing anywhere imports it either, so
+        // there's no importer relationship to list it under in
+        // import_only_modules() (RFC 8525's import-only-module concept
+        // requires actually being imported). It belongs in neither.
+        let src = r#"
+            module lib {
+              namespace "urn:lib";
+              prefix l;
+
+              typedef percent {
+                type uint8 {
+                  range "0..100";
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        assert!(schema.module_by_name("lib").is_none());
+        assert_eq!(schema.import_only_modules().count(), 0);
+    }
+
+    #[test]
+    fn a_chain_of_import_only_modules_nobody_implemented_imports_is_listed_nowhere() {
+        // "lib" is import-only-shaped and imported only by "mid", which
+        // is itself import-only-shaped and imported by nothing at all
+        // -- no genuinely-implemented module ever reaches either, so
+        // the transitive walk (which only starts from implemented
+        // modules) never visits "mid", and therefore never visits
+        // "lib" either. Neither has an importer relationship to a real
+        // module, so both belong in neither modules() nor
+        // import_only_modules() -- matching ietf-yang-library: it only
+        // reports modules the server actually uses.
+        let lib = r#"
+            module lib {
+              namespace "urn:lib";
+              prefix l;
+
+              typedef percent {
+                type uint8 {
+                  range "0..100";
+                }
+              }
+            }
+        "#;
+        let mid = r#"
+            module mid {
+              namespace "urn:mid";
+              prefix m;
+
+              import lib {
+                prefix l;
+              }
+
+              typedef percent {
+                type l:percent;
+              }
+            }
+        "#;
+        let schema = build(&[lib.to_string(), mid.to_string()], &[], &[]).unwrap();
+        assert!(schema.module_by_name("lib").is_none());
+        assert!(schema.module_by_name("mid").is_none());
+        assert_eq!(schema.import_only_modules().count(), 0);
+    }
+
+    #[test]
+    fn an_import_only_module_reached_through_a_chain_of_import_only_modules_is_still_listed() {
+        // "lib" is import-only and reached only via "mid" (also
+        // import-only), but "mid" itself is imported by "foo", which is
+        // genuinely implemented -- the whole chain is needed, so both
+        // "lib" and "mid" must be listed.
+        let lib = r#"
+            module lib {
+              namespace "urn:lib";
+              prefix l;
+
+              typedef percent {
+                type uint8 {
+                  range "0..100";
+                }
+              }
+            }
+        "#;
+        let mid = r#"
+            module mid {
+              namespace "urn:mid";
+              prefix m;
+
+              import lib {
+                prefix l;
+              }
+
+              typedef percent {
+                type l:percent;
+              }
+            }
+        "#;
+        let foo = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              import mid {
+                prefix m;
+              }
+
+              leaf bar {
+                type m:percent;
+              }
+            }
+        "#;
+        let schema = build(
+            &[lib.to_string(), mid.to_string(), foo.to_string()],
+            &[],
+            &[],
+        )
+        .unwrap();
+        let names: std::collections::HashSet<String> = schema
+            .import_only_modules()
+            .map(|m| m.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            std::collections::HashSet::from(["lib".to_string(), "mid".to_string()])
+        );
+    }
+
+    #[test]
+    fn an_import_only_modules_revision_date_comes_from_the_importers_own_import_statement() {
+        // The RFC 8525 key is "name revision", where "revision" is the
+        // revision-date on the IMPORTING module's own import statement
+        // -- not the imported module's own revision statement (which
+        // "lib" doesn't even have here).
+        let lib = r#"
+            module lib {
+              namespace "urn:lib";
+              prefix l;
+
+              typedef percent {
+                type uint8 {
+                  range "0..100";
+                }
+              }
+            }
+        "#;
+        let foo = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              import lib {
+                prefix l;
+                revision-date 2025-01-01;
+              }
+
+              leaf bar {
+                type l:percent;
+              }
+            }
+        "#;
+        let schema = build(&[lib.to_string(), foo.to_string()], &[], &[]).unwrap();
+        let import_only: Vec<&ImportOnlyModule> = schema.import_only_modules().collect();
+        assert_eq!(import_only.len(), 1);
+        assert_eq!(
+            import_only[0].import_revision_date.as_deref(),
+            Some("2025-01-01")
+        );
+    }
+
+    #[test]
+    fn two_importers_with_different_revision_dates_produce_two_distinct_entries() {
+        // RFC 8525's own description: "Multiple entries for the same
+        // module name MAY exist. This can occur if multiple modules
+        // import the same module but specify different revision dates
+        // in the import statements."
+        let lib = r#"
+            module lib {
+              namespace "urn:lib";
+              prefix l;
+
+              typedef percent {
+                type uint8 {
+                  range "0..100";
+                }
+              }
+            }
+        "#;
+        let foo = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              import lib {
+                prefix l;
+                revision-date 2025-01-01;
+              }
+
+              leaf bar {
+                type l:percent;
+              }
+            }
+        "#;
+        let baz = r#"
+            module baz {
+              namespace "urn:baz";
+              prefix b;
+
+              import lib {
+                prefix l;
+                revision-date 2026-01-01;
+              }
+
+              leaf qux {
+                type l:percent;
+              }
+            }
+        "#;
+        let schema = build(
+            &[lib.to_string(), foo.to_string(), baz.to_string()],
+            &[],
+            &[],
+        )
+        .unwrap();
+        let mut dates: Vec<Option<String>> = schema
+            .import_only_modules()
+            .map(|m| m.import_revision_date.clone())
+            .collect();
+        dates.sort();
+        assert_eq!(
+            dates,
+            vec![
+                Some("2025-01-01".to_string()),
+                Some("2026-01-01".to_string())
+            ]
+        );
     }
 
     #[test]
@@ -3490,7 +4315,7 @@ mod tests {
               prefix f;
             }
         "#;
-        let err = build(&[src.to_string()], &[]).err().unwrap();
+        let err = build(&[src.to_string()], &[], &[]).err().unwrap();
         assert!(err.0.contains("namespace"), "{}", err.0);
     }
 
@@ -3515,7 +4340,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
         let entry = schema.node_by_data_path("/foo:entry").unwrap();
         let key_names: Vec<String> = entry.keys().map(|k| k.local_name().to_string()).collect();
         assert_eq!(key_names, vec!["name", "index"]);
@@ -3536,7 +4361,7 @@ mod tests {
               }
             }
         "#;
-        let err = build(&[src.to_string()], &[]).err().unwrap();
+        let err = build(&[src.to_string()], &[], &[]).err().unwrap();
         assert!(err.0.contains("missing"), "{}", err.0);
         assert!(err.0.contains("entry"), "{}", err.0);
     }

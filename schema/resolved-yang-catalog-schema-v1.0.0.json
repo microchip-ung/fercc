@@ -6,7 +6,7 @@
 
   "type": "object",
   "required": [
-    "schema-version", "yang-catalog", "modules", "typedefs",
+    "schema-version", "yang-catalog", "modules", "import-only-modules", "typedefs",
     "identities", "schema-nodes", "yang-data", "sid-index"
   ],
   "properties": {
@@ -30,9 +30,17 @@
 
     "modules": {
       "type": "object",
-      "description": "Every YANG module in the catalog, keyed by module name.",
+      "description": "Every YANG module in this catalog that defines its own data nodes, RPCs, actions, notifications, or deviations, keyed by module name.",
       "patternProperties": {
         "^[A-Za-z_][A-Za-z0-9_.-]*$": { "$ref": "#/$defs/module" }
+      }
+    },
+
+    "import-only-modules": {
+      "type": "object",
+      "description": "Every module that is imported for its reuseable definitions but doesn't define any protocol accessible objects. Keyed by \"module-name\" or \"module-name revision-date\" when the importing revision-date is known.",
+      "patternProperties": {
+        "^[A-Za-z_][A-Za-z0-9_.-]*( \\S+)?$": { "$ref": "#/$defs/import-only-module" }
       }
     },
 
@@ -426,6 +434,42 @@
           "type": "array",
           "items": { "$ref": "#/$defs/schema-node-path" },
           "description": "This module's top-level schema node paths with choice/case spliced out (each replaced by its own data-children, recursively), in declaration order."
+        },
+
+        "typedefs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/typedef-key" },
+          "description": "Typedefs this module declares."
+        },
+
+        "identities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/qualified-name" },
+          "description": "Identities this module declares."
+        }
+      }
+    },
+
+    "import-only-module": {
+      "type": "object",
+      "required": ["name", "namespace", "sid", "typedefs", "identities"],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/module-name",
+          "description": "This module's unique name."
+        },
+
+        "namespace": {
+          "type": "string",
+          "format": "uri",
+          "description": "This module's XML namespace URI."
+        },
+
+        "sid": { "$ref": "#/$defs/sid-string" },
+
+        "revision": {
+          "type": "string",
+          "description": "The revision of this module that is imported. Absent if no revision was specified on the import statement."
         },
 
         "typedefs": {

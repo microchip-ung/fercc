@@ -55,11 +55,14 @@ fn read_bundled_catalog_files() -> (Vec<String>, Vec<String>) {
     (yang_sources, sid_sources)
 }
 
+const IMPLEMENTED_YANG_DATA_ROOTS: &[&str] = &["/ietf-coreconf:error"];
+
 fn schema() -> &'static Schema {
     static SCHEMA: OnceLock<Schema> = OnceLock::new();
     SCHEMA.get_or_init(|| {
         let (yang_sources, sid_sources) = read_bundled_catalog_files();
-        yang::schema::build(&yang_sources, &sid_sources).expect("build schema from bundled catalog")
+        yang::schema::build(&yang_sources, &sid_sources, IMPLEMENTED_YANG_DATA_ROOTS)
+            .expect("build schema from bundled catalog")
     })
 }
 
@@ -109,6 +112,7 @@ fn every_cross_reference_in_the_document_resolves() {
     let typedefs = d["typedefs"].as_object().unwrap();
     let identities = d["identities"].as_object().unwrap();
     let modules = d["modules"].as_object().unwrap();
+    let import_only_modules = d["import-only-modules"].as_object().unwrap();
     let sid_index = d["sid-index"].as_object().unwrap();
 
     let check_node_path = |path: &str, map: &Map<String, Json>, map_name: &str, from: &str| {
@@ -218,11 +222,34 @@ fn every_cross_reference_in_the_document_resolves() {
         }
     }
 
+    for (key, module) in import_only_modules {
+        let from = format!("import-only-modules[{key:?}]");
+        for item in module["typedefs"].as_array().unwrap() {
+            let key = item.as_str().unwrap();
+            if !typedefs.contains_key(key) {
+                errors.push(format!("{from}.typedefs: {key:?} not found in typedefs"));
+            }
+        }
+        for item in module["identities"].as_array().unwrap() {
+            let key = item.as_str().unwrap();
+            if !identities.contains_key(key) {
+                errors.push(format!(
+                    "{from}.identities: {key:?} not found in identities"
+                ));
+            }
+        }
+    }
+
     for (sid, entry) in sid_index {
         let namespace = entry["namespace"].as_str().unwrap();
         let identifier = entry["identifier"].as_str().unwrap();
         let found = match namespace {
-            "module" => modules.contains_key(identifier),
+            "module" => {
+                modules.contains_key(identifier)
+                    || import_only_modules
+                        .values()
+                        .any(|m| m["name"] == *identifier)
+            }
             "identity" => identities.contains_key(identifier),
             "data" => schema_nodes.contains_key(identifier) || yang_data.contains_key(identifier),
             other => {
@@ -244,6 +271,15 @@ fn every_cross_reference_in_the_document_resolves() {
         if sid_index.get(sid).map(|e| e["identifier"].as_str()) != Some(Some(mod_name.as_str())) {
             errors.push(format!(
                 "module {mod_name:?}'s sid {sid:?} not reverse-indexed"
+            ));
+        }
+    }
+    for (key, module) in import_only_modules {
+        let sid = module["sid"].as_str().unwrap();
+        let name = module["name"].as_str().unwrap();
+        if sid_index.get(sid).map(|e| e["identifier"].as_str()) != Some(Some(name)) {
+            errors.push(format!(
+                "import-only-modules[{key:?}]'s sid {sid:?} not reverse-indexed"
             ));
         }
     }
@@ -468,12 +504,26 @@ fn sid_index_count_matches_sid_bearing_entries_in_the_document() {
             .count();
     }
     sid_bearing += d["identities"].as_object().unwrap().len();
-    sid_bearing += d["modules"]
+    let mut module_sids: std::collections::HashSet<String> = d["modules"]
         .as_object()
         .unwrap()
         .values()
-        .filter(|m| m.get("sid").is_some())
-        .count();
+        .filter_map(|m| m.get("sid").and_then(Json::as_str))
+        .map(str::to_string)
+        .collect();
+    // Two import-only-modules entries can share the same module (and
+    // therefore the same sid) when two different importers specify two
+    // different revision-dates for it -- count distinct sids, not
+    // entries, since sid-index has exactly one entry per sid.
+    module_sids.extend(
+        d["import-only-modules"]
+            .as_object()
+            .unwrap()
+            .values()
+            .filter_map(|m| m.get("sid").and_then(Json::as_str))
+            .map(str::to_string),
+    );
+    sid_bearing += module_sids.len();
     assert_eq!(d["sid-index"].as_object().unwrap().len(), sid_bearing);
 }
 
@@ -646,6 +696,55 @@ fn module_entry_carries_real_sid_and_namespace() {
 }
 
 #[test]
+fn every_import_only_module_entry_is_self_consistent() {
+    // every_module_in_the_real_catalog_partitions_as_hand_classified
+    // already proves the general shape (which modules land where, and
+    // that every import-only entry lacks root-nodes/data-root-nodes).
+    // This proves every entry's own fields are internally consistent,
+    // for every real entry, not just one hand-picked example: the
+    // key's name part must match the entry's own "module" field, and
+    // every module's namespace must be unique across both modules and
+    // import-only-modules together (confirmed true of this real
+    // catalog -- 62 modules, 62 distinct namespaces), so a namespace
+    // collision between an entry and anything else would itself be a
+    // real bug this test can catch without an external oracle.
+    let d = doc();
+    let modules = d["modules"].as_object().unwrap();
+    let import_only_modules = d["import-only-modules"].as_object().unwrap();
+
+    let mut namespace_owners: std::collections::HashMap<&str, &str> =
+        std::collections::HashMap::new();
+    for (name, m) in modules {
+        namespace_owners.insert(m["namespace"].as_str().unwrap(), name.as_str());
+    }
+
+    for (key, entry) in import_only_modules {
+        let module_name = entry["name"].as_str().unwrap();
+        let key_name = key.split(' ').next().unwrap();
+        assert_eq!(
+            key_name, module_name,
+            "import-only-modules[{key:?}]'s key name doesn't match its own \"name\" field"
+        );
+        assert!(entry["sid"].is_string());
+        assert!(!entry["namespace"].as_str().unwrap().is_empty());
+
+        let namespace = entry["namespace"].as_str().unwrap();
+        if let Some(other) = namespace_owners.get(namespace) {
+            panic!(
+                "import-only-modules[{key:?}]'s namespace {namespace:?} collides with modules[{other:?}]"
+            );
+        }
+        if let Some(prev) = namespace_owners.insert(namespace, module_name) {
+            if prev != module_name {
+                panic!(
+                    "import-only-modules[{key:?}]'s namespace {namespace:?} collides with {prev:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn identity_entries_carry_real_base_and_derived() {
     let d = doc();
     let ethernet = &d["identities"]["iana-if-type:ethernetCsmacd"];
@@ -759,4 +858,167 @@ fn leaf_and_leaf_list_nodes_have_no_children_fields() {
     assert_eq!(leaf_list["keyword"], "leaf-list");
     assert!(leaf_list.get("children").is_none());
     assert!(leaf_list.get("data-children").is_none());
+}
+
+#[test]
+fn modules_and_import_only_modules_are_disjoint_and_import_only_entries_lack_node_arrays() {
+    // Purely syntactic properties of the document itself, no external
+    // knowledge (hand-classification or otherwise) needed: a module
+    // name can never appear in both collections, and an
+    // import-only-modules entry -- having no schema nodes of its own by
+    // definition -- can never carry root-nodes/data-root-nodes at all.
+    let d = doc();
+    let actual_modules: std::collections::HashSet<&str> = d["modules"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(|k| k.as_str())
+        .collect();
+    let import_only_modules = d["import-only-modules"].as_object().unwrap();
+    let actual_import_only: std::collections::HashSet<&str> = import_only_modules
+        .values()
+        .map(|m| m["name"].as_str().unwrap())
+        .collect();
+
+    assert!(
+        actual_modules.is_disjoint(&actual_import_only),
+        "overlap: {:?}",
+        actual_modules
+            .intersection(&actual_import_only)
+            .collect::<Vec<_>>()
+    );
+
+    for (key, module) in import_only_modules {
+        assert!(
+            module.get("root-nodes").is_none(),
+            "import-only-modules[{key:?}] has root-nodes"
+        );
+        assert!(
+            module.get("data-root-nodes").is_none(),
+            "import-only-modules[{key:?}] has data-root-nodes"
+        );
+    }
+}
+
+#[test]
+fn every_module_in_the_real_catalog_partitions_as_hand_classified() {
+    // Hardcoded by hand, by reading every one of the 62 real modules in
+    // this bundled catalog's own source text (not derived from any
+    // fercc code, including Schema's own classification logic -- that
+    // would just prove the generator agrees with itself): RFC 7950
+    // 5.6.5 says a module implements iff it implements at least one of
+    // its own data nodes/RPCs/actions/notifications/deviations --
+    // including a node its own augment places into another module's
+    // tree, since that node's owner is the augmenting module, not the
+    // target. Everything else is import-only-shaped, and is listed
+    // only if reached, directly or transitively, by an implemented
+    // module's own `import` statements. "ietf-netconf-acm" is the one
+    // non-obvious case here: its own container is fully deviated away
+    // by "ietf-netconf-acm-dev" (deviate not-supported), so it
+    // implements nothing live and is import-only despite declaring a
+    // real container in its own text -- confirmed against this
+    // firmware's own real module classification in
+    // ~/sw-lmstax-labs/appl/src/cc/node/src/lma_cc_module_*.c (an
+    // independent oracle, not fercc code), which also lists
+    // "ietf-restconf" as import-only -- this device is a CoreCONF
+    // server, not a RESTCONF one, so it genuinely doesn't implement
+    // "ietf-restconf"'s yang-errors/yang-api structures at all (its
+    // `uses errors;`/`uses restconf;` templates build real nodes just
+    // like any other rc:yang-data body, but neither is on
+    // IMPLEMENTED_YANG_DATA_ROOTS, which is the only thing that matters
+    // here). If this catalog's own modules ever change, this list must
+    // be re-derived by hand again, not regenerated from fercc's own
+    // classification. Disjointness and node-array shape
+    // are already covered, independent of this hand classification, by
+    // modules_and_import_only_modules_are_disjoint_and_import_only_
+    // entries_lack_node_arrays -- this test is purely about whether the
+    // membership itself is correct.
+    const EXPECTED_IMPORT_ONLY: &[&str] = &[
+        "iana-crypt-hash",
+        "iana-hardware",
+        "iana-if-type",
+        "ieee802-dot1ab-types",
+        "ieee802-dot1cb-stream-identification-types",
+        "ieee802-dot1q-preemption",
+        "ieee802-dot1q-psfp",
+        "ieee802-dot1q-sched",
+        "ieee802-dot1q-stream-filters-gates",
+        "ieee802-dot1q-types",
+        "ieee802-types",
+        "ietf-datastores",
+        "ietf-inet-types",
+        "ietf-netconf-acm",
+        "ietf-restconf",
+        "ietf-routing-types",
+        "ietf-sid-file",
+        "ietf-yang-structure-ext",
+        "ietf-yang-types",
+    ];
+    const EXPECTED_IMPLEMENTED: &[&str] = &[
+        "ieee1588-ptp",
+        "ieee1588-ptp-dev",
+        "ieee802-dot1ab-lldp",
+        "ieee802-dot1ab-lldp-dev",
+        "ieee802-dot1as-hd",
+        "ieee802-dot1as-ptp",
+        "ieee802-dot1cb-stream-identification",
+        "ieee802-dot1cb-stream-identification-dev",
+        "ieee802-dot1q-bridge",
+        "ieee802-dot1q-bridge-dev",
+        "ieee802-dot1q-preemption-bridge",
+        "ieee802-dot1q-psfp-bridge",
+        "ieee802-dot1q-sched-bridge",
+        "ieee802-ethernet-interface",
+        "ietf-constrained-yang-library",
+        "ietf-constrained-yang-library-dev",
+        "ietf-coreconf",
+        "ietf-hardware",
+        "ietf-hardware-dev",
+        "ietf-igmp-mld-snooping",
+        "ietf-igmp-mld-snooping-dev",
+        "ietf-interfaces",
+        "ietf-interfaces-dev",
+        "ietf-ip",
+        "ietf-ipv4-unicast-routing",
+        "ietf-netconf-acm-dev",
+        "ietf-routing",
+        "ietf-routing-dev",
+        "ietf-system",
+        "ietf-system-dev",
+        "mchp-velocitysp-acl",
+        "mchp-velocitysp-acl2",
+        "mchp-velocitysp-aggr",
+        "mchp-velocitysp-bridge",
+        "mchp-velocitysp-dhcp",
+        "mchp-velocitysp-frame",
+        "mchp-velocitysp-ip",
+        "mchp-velocitysp-lldp",
+        "mchp-velocitysp-port",
+        "mchp-velocitysp-ptp",
+        "mchp-velocitysp-redbox",
+        "mchp-velocitysp-serdes",
+        "mchp-velocitysp-system",
+    ];
+
+    let d = doc();
+    let actual_modules: std::collections::HashSet<&str> = d["modules"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(|k| k.as_str())
+        .collect();
+    let actual_import_only: std::collections::HashSet<&str> = d["import-only-modules"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|m| m["name"].as_str().unwrap())
+        .collect();
+
+    let expected_modules: std::collections::HashSet<&str> =
+        EXPECTED_IMPLEMENTED.iter().copied().collect();
+    let expected_import_only: std::collections::HashSet<&str> =
+        EXPECTED_IMPORT_ONLY.iter().copied().collect();
+
+    assert_eq!(actual_modules, expected_modules);
+    assert_eq!(actual_import_only, expected_import_only);
 }

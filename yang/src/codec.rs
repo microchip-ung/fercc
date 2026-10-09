@@ -1883,7 +1883,7 @@ mod tests {
     // exercises (see yang/tests/fixtures.rs).
 
     fn empty_schema() -> Schema {
-        crate::schema::build(&[], &[]).expect("empty schema builds")
+        crate::schema::build(&[], &[], &[]).expect("empty schema builds")
     }
 
     #[test]
@@ -2191,7 +2191,7 @@ mod tests {
                 {"namespace": "data", "identifier": "/test:box/setting", "sid": 1009}
             ]
         }"#;
-        crate::schema::build(&[yang.to_string()], &[sid.to_string()])
+        crate::schema::build(&[yang.to_string()], &[sid.to_string()], &[])
             .expect("validation test schema builds")
     }
 

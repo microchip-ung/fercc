@@ -5,7 +5,8 @@ use serde_json::{Map, Value as Json};
 
 use crate::json_schema::num;
 use crate::schema::{
-    default_ranges, Builtin, IdentityRef, ModuleRef, NodeRef, Schema, Status, TypeRef, TypedefRef,
+    default_ranges, Builtin, IdentityRef, ImportOnlyModule, ModuleRef, NodeRef, Schema, Status,
+    TypeRef, TypedefRef,
 };
 
 pub const SCHEMA_VERSION: &str = "1.0.0";
@@ -76,6 +77,13 @@ fn typedef_key(scope: &str, name: &str) -> String {
         format!("{scope} {name}")
     } else {
         format!("{scope}:{name}")
+    }
+}
+
+fn import_only_module_key(name: &str, import_revision_date: Option<&str>) -> String {
+    match import_revision_date {
+        Some(date) => format!("{name} {date}"),
+        None => name.to_string(),
     }
 }
 
@@ -398,6 +406,41 @@ fn module_entry(module: ModuleRef<'_>, schema: &Schema) -> R<Json> {
     Ok(Json::Object(m))
 }
 
+fn import_only_module_entry(module: &ImportOnlyModule, schema: &Schema) -> R<Json> {
+    let mut m = Map::new();
+    m.insert("name".to_string(), s(module.name.clone()));
+    m.insert("namespace".to_string(), s(module.namespace.clone()));
+    m.insert(
+        "sid".to_string(),
+        s(sid_string(
+            module.sid,
+            &format!("import-only module {}", module.name),
+        )?),
+    );
+    opt_insert(
+        &mut m,
+        "revision",
+        module.import_revision_date.clone().map(s),
+    );
+    m.insert(
+        "typedefs".to_string(),
+        arr(schema
+            .typedefs()
+            .filter(|t| t.module == module.name)
+            .map(|t| s(typedef_key(&t.scope, &t.name)))
+            .collect()),
+    );
+    m.insert(
+        "identities".to_string(),
+        arr(schema
+            .identities()
+            .filter(|i| i.module == module.name)
+            .map(|i| s(qualified_name(&i.module, &i.name)))
+            .collect()),
+    );
+    Ok(Json::Object(m))
+}
+
 fn flatten_subtree(root: NodeRef<'_>, out: &mut Map<String, Json>) -> R<()> {
     out.insert(root.path(), schema_node_entry(root)?);
     for child in root.children() {
@@ -425,6 +468,12 @@ pub fn to_resolved_catalog(schema: &Schema, yang_catalog: &str) -> R<Json> {
     let mut modules = Map::new();
     for module in schema.modules() {
         modules.insert(module.name.clone(), module_entry(module, schema)?);
+    }
+
+    let mut import_only_modules = Map::new();
+    for module in schema.import_only_modules() {
+        let key = import_only_module_key(&module.name, module.import_revision_date.as_deref());
+        import_only_modules.insert(key, import_only_module_entry(module, schema)?);
     }
 
     let mut typedefs = Map::new();
@@ -464,6 +513,17 @@ pub fn to_resolved_catalog(schema: &Schema, yang_catalog: &str) -> R<Json> {
             );
         }
     }
+    for module in schema.import_only_modules() {
+        if let Some(sid) = module.sid {
+            sid_index.insert(
+                sid.to_string(),
+                obj(vec![
+                    ("namespace", s("module")),
+                    ("identifier", s(module.name.clone())),
+                ]),
+            );
+        }
+    }
     for identity in schema.identities() {
         if let Some(sid) = identity.sid {
             sid_index.insert(
@@ -492,6 +552,10 @@ pub fn to_resolved_catalog(schema: &Schema, yang_catalog: &str) -> R<Json> {
     doc.insert("schema-version".to_string(), s(SCHEMA_VERSION));
     doc.insert("yang-catalog".to_string(), s(yang_catalog));
     doc.insert("modules".to_string(), Json::Object(modules));
+    doc.insert(
+        "import-only-modules".to_string(),
+        Json::Object(import_only_modules),
+    );
     doc.insert("typedefs".to_string(), Json::Object(typedefs));
     doc.insert("identities".to_string(), Json::Object(identities));
     doc.insert("schema-nodes".to_string(), Json::Object(schema_nodes));
@@ -542,7 +606,7 @@ mod tests {
                 {"namespace": "data", "identifier": "/foo:bar/b", "sid": 1003}
             ]
         }"#;
-        let schema = crate::schema::build(&[src.to_string()], &[sid_src.to_string()]).unwrap();
+        let schema = crate::schema::build(&[src.to_string()], &[sid_src.to_string()], &[]).unwrap();
         let doc = to_resolved_catalog(&schema, "deadbeef").unwrap();
 
         assert!(doc["typedefs"].get("foo:percent").is_some());
