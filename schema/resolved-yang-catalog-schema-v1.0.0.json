@@ -592,7 +592,7 @@
                 "keys": {
                   "type": "array",
                   "items": { "$ref": "#/$defs/schema-node-path" },
-                  "description": "Key leafs' own paths, in schema-declared order. Empty for a keyless list (legal when config false)."
+                  "description": "Key leafs' own paths, in the order the list's \"key\" statement lists them. Empty for a keyless list (legal when config false)."
                 }
               }
             },
