@@ -1,11 +1,17 @@
 # Working in this repo
 
+## Dependencies
+
+DO NOT add any new dependencies unless given explicit permission.
+dev-only dependencies for developers running tests are allowed if necessary.
+
 ## Comments
 
 Don't add new comments. Updating or correcting an existing comment so it stays
 accurate is fine; adding a brand-new one to explain code you just wrote is
-not — including doc comments on new functions/types. New comments inside test
-bodies are fine (explaining what a test is checking and why).
+not (unless specifically given permission per comment) — including doc comments
+on new functions/types.
+New comments inside test bodies are fine (explaining what a test is checking and why).
 
 Before finishing any change, sweep the diff for comment lines that start with
 `+` and check each one: is it new content, or is it an edit to a comment that
@@ -53,15 +59,6 @@ new behavior (directly or transitively) before adding a redundant test — see
 "Don't add code nobody runs" above. A change with no way to verify it is
 either untested or untestable; both are a problem to fix before committing,
 not after.
-
-## Generated JSON documents: test cross-references both directions
-
-Any time code generates a JSON document where one field's value is meant to
-be a key that exists elsewhere in the same document (e.g. a path, a typedef
-key, a qualified name), the test suite must check two properties:
-- Referential integrity - every such reference actually resolves to a real entry.
-- Reachability - every such object is actually referenced by something reachable
-  from the document roots
 
 ## Verify against ground truth, don't assume
 

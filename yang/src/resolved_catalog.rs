@@ -341,7 +341,7 @@ fn schema_node_entry(node: NodeRef<'_>) -> R<Json> {
             )?),
         );
     }
-    m.insert("synthetic".to_string(), Json::Bool(node.synthetic));
+    m.insert("implicit".to_string(), Json::Bool(node.synthetic));
 
     match node.kw.as_str() {
         "container" => {
@@ -590,7 +590,461 @@ pub fn to_resolved_catalog(schema: &Schema, yang_catalog: &str) -> R<Json> {
         "sid-index".to_string(),
         Json::Object(sorted_map_numeric(sid_index)),
     );
+    verify_resolved_catalog(&doc)?;
     Ok(Json::Object(doc))
+}
+
+fn collect_derived_from(ty: &Json, out: &mut std::collections::HashSet<String>) {
+    if let Some(key) = ty.get("derived-from").and_then(Json::as_str) {
+        out.insert(key.to_string());
+    }
+    if let Some(members) = ty.get("type").and_then(Json::as_array) {
+        for member in members {
+            collect_derived_from(member, out);
+        }
+    }
+}
+
+fn collect_identityref_bases(ty: &Json, out: &mut std::collections::HashSet<String>) {
+    if ty.get("builtin").and_then(Json::as_str) == Some("identityref") {
+        if let Some(bases) = ty.get("base").and_then(Json::as_array) {
+            for b in bases {
+                out.insert(b.as_str().unwrap().to_string());
+            }
+        }
+    }
+    if let Some(members) = ty.get("type").and_then(Json::as_array) {
+        for member in members {
+            collect_identityref_bases(member, out);
+        }
+    }
+}
+
+fn check_type_descriptor(
+    ty: &Json,
+    typedefs: &Map<String, Json>,
+    node_maps: &[&Map<String, Json>],
+    from: &str,
+    errors: &mut Vec<String>,
+) {
+    if let Some(key) = ty.get("derived-from").and_then(Json::as_str) {
+        if !typedefs.contains_key(key) {
+            errors.push(format!(
+                "{from}.type.derived-from: {key:?} not found in typedefs"
+            ));
+        }
+    }
+    if let Some(target) = ty.get("target").and_then(Json::as_str) {
+        if !node_maps.iter().any(|m| m.contains_key(target)) {
+            errors.push(format!(
+                "{from}.type.target: {target:?} not found in schema-nodes or yang-data"
+            ));
+        }
+    }
+    if let Some(members) = ty.get("type").and_then(Json::as_array) {
+        for member in members {
+            check_type_descriptor(member, typedefs, node_maps, from, errors);
+        }
+    }
+}
+
+fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
+    let mut errors = Vec::new();
+
+    let schema_nodes = doc["schema-nodes"].as_object().unwrap();
+    let yang_data = doc["yang-data"].as_object().unwrap();
+    let typedefs = doc["typedefs"].as_object().unwrap();
+    let identities = doc["identities"].as_object().unwrap();
+    let modules = doc["modules"].as_object().unwrap();
+    let import_only_modules = doc["import-only-modules"].as_object().unwrap();
+    let sid_index = doc["sid-index"].as_object().unwrap();
+    let node_maps = [schema_nodes, yang_data];
+
+    let check_node_path = |path: &str, map: &Map<String, Json>, map_name: &str, from: &str| {
+        if !map.contains_key(path) {
+            return Some(format!("{from}: {path:?} not found in {map_name}"));
+        }
+        None
+    };
+
+    for (own_map, map_name) in [(schema_nodes, "schema-nodes"), (yang_data, "yang-data")] {
+        for (path, node) in own_map {
+            let from = format!("{map_name}[{path:?}]");
+            if let Some(parent) = node.get("parent").and_then(Json::as_str) {
+                if let Some(e) =
+                    check_node_path(parent, own_map, map_name, &format!("{from}.parent"))
+                {
+                    errors.push(e);
+                } else if !own_map[parent]
+                    .get("children")
+                    .and_then(Json::as_array)
+                    .is_some_and(|children| {
+                        children.iter().any(|c| c.as_str() == Some(path.as_str()))
+                    })
+                {
+                    errors.push(format!(
+                        "{from}.parent is {parent:?}, but {parent:?}.children does not list {path:?} back"
+                    ));
+                }
+            }
+            for field in ["children", "data-children", "keys"] {
+                if let Some(items) = node.get(field).and_then(Json::as_array) {
+                    for item in items {
+                        let p = item.as_str().unwrap();
+                        if let Some(e) =
+                            check_node_path(p, own_map, map_name, &format!("{from}.{field}"))
+                        {
+                            errors.push(e);
+                        } else if field == "children"
+                            && own_map[p].get("parent").and_then(Json::as_str)
+                                != Some(path.as_str())
+                        {
+                            errors.push(format!(
+                                "{from}.children lists {p:?}, but {p:?}.parent is not {path:?}"
+                            ));
+                        }
+                    }
+                }
+            }
+            if let Some(t) = node.get("type") {
+                check_type_descriptor(t, typedefs, &node_maps, &from, &mut errors);
+            }
+        }
+    }
+
+    for (key, t) in typedefs {
+        let from = format!("typedefs[{key:?}]");
+        check_type_descriptor(&t["type"], typedefs, &node_maps, &from, &mut errors);
+    }
+
+    for (key, identity) in identities {
+        let from = format!("identities[{key:?}]");
+        for field in ["base", "derived"] {
+            for item in identity[field].as_array().unwrap() {
+                let name = item.as_str().unwrap();
+                if !identities.contains_key(name) {
+                    errors.push(format!("{from}.{field}: {name:?} not found in identities"));
+                }
+            }
+        }
+    }
+
+    for (mod_name, module) in modules {
+        let from = format!("modules[{mod_name:?}]");
+        for field in ["root-nodes", "data-root-nodes"] {
+            for item in module[field].as_array().unwrap() {
+                let p = item.as_str().unwrap();
+                if !schema_nodes.contains_key(p) {
+                    errors.push(format!("{from}.{field}: {p:?} not found in schema-nodes"));
+                }
+            }
+        }
+        for item in module["typedefs"].as_array().unwrap() {
+            let key = item.as_str().unwrap();
+            if !typedefs.contains_key(key) {
+                errors.push(format!("{from}.typedefs: {key:?} not found in typedefs"));
+            }
+        }
+        for item in module["identities"].as_array().unwrap() {
+            let key = item.as_str().unwrap();
+            if !identities.contains_key(key) {
+                errors.push(format!(
+                    "{from}.identities: {key:?} not found in identities"
+                ));
+            }
+        }
+    }
+
+    for (key, module) in import_only_modules {
+        let from = format!("import-only-modules[{key:?}]");
+        for item in module["typedefs"].as_array().unwrap() {
+            let key = item.as_str().unwrap();
+            if !typedefs.contains_key(key) {
+                errors.push(format!("{from}.typedefs: {key:?} not found in typedefs"));
+            }
+        }
+        for item in module["identities"].as_array().unwrap() {
+            let key = item.as_str().unwrap();
+            if !identities.contains_key(key) {
+                errors.push(format!(
+                    "{from}.identities: {key:?} not found in identities"
+                ));
+            }
+        }
+        let module_name = module["name"].as_str().unwrap();
+        let key_name = key.split(' ').next().unwrap();
+        if key_name != module_name {
+            errors.push(format!(
+                "import-only-modules[{key:?}]'s key name doesn't match its own \"name\" field"
+            ));
+        }
+    }
+
+    for (sid, entry) in sid_index {
+        let namespace = entry["namespace"].as_str().unwrap();
+        let identifier = entry["identifier"].as_str().unwrap();
+        let found = match namespace {
+            "module" => {
+                modules.contains_key(identifier)
+                    || import_only_modules
+                        .values()
+                        .any(|m| m["name"] == *identifier)
+            }
+            "identity" => identities.contains_key(identifier),
+            "data" => schema_nodes.contains_key(identifier) || yang_data.contains_key(identifier),
+            other => {
+                errors.push(format!("sid-index[{sid:?}]: unknown namespace {other:?}"));
+                continue;
+            }
+        };
+        if !found {
+            errors.push(format!(
+                "sid-index[{sid:?}]: {namespace}:{identifier:?} not found"
+            ));
+        }
+    }
+
+    for (mod_name, module) in modules {
+        let sid = module["sid"].as_str().unwrap();
+        if sid_index.get(sid).map(|e| e["identifier"].as_str()) != Some(Some(mod_name.as_str())) {
+            errors.push(format!(
+                "module {mod_name:?}'s sid {sid:?} not reverse-indexed"
+            ));
+        }
+    }
+    for (key, module) in import_only_modules {
+        let sid = module["sid"].as_str().unwrap();
+        let name = module["name"].as_str().unwrap();
+        if sid_index.get(sid).map(|e| e["identifier"].as_str()) != Some(Some(name)) {
+            errors.push(format!(
+                "import-only-modules[{key:?}]'s sid {sid:?} not reverse-indexed"
+            ));
+        }
+    }
+    for (key, identity) in identities {
+        let sid = identity["sid"].as_str().unwrap();
+        if sid_index.get(sid).map(|e| e["identifier"].as_str()) != Some(Some(key.as_str())) {
+            errors.push(format!(
+                "identity {key:?}'s sid {sid:?} not reverse-indexed"
+            ));
+        }
+    }
+    for (map, map_name) in [(schema_nodes, "schema-nodes"), (yang_data, "yang-data")] {
+        for (path, node) in map {
+            let Some(sid) = node.get("sid").and_then(Json::as_str) else {
+                continue;
+            };
+            if sid_index.get(sid).map(|e| e["identifier"].as_str()) != Some(Some(path.as_str())) {
+                errors.push(format!(
+                    "{map_name}[{path:?}]'s sid {sid:?} not reverse-indexed"
+                ));
+            }
+        }
+    }
+
+    let mut sid_bearing = 0;
+    for map in [schema_nodes, yang_data] {
+        sid_bearing += map.values().filter(|n| n.get("sid").is_some()).count();
+    }
+    sid_bearing += identities.len();
+    let mut module_sids: std::collections::HashSet<String> = modules
+        .values()
+        .filter_map(|m| m.get("sid").and_then(Json::as_str))
+        .map(str::to_string)
+        .collect();
+    module_sids.extend(
+        import_only_modules
+            .values()
+            .filter_map(|m| m.get("sid").and_then(Json::as_str))
+            .map(str::to_string),
+    );
+    sid_bearing += module_sids.len();
+    if sid_index.len() != sid_bearing {
+        errors.push(format!(
+            "sid-index has {} entries but {sid_bearing} sid-bearing entities exist in the document",
+            sid_index.len()
+        ));
+    }
+
+    for (map_name, map) in [("schema-nodes", schema_nodes), ("yang-data", yang_data)] {
+        let mut visited = std::collections::HashSet::new();
+        let mut stack: Vec<&str> = map
+            .iter()
+            .filter(|(_, node)| node.get("parent").is_none())
+            .map(|(path, _)| path.as_str())
+            .collect();
+        while let Some(path) = stack.pop() {
+            if visited.insert(path.to_string()) {
+                if let Some(children) = map[path].get("children").and_then(Json::as_array) {
+                    for child in children {
+                        stack.push(child.as_str().unwrap());
+                    }
+                }
+            }
+        }
+        for path in map.keys() {
+            if !visited.contains(path.as_str()) {
+                errors.push(format!(
+                    "{map_name}[{path:?}] is unreachable by walking children from a root"
+                ));
+            }
+        }
+    }
+
+    let mut root_nodes = std::collections::HashSet::new();
+    for module in modules.values() {
+        for item in module["root-nodes"].as_array().unwrap() {
+            root_nodes.insert(item.as_str().unwrap());
+        }
+    }
+    for (path, node) in schema_nodes {
+        let is_root = root_nodes.contains(path.as_str());
+        let has_parent = node.get("parent").is_some();
+        if is_root == has_parent {
+            errors.push(format!(
+                "schema-nodes[{path:?}]: listed as a module root-node ({is_root}) must disagree with carrying a parent ({has_parent})"
+            ));
+        }
+    }
+    let mut named_as_child = std::collections::HashSet::new();
+    for node in yang_data.values() {
+        if let Some(children) = node.get("children").and_then(Json::as_array) {
+            for child in children {
+                named_as_child.insert(child.as_str().unwrap());
+            }
+        }
+    }
+    for (path, node) in yang_data {
+        let is_root = !named_as_child.contains(path.as_str());
+        let has_parent = node.get("parent").is_some();
+        if is_root == has_parent {
+            errors.push(format!(
+                "yang-data[{path:?}]: not named as anyone's child ({is_root}) must disagree with carrying a parent ({has_parent})"
+            ));
+        }
+    }
+
+    let mut derived_from_refs = std::collections::HashSet::new();
+    let mut identityref_base_refs = std::collections::HashSet::new();
+    for node in schema_nodes.values().chain(yang_data.values()) {
+        if let Some(ty) = node.get("type") {
+            collect_derived_from(ty, &mut derived_from_refs);
+            collect_identityref_bases(ty, &mut identityref_base_refs);
+        }
+    }
+    for t in typedefs.values() {
+        collect_derived_from(&t["type"], &mut derived_from_refs);
+    }
+    for key in typedefs.keys() {
+        if !derived_from_refs.contains(key) {
+            errors.push(format!(
+                "typedefs[{key:?}] is never named by any derived-from in the document"
+            ));
+        }
+    }
+    let mut reachable_identities = std::collections::HashSet::new();
+    let mut stack: Vec<String> = identityref_base_refs.into_iter().collect();
+    while let Some(key) = stack.pop() {
+        if reachable_identities.insert(key.clone()) {
+            if let Some(identity) = identities.get(&key) {
+                for d in identity["derived"].as_array().unwrap() {
+                    stack.push(d.as_str().unwrap().to_string());
+                }
+            }
+        }
+    }
+    for key in identities.keys() {
+        if !reachable_identities.contains(key) {
+            errors.push(format!(
+                "identities[{key:?}] is never named as a base (directly or via derivation) by any identityref in the document"
+            ));
+        }
+    }
+
+    let actual_modules: std::collections::HashSet<&str> =
+        modules.keys().map(|k| k.as_str()).collect();
+    let actual_import_only: std::collections::HashSet<&str> = import_only_modules
+        .values()
+        .map(|m| m["name"].as_str().unwrap())
+        .collect();
+    for name in actual_modules.intersection(&actual_import_only) {
+        errors.push(format!(
+            "{name:?} appears in both modules and import-only-modules"
+        ));
+    }
+    for (key, module) in import_only_modules {
+        if module.get("root-nodes").is_some() {
+            errors.push(format!("import-only-modules[{key:?}] has root-nodes"));
+        }
+        if module.get("data-root-nodes").is_some() {
+            errors.push(format!("import-only-modules[{key:?}] has data-root-nodes"));
+        }
+    }
+
+    let mut namespace_owners: std::collections::HashMap<&str, &str> =
+        std::collections::HashMap::new();
+    for (name, m) in modules {
+        namespace_owners.insert(m["namespace"].as_str().unwrap(), name.as_str());
+    }
+    for (key, entry) in import_only_modules {
+        let module_name = entry["name"].as_str().unwrap();
+        let namespace = entry["namespace"].as_str().unwrap();
+        if let Some(other) = namespace_owners.get(namespace) {
+            if *other != module_name {
+                errors.push(format!(
+                    "import-only-modules[{key:?}]'s namespace {namespace:?} collides with {other:?}"
+                ));
+            }
+        } else {
+            namespace_owners.insert(namespace, module_name);
+        }
+    }
+
+    for key in yang_data.keys() {
+        if !key.starts_with('/') {
+            errors.push(format!(
+                "yang-data key {key:?} is not a schema-node-path -- real yang-data keys must always start with \"/\""
+            ));
+        }
+    }
+
+    for (path, node) in schema_nodes {
+        if matches!(
+            node.get("keyword").and_then(Json::as_str),
+            Some("leaf" | "leaf-list" | "anydata" | "anyxml")
+        ) {
+            if node.get("children").is_some() {
+                errors.push(format!(
+                    "schema-nodes[{path:?}] is a leaf/leaf-list/anydata/anyxml but carries a \"children\" field"
+                ));
+            }
+            if node.get("data-children").is_some() {
+                errors.push(format!(
+                    "schema-nodes[{path:?}] is a leaf/leaf-list/anydata/anyxml but carries a \"data-children\" field"
+                ));
+            }
+        }
+    }
+
+    for (key, t) in typedefs {
+        if t["type"].get("builtin").and_then(Json::as_str) == Some("leafref")
+            && t["type"].get("target").is_some()
+        {
+            errors.push(format!(
+                "typedefs[{key:?}]'s own type descriptor must never carry a resolved leafref target"
+            ));
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "resolved catalog has {} consistency error(s):\n{}",
+            errors.len(),
+            errors.join("\n")
+        ))
+    }
 }
 
 #[cfg(test)]
