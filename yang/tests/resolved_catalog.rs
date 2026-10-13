@@ -79,6 +79,56 @@ fn doc() -> Json {
 }
 
 #[test]
+fn maps_and_arrays_without_source_order_semantics_are_sorted() {
+    let d = doc();
+
+    let assert_keys_sorted = |map: &Map<String, Json>, name: &str| {
+        let keys: Vec<&String> = map.keys().collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(keys, sorted, "{name}'s keys aren't alphabetically sorted");
+    };
+    let assert_keys_sorted_numerically = |map: &Map<String, Json>, name: &str| {
+        let keys: Vec<i64> = map.keys().map(|k| k.parse().unwrap()).collect();
+        let mut sorted = keys.clone();
+        sorted.sort();
+        assert_eq!(keys, sorted, "{name}'s keys aren't numerically sorted");
+    };
+    let assert_strs_sorted = |array: &[Json], name: &str| {
+        let items: Vec<&str> = array.iter().map(|v| v.as_str().unwrap()).collect();
+        let mut sorted = items.clone();
+        sorted.sort();
+        assert_eq!(items, sorted, "{name} isn't alphabetically sorted");
+    };
+
+    assert_keys_sorted(d["modules"].as_object().unwrap(), "modules");
+    assert_keys_sorted(
+        d["import-only-modules"].as_object().unwrap(),
+        "import-only-modules",
+    );
+    assert_keys_sorted(d["typedefs"].as_object().unwrap(), "typedefs");
+    assert_keys_sorted(d["identities"].as_object().unwrap(), "identities");
+    assert_keys_sorted(d["schema-nodes"].as_object().unwrap(), "schema-nodes");
+    assert_keys_sorted(d["yang-data"].as_object().unwrap(), "yang-data");
+    assert_keys_sorted_numerically(d["sid-index"].as_object().unwrap(), "sid-index");
+
+    // A module's own `typedefs`/`identities` arrays are NOT checked
+    // here -- see
+    // a_modules_own_typedefs_and_identities_follow_source_declaration_
+    // order_not_alphabetical for why: both are true per-module source
+    // declaration order (typedefs() now predeclares eagerly and
+    // depth-first; identities are registered per-module, in source
+    // order, in ensure_module), so they must NOT be alphabetically
+    // sorted in general.
+    for (name, identity) in d["identities"].as_object().unwrap() {
+        assert_strs_sorted(
+            identity["derived"].as_array().unwrap(),
+            &format!("identities[{name:?}].derived"),
+        );
+    }
+}
+
+#[test]
 fn the_bundled_catalog_tolerates_two_known_synthetic_input_output_sid_gaps() {
     // mchp-velocitysp-ip's and mchp-velocitysp-acl's "clear" actions
     // declare no explicit input/output substatement, and whatever
@@ -649,9 +699,14 @@ fn yang_data_keys_must_be_schema_node_paths_not_bare_qualified_names() {
 fn typedef_entry_nests_its_type_descriptor_under_type() {
     // A typedef is not itself a type (RFC 7950 7.3): it names one via
     // its own "type" substatement. "interface-ref" is also a real
-    // regression case for typedef-level leafref resolution -- its own
-    // canonical descriptor's target must be resolved even though
-    // nothing walks typedefs the way reachable schema nodes are walked.
+    // regression case confirming a typedef's own canonical descriptor
+    // never claims a resolved leafref target -- a typedef has no
+    // location in the schema tree, so there's no single node to
+    // resolve "target" against (RFC 7950 9.9.2: the leafref's context
+    // node is "the leaf or leaf-list node in the data tree that
+    // references the typedef", never the typedef itself). Only an
+    // actual use site's own resolved type (schema-nodes[...]) ever
+    // gets a target.
     let d = doc();
     let t = &d["typedefs"]["ietf-interfaces:interface-ref"];
     assert_eq!(t["module"], "ietf-interfaces");
@@ -661,9 +716,9 @@ fn typedef_entry_nests_its_type_descriptor_under_type() {
         "type-descriptor fields must not be inlined onto the typedef itself"
     );
     assert_eq!(t["type"]["builtin"], "leafref");
-    assert_eq!(
-        t["type"]["target"],
-        "/ietf-interfaces:interfaces/interface/name"
+    assert!(
+        t["type"].get("target").is_none(),
+        "a typedef's own type descriptor must never carry a resolved leafref target"
     );
 }
 
@@ -1021,4 +1076,41 @@ fn every_module_in_the_real_catalog_partitions_as_hand_classified() {
 
     assert_eq!(actual_modules, expected_modules);
     assert_eq!(actual_import_only, expected_import_only);
+}
+
+#[test]
+fn a_modules_own_typedefs_and_identities_follow_source_declaration_order_not_alphabetical() {
+    // Both arrays are real per-module source declaration order (see
+    // yang/src/schema.rs's predeclare_typedefs and ensure_module's
+    // per-module identity registration), not alphabetical -- confirmed
+    // against this catalog's own ieee802-dot1q-bridge.yang (identities)
+    // and ietf-hardware.yang (typedefs), hand-read directly from their
+    // own source text, in the exact order their own `identity`/
+    // `typedef` statements appear. Neither list is alphabetically
+    // sorted, which is itself part of what this test proves -- a
+    // regression back to alphabetical or first-use order would still
+    // pass a bare "is this sorted" check but fail this one.
+    let d = doc();
+    assert_eq!(
+        d["modules"]["ieee802-dot1q-bridge"]["identities"],
+        serde_json::json!([
+            "ieee802-dot1q-bridge:type-of-port",
+            "ieee802-dot1q-bridge:c-vlan-bridge-port",
+            "ieee802-dot1q-bridge:provider-network-port",
+            "ieee802-dot1q-bridge:customer-network-port",
+            "ieee802-dot1q-bridge:customer-edge-port",
+            "ieee802-dot1q-bridge:d-bridge-port",
+            "ieee802-dot1q-bridge:remote-customer-access-port",
+        ])
+    );
+    assert_eq!(
+        d["modules"]["ietf-hardware"]["typedefs"],
+        serde_json::json!([
+            "ietf-hardware:sensor-value-type",
+            "ietf-hardware:sensor-value-scale",
+            "ietf-hardware:sensor-value-precision",
+            "ietf-hardware:sensor-value",
+            "ietf-hardware:sensor-status",
+        ])
+    );
 }

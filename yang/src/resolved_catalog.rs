@@ -22,6 +22,23 @@ fn arr(items: Vec<Json>) -> Json {
     Json::Array(items)
 }
 
+fn sorted_strs(mut items: Vec<Json>) -> Vec<Json> {
+    items.sort_by(|a, b| a.as_str().unwrap().cmp(b.as_str().unwrap()));
+    items
+}
+
+fn sorted_map(m: Map<String, Json>) -> Map<String, Json> {
+    let mut entries: Vec<(String, Json)> = m.into_iter().collect();
+    entries.sort_by(|(a, _), (b, _)| a.cmp(b));
+    entries.into_iter().collect()
+}
+
+fn sorted_map_numeric(m: Map<String, Json>) -> Map<String, Json> {
+    let mut entries: Vec<(String, Json)> = m.into_iter().collect();
+    entries.sort_by_key(|(k, _)| k.parse::<i64>().unwrap());
+    entries.into_iter().collect()
+}
+
 fn obj(pairs: Vec<(&str, Json)>) -> Json {
     let mut m = Map::new();
     for (k, v) in pairs {
@@ -206,10 +223,11 @@ fn type_descriptor(ty: TypeRef<'_>) -> R<Json> {
                 .as_deref()
                 .ok_or("a leafref type is missing its path substatement (RFC 7950 9.9.2)")?;
             m.insert("path".to_string(), s(path.to_string()));
-            let target = ty.leafref_target().ok_or_else(|| {
-                format!("leafref path {path:?} could not be resolved to a target")
-            })?;
-            m.insert("target".to_string(), s(target.path()));
+            opt_insert(
+                &mut m,
+                "target",
+                ty.leafref_target().map(|target| s(target.path())),
+            );
         }
         Builtin::String => {
             if is_explicitly_restricted(ty) {
@@ -268,11 +286,13 @@ fn identity_entry(identity: IdentityRef<'_>) -> R<Json> {
     );
     m.insert(
         "derived".to_string(),
-        arr(identity
-            .derived()
-            .filter(|d| d.sid.is_some())
-            .map(|d| s(qualified_name(&d.module, &d.name)))
-            .collect()),
+        arr(sorted_strs(
+            identity
+                .derived()
+                .filter(|d| d.sid.is_some())
+                .map(|d| s(qualified_name(&d.module, &d.name)))
+                .collect(),
+        )),
     );
     Ok(Json::Object(m))
 }
@@ -551,16 +571,25 @@ pub fn to_resolved_catalog(schema: &Schema, yang_catalog: &str) -> R<Json> {
     doc.insert("$schema".to_string(), s(SCHEMA_URL));
     doc.insert("schema-version".to_string(), s(SCHEMA_VERSION));
     doc.insert("yang-catalog".to_string(), s(yang_catalog));
-    doc.insert("modules".to_string(), Json::Object(modules));
+    doc.insert("modules".to_string(), Json::Object(sorted_map(modules)));
     doc.insert(
         "import-only-modules".to_string(),
-        Json::Object(import_only_modules),
+        Json::Object(sorted_map(import_only_modules)),
     );
-    doc.insert("typedefs".to_string(), Json::Object(typedefs));
-    doc.insert("identities".to_string(), Json::Object(identities));
-    doc.insert("schema-nodes".to_string(), Json::Object(schema_nodes));
-    doc.insert("yang-data".to_string(), Json::Object(yang_data));
-    doc.insert("sid-index".to_string(), Json::Object(sid_index));
+    doc.insert("typedefs".to_string(), Json::Object(sorted_map(typedefs)));
+    doc.insert(
+        "identities".to_string(),
+        Json::Object(sorted_map(identities)),
+    );
+    doc.insert(
+        "schema-nodes".to_string(),
+        Json::Object(sorted_map(schema_nodes)),
+    );
+    doc.insert("yang-data".to_string(), Json::Object(sorted_map(yang_data)));
+    doc.insert(
+        "sid-index".to_string(),
+        Json::Object(sorted_map_numeric(sid_index)),
+    );
     Ok(Json::Object(doc))
 }
 

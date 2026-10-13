@@ -316,11 +316,14 @@
             {
               "title": "Leafref",
               "type": "object",
-              "required": ["path", "target"],
+              "required": ["path"],
               "properties": {
                 "builtin": { "const": "leafref" },
                 "path": { "type": "string", "description": "The raw (possibly relative) path." },
-                "target": { "$ref": "#/$defs/schema-node-path", "description": "Resolved target of `path`." },
+                "target": {
+                  "$ref": "#/$defs/schema-node-path",
+                  "description": "Resolved target of `path`. Present on a schema node's own resolved type. Absent on a typedef's own declaration -- a typedef can be used in multiple places so there is no single target."
+                },
                 "require-instance": { "type": "boolean" }
               }
             },

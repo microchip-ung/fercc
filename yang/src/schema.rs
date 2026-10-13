@@ -26,6 +26,12 @@ type TypedefId = usize;
 type Scope<'a> = [(&'a Stmt, String)];
 type ScopeVec<'a> = Vec<(&'a Stmt, String)>;
 
+struct PendingTypedefType<'a> {
+    resolve: String,
+    scope: ScopeVec<'a>,
+    stmt: &'a Stmt,
+}
+
 const SCHEMA_NODE_KEYWORDS: &[&str] = &[
     "container",
     "leaf",
@@ -170,7 +176,7 @@ pub struct Typedef {
     pub module: String,
     pub scope: String,
     pub description: Option<String>,
-    ty: TypeDescriptor,
+    ty: Option<TypeDescriptor>,
 }
 
 /// The natural bounds a builtin type starts with before any `range`/
@@ -449,7 +455,10 @@ impl<'a> TypedefRef<'a> {
     pub fn ty(&self) -> TypeRef<'a> {
         TypeRef {
             schema: self.schema,
-            ty: &self.schema.typedefs[self.id].ty,
+            ty: self.schema.typedefs[self.id]
+                .ty
+                .as_ref()
+                .expect("a typedef's own type is always interpreted by the time a Schema exists"),
         }
     }
 }
@@ -773,10 +782,17 @@ struct Builder<'a> {
     typedefs: Vec<Typedef>,
     identities: Vec<Identity>,
     identity_by_module_name: HashMap<(String, String), IdentityId>,
-    typedef_cache: HashMap<(String, String), TypedefId>,
+    /// Key: `(typedef_scope, name)`, where `typedef_scope` is the
+    /// label of the scope frame the typedef was declared directly in
+    /// (a module name, a schema node's own path, or a use site's path
+    /// for one declared in a spliced-in grouping). Value: this
+    /// typedef's identity, plus everything needed to interpret it.
+    typedef_cache: HashMap<(String, String), (TypedefId, PendingTypedefType<'a>)>,
     module_root: HashMap<String, Module>,
     yang_data_roots: HashMap<String, NodeId>,
     implemented_yang_data_roots: std::collections::HashSet<String>,
+    reachable_typedefs: std::collections::HashSet<TypedefId>,
+    reachable_identities: std::collections::HashSet<IdentityId>,
 }
 
 /// Parse `.yang` sources and build the full schema, including flattening
@@ -835,6 +851,8 @@ pub fn build(
             .iter()
             .map(|s| s.to_string())
             .collect(),
+        reachable_typedefs: Default::default(),
+        reachable_identities: Default::default(),
     };
 
     let module_names: Vec<String> = parsed.iter().map(|m| m.arg_str().to_string()).collect();
@@ -843,6 +861,7 @@ pub fn build(
     }
 
     b.apply_deviations(&parsed)?;
+    b.compute_reachable_typedefs();
     b.resolve_leafrefs()?;
 
     for sid_src in sid_sources {
@@ -964,6 +983,7 @@ impl<'a> Builder<'a> {
         self.module_root.insert(name.to_string(), module);
 
         let ctx_name = name.to_string();
+        self.interpret_scope_typedefs(&ctx_name, &ctx_name, &[], &raw.subs)?;
         self.interpret_children(&ctx_name, &ctx_name, &[], &raw.subs, None)?;
 
         self.built.insert(name.to_string());
@@ -1215,7 +1235,14 @@ impl<'a> Builder<'a> {
         ];
         let mut extended_scope = scope.to_vec();
         let inner_scope = if SCOPE_BEARING_KEYWORDS.contains(&s.keyword.as_str()) {
-            extended_scope.push((s, self.schema_node_path_of(node)));
+            let own_scope_label = self.schema_node_path_of(node);
+            extended_scope.push((s, own_scope_label.clone()));
+            self.interpret_scope_typedefs(
+                resolve,
+                &own_scope_label,
+                extended_scope.as_slice(),
+                &s.subs,
+            )?;
             extended_scope.as_slice()
         } else {
             scope
@@ -1310,7 +1337,8 @@ impl<'a> Builder<'a> {
             None => naming.to_string(),
         };
         let mut inner_scope = def_scope;
-        inner_scope.push((raw, use_site_scope));
+        inner_scope.push((raw, use_site_scope.clone()));
+        self.interpret_scope_typedefs(&def_module, &use_site_scope, &inner_scope, &raw.subs)?;
         self.interpret_children(&def_module, naming, &inner_scope, &raw.subs, parent)?;
 
         // An augment nested inside this `uses` targets a path within the
@@ -1455,34 +1483,46 @@ impl<'a> Builder<'a> {
 
     // -- types ---------------------------------------------------------
 
-    fn find_typedef_stmt(
-        &self,
+    fn interpret_scope_typedefs(
+        &mut self,
         def_module: &str,
+        typedef_scope: &str,
         scope: &Scope<'a>,
-        local: &str,
-    ) -> R<(&'a Stmt, String, ScopeVec<'a>)> {
-        for i in (0..scope.len()).rev() {
-            if let Some(td) = scope[i]
-                .0
-                .subs_of("typedef")
-                .find(|td| td.arg_str() == local)
-            {
-                return Ok((td, scope[i].1.clone(), scope[..=i].to_vec()));
+        stmts: &'a [Stmt],
+    ) -> R<()> {
+        let mut keys = Vec::new();
+        for td in stmts.iter().filter(|s| s.keyword == "typedef") {
+            let local = td.arg_str();
+            let key = (typedef_scope.to_string(), local.to_string());
+            if self.typedef_cache.contains_key(&key) {
+                continue;
             }
+            let description = td.sub("description").map(|d| d.arg_str().to_string());
+            let id = self.typedefs.len();
+            self.typedefs.push(Typedef {
+                name: local.to_string(),
+                module: def_module.to_string(),
+                scope: typedef_scope.to_string(),
+                description,
+                ty: None,
+            });
+            self.typedef_cache.insert(
+                key.clone(),
+                (
+                    id,
+                    PendingTypedefType {
+                        resolve: def_module.to_string(),
+                        scope: scope.to_vec(),
+                        stmt: td,
+                    },
+                ),
+            );
+            keys.push(key);
         }
-        let module_stmt = *self
-            .raw_modules
-            .get(def_module)
-            .ok_or_else(|| err(format!("unknown module {def_module:?}")))?;
-        let td = module_stmt
-            .subs_of("typedef")
-            .find(|td| td.arg_str() == local)
-            .ok_or_else(|| {
-                err(format!(
-                    "typedef {local:?} not found in module {def_module:?}"
-                ))
-            })?;
-        Ok((td, def_module.to_string(), vec![]))
+        for key in keys {
+            self.ensure_typedef_interpreted(&key)?;
+        }
+        Ok(())
     }
 
     fn find_grouping_stmt(
@@ -1521,26 +1561,41 @@ impl<'a> Builder<'a> {
         scope: &Scope<'a>,
         local: &str,
     ) -> R<TypedefId> {
-        let (raw, typedef_scope, def_scope) = self.find_typedef_stmt(def_module, scope, local)?;
-        let key = (typedef_scope.clone(), local.to_string());
-        if let Some(&id) = self.typedef_cache.get(&key) {
-            return Ok(id);
+        let mut typedef_scope = None;
+        for i in (0..scope.len()).rev() {
+            let key = (scope[i].1.clone(), local.to_string());
+            if self.typedef_cache.contains_key(&key) {
+                typedef_scope = Some(scope[i].1.clone());
+                break;
+            }
         }
-        let base = raw
+        let typedef_scope = typedef_scope.unwrap_or_else(|| def_module.to_string());
+        let key = (typedef_scope, local.to_string());
+        self.ensure_typedef_interpreted(&key)?;
+        let (id, _) = self.typedef_cache.get(&key).ok_or_else(|| {
+            err(format!(
+                "typedef {local:?} not found in module {def_module:?}"
+            ))
+        })?;
+        Ok(*id)
+    }
+
+    fn ensure_typedef_interpreted(&mut self, key: &(String, String)) -> R<()> {
+        let Some((id, pending)) = self.typedef_cache.get(key) else {
+            return Ok(());
+        };
+        let id = *id;
+        if self.typedefs[id].ty.is_some() {
+            return Ok(());
+        }
+        let (def_module, scope, stmt) =
+            (pending.resolve.clone(), pending.scope.clone(), pending.stmt);
+        let base = stmt
             .sub("type")
-            .ok_or_else(|| err(format!("typedef {local:?} has no type")))?;
-        let ty = self.interpret_type(def_module, &def_scope, base)?;
-        let description = raw.sub("description").map(|d| d.arg_str().to_string());
-        let id = self.typedefs.len();
-        self.typedefs.push(Typedef {
-            name: local.to_string(),
-            module: def_module.to_string(),
-            scope: typedef_scope,
-            description,
-            ty,
-        });
-        self.typedef_cache.insert(key, id);
-        Ok(id)
+            .ok_or_else(|| err(format!("typedef {:?} has no type", self.typedefs[id].name)))?;
+        let ty = self.interpret_type(&def_module, &scope, base)?;
+        self.typedefs[id].ty = Some(ty);
+        Ok(())
     }
 
     fn interpret_type(&mut self, module: &str, scope: &Scope<'a>, t: &Stmt) -> R<TypeDescriptor> {
@@ -1560,7 +1615,10 @@ impl<'a> Builder<'a> {
             } else {
                 self.resolve_typedef(&def_module, &[], local)?
             };
-            let mut ty = self.typedefs[typedef_id].ty.clone();
+            let mut ty = self.typedefs[typedef_id]
+                .ty
+                .clone()
+                .expect("resolve_typedef always ensures its own type is interpreted first");
             ty.base = Some(typedef_id);
             ty
         };
@@ -1731,15 +1789,9 @@ impl<'a> Builder<'a> {
                 continue;
             }
             if let Some(mut ty) = self.nodes[id].ty.take() {
-                self.resolve_leafref_in_descriptor(Some(id), &mut ty)?;
+                self.resolve_leafref_in_descriptor(id, &mut ty)?;
                 self.nodes[id].ty = Some(ty);
             }
-        }
-
-        for id in 0..self.typedefs.len() {
-            let mut ty = self.typedefs[id].ty.clone();
-            let _ = self.resolve_leafref_in_descriptor(None, &mut ty);
-            self.typedefs[id].ty = ty;
         }
         Ok(())
     }
@@ -1751,11 +1803,7 @@ impl<'a> Builder<'a> {
         }
     }
 
-    fn resolve_leafref_in_descriptor(
-        &self,
-        node: Option<NodeId>,
-        ty: &mut TypeDescriptor,
-    ) -> R<()> {
+    fn resolve_leafref_in_descriptor(&self, node: NodeId, ty: &mut TypeDescriptor) -> R<()> {
         if ty.builtin == Builtin::Leafref {
             if let Some(path) = ty.leafref_path.clone() {
                 let module = ty
@@ -1763,26 +1811,21 @@ impl<'a> Builder<'a> {
                     .clone()
                     .expect("a leafref's source_module is always set alongside leafref_path");
                 let target = if let Some(abs) = path.trim().strip_prefix('/') {
-                    Some(self.resolve_absolute_schema_node_id(&module, &format!("/{abs}"))?)
+                    self.resolve_absolute_schema_node_id(&module, &format!("/{abs}"))?
                 } else {
-                    match node {
-                        Some(node) => Some(self.resolve_relative_leafref(node, &path).ok_or_else(|| {
-                            err(format!(
-                                "leafref path {path:?} (declared in module {module:?}) could not be resolved"
-                            ))
-                        })?),
-                        None => None,
-                    }
+                    self.resolve_relative_leafref(node, &path).ok_or_else(|| {
+                        err(format!(
+                            "leafref path {path:?} (declared in module {module:?}) could not be resolved"
+                        ))
+                    })?
                 };
-                if let Some(target) = target {
-                    let target_kw = &self.nodes[target].kw;
-                    if target_kw != "leaf" && target_kw != "leaf-list" {
-                        return Err(err(format!(
-                            "leafref path {path:?} (declared in module {module:?}) refers to a {target_kw}, not a leaf or leaf-list"
-                        )));
-                    }
-                    ty.leafref_target = Some(target);
+                let target_kw = &self.nodes[target].kw;
+                if target_kw != "leaf" && target_kw != "leaf-list" {
+                    return Err(err(format!(
+                        "leafref path {path:?} (declared in module {module:?}) refers to a {target_kw}, not a leaf or leaf-list"
+                    )));
                 }
+                ty.leafref_target = Some(target);
             }
         }
         for member in &mut ty.union_members {
@@ -1848,7 +1891,7 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
-    fn finish(mut self) -> R<Schema> {
+    fn compute_reachable_typedefs(&mut self) {
         let implemented_yang_data_root_ids: std::collections::HashSet<NodeId> = self
             .yang_data_roots
             .values()
@@ -1861,6 +1904,34 @@ impl<'a> Builder<'a> {
         self.yang_data_roots
             .retain(|_, id| implemented_yang_data_root_ids.contains(id));
 
+        let mut reachable_typedefs = std::collections::HashSet::new();
+        let mut identity_base_seeds = std::collections::HashSet::new();
+        let all_root_nodes: Vec<NodeId> = self
+            .module_root
+            .values()
+            .flat_map(|m| m.root_nodes.iter().copied())
+            .chain(self.yang_data_roots.values().copied())
+            .collect();
+        for root in all_root_nodes {
+            self.mark_reachable_typedefs_in_subtree(
+                root,
+                &mut reachable_typedefs,
+                &mut identity_base_seeds,
+            );
+        }
+        self.reachable_typedefs = reachable_typedefs;
+
+        let mut reachable_identities = std::collections::HashSet::new();
+        let mut stack: Vec<IdentityId> = identity_base_seeds.into_iter().collect();
+        while let Some(id) = stack.pop() {
+            if reachable_identities.insert(id) {
+                stack.extend(self.identities[id].derived.iter().copied());
+            }
+        }
+        self.reachable_identities = reachable_identities;
+    }
+
+    fn finish(mut self) -> R<Schema> {
         let yang_data_owners: std::collections::HashSet<&str> = self
             .yang_data_roots
             .values()
@@ -1932,30 +2003,6 @@ impl<'a> Builder<'a> {
             self.index_sids(yd_root, &mut sid_index);
         }
 
-        let mut reachable_typedefs = std::collections::HashSet::new();
-        let mut identity_base_seeds = std::collections::HashSet::new();
-        let all_root_nodes: Vec<NodeId> = self
-            .module_root
-            .values()
-            .flat_map(|m| m.root_nodes.iter().copied())
-            .chain(self.yang_data_roots.values().copied())
-            .collect();
-        for root in all_root_nodes {
-            self.mark_reachable_typedefs_in_subtree(
-                root,
-                &mut reachable_typedefs,
-                &mut identity_base_seeds,
-            );
-        }
-
-        let mut reachable_identities = std::collections::HashSet::new();
-        let mut stack: Vec<IdentityId> = identity_base_seeds.into_iter().collect();
-        while let Some(id) = stack.pop() {
-            if reachable_identities.insert(id) {
-                stack.extend(self.identities[id].derived.iter().copied());
-            }
-        }
-
         Ok(Schema {
             nodes: self.nodes,
             typedefs: self.typedefs,
@@ -1964,8 +2011,8 @@ impl<'a> Builder<'a> {
             import_only_modules,
             yang_data_roots: self.yang_data_roots,
             sid_index,
-            reachable_typedefs,
-            reachable_identities,
+            reachable_typedefs: self.reachable_typedefs,
+            reachable_identities: self.reachable_identities,
         })
     }
 
@@ -1991,7 +2038,11 @@ impl<'a> Builder<'a> {
     ) {
         if let Some(base) = ty.base {
             if out.insert(base) {
-                self.mark_reachable_typedefs(&self.typedefs[base].ty, out, identity_base_seeds);
+                let base_ty = self.typedefs[base]
+                    .ty
+                    .as_ref()
+                    .expect("every typedef's own type is interpreted before reachability runs");
+                self.mark_reachable_typedefs(base_ty, out, identity_base_seeds);
             }
         }
         identity_base_seeds.extend(ty.identity_bases.iter().copied());
@@ -2795,14 +2846,136 @@ mod tests {
     }
 
     #[test]
+    fn typedefs_are_listed_in_true_source_declaration_order_not_first_use_order() {
+        // "z" is declared before "a" at module level, but "a" is
+        // referenced first (by "early") -- first-use order would list
+        // "a" before "z"; true source declaration order (what
+        // interpret_scope_typedefs now guarantees) lists "z" before "a"
+        // regardless.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              typedef z {
+                type uint8;
+              }
+              typedef a {
+                type uint8;
+              }
+
+              leaf early {
+                type a;
+              }
+              leaf late {
+                type z;
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let names: Vec<String> = schema.typedefs().map(|t| t.name.clone()).collect();
+        assert_eq!(names, vec!["z", "a"]);
+    }
+
+    #[test]
+    fn typedefs_nested_in_a_container_keep_their_own_declaration_order() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              container bar {
+                typedef z {
+                  type uint8;
+                }
+                typedef a {
+                  type uint8;
+                }
+
+                leaf early {
+                  type a;
+                }
+                leaf late {
+                  type z;
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let names: Vec<String> = schema.typedefs().map(|t| t.name.clone()).collect();
+        assert_eq!(names, vec!["z", "a"]);
+    }
+
+    #[test]
+    fn typedefs_declared_in_a_grouping_keep_source_order_independently_per_use_site() {
+        // Mirrors a_typedef_declared_directly_in_a_grouping_gets_an_
+        // independent_identity_per_use_site's independence, but checks
+        // the ORDER each use site's own pair ends up in: both "bar"'s
+        // and "baz"'s own two typedefs (from the same grouping "g",
+        // declared z-then-a) must independently come out z-then-a, not
+        // reordered by which leaf references which first ("bar" uses
+        // "a" before "z"; "baz" uses "z" before "a").
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              grouping g {
+                typedef z {
+                  type uint8;
+                }
+                typedef a {
+                  type uint8;
+                }
+              }
+
+              container bar {
+                uses g;
+                leaf early {
+                  type a;
+                }
+                leaf late {
+                  type z;
+                }
+              }
+
+              container baz {
+                uses g;
+                leaf early {
+                  type z;
+                }
+                leaf late {
+                  type a;
+                }
+              }
+            }
+        "#;
+        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let names_and_scopes: Vec<(String, String)> = schema
+            .typedefs()
+            .map(|t| (t.name.clone(), t.scope.clone()))
+            .collect();
+        assert_eq!(
+            names_and_scopes,
+            vec![
+                ("z".to_string(), "/foo:bar".to_string()),
+                ("a".to_string(), "/foo:bar".to_string()),
+                ("z".to_string(), "/foo:baz".to_string()),
+                ("a".to_string(), "/foo:baz".to_string()),
+            ]
+        );
+    }
+
+    #[test]
     fn a_plain_unreferenced_typedef_is_unreachable() {
-        // Unlike typedefs_excludes_one_whose_only_use_site_is_deviated_
-        // away (a typedef created, then later excluded by reachability
-        // filtering once its use site is removed), a typedef nothing
-        // ever references in the first place is never even created --
-        // resolve_typedef only runs when a `type <name>;` reference is
-        // actually interpreted. Both paths must end in the same place:
-        // absent from typedefs() and typedef_by_name.
+        // A typedef is predeclared (and its own type eagerly
+        // interpreted) regardless of whether anything ever references
+        // it -- see a_malformed_unreferenced_typedef_is_a_schema_error
+        // for why that matters -- but it must still never appear in
+        // typedefs()/typedef_by_name unless something reachable
+        // actually uses it, exactly like
+        // typedefs_excludes_one_whose_only_use_site_is_deviated_away's
+        // reachability filtering.
         let src = r#"
             module foo {
               namespace "urn:foo";
@@ -2822,6 +2995,32 @@ mod tests {
         let schema = build(&[src.to_string()], &[], &[]).unwrap();
         assert_eq!(schema.typedefs().count(), 0);
         assert!(schema.typedef_by_name("foo", "percent").is_none());
+    }
+
+    #[test]
+    fn a_malformed_unreferenced_typedef_is_a_schema_error() {
+        // "unreachable" is a property of the document (which named
+        // types/identities a reader can look up), not an excuse to
+        // skip semantically checking a typedef's own well-formedness --
+        // "bad" names a type that's neither a builtin nor another
+        // typedef, so interpreting it must fail even though nothing
+        // ever references "bad" itself.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              typedef bad {
+                type no-such-type;
+              }
+
+              leaf bar {
+                type string;
+              }
+            }
+        "#;
+        let err = build(&[src.to_string()], &[], &[]).err().unwrap();
+        assert!(err.0.contains("no-such-type"), "{}", err.0);
     }
 
     #[test]
@@ -3233,14 +3432,18 @@ mod tests {
     }
 
     #[test]
-    fn a_typedefs_own_canonical_entry_has_its_leafref_target_resolved_too() {
-        // Unlike a use site, a typedef is never itself walked by the
-        // reachable-node pass -- its own canonical descriptor
-        // (`typedef_by_name`, as opposed to `pick`'s own use-site clone,
-        // already covered by leafref_resolves_through_a_typedef_to_its_
-        // concrete_target) needs its leafref target resolved directly
-        // too, which matters to any consumer (e.g. a resolved-yang-
-        // catalog dump) reading `schema.typedefs()`.
+    fn a_typedefs_own_canonical_entry_never_gets_a_leafref_target() {
+        // A typedef has no location in the schema tree, so there's no
+        // single node a relative leafref path could even be resolved
+        // against -- and even an absolute path's target, while
+        // resolvable in principle, is never actually resolved onto the
+        // typedef's own canonical descriptor. Only an actual use site's
+        // own clone (`pick`'s, covered by
+        // leafref_resolves_through_a_typedef_to_its_concrete_target)
+        // ever gets a resolved target -- RFC 7950 9.9.2 defines the
+        // leafref's context node as "the leaf or leaf-list node in the
+        // data tree that references the typedef", never the typedef
+        // itself.
         let src = r#"
             module foo {
               namespace "urn:foo";
@@ -3266,22 +3469,20 @@ mod tests {
         "#;
         let schema = build(&[src.to_string()], &[], &[]).unwrap();
         let bar_ref = schema.typedef_by_name("foo", "bar-ref").unwrap();
-        let target = bar_ref.ty().leafref_target().unwrap();
-        assert_eq!(target.kw, "leaf");
-        assert_eq!(target.local_name(), "name");
+        assert!(bar_ref.ty().leafref_target().is_none());
     }
 
     #[test]
-    fn a_typedefs_own_leafref_pointing_at_a_deviated_away_node_is_not_an_error() {
-        // Mirrors a_dangling_leafref_on_a_deviated_away_node_is_not_an_error,
-        // but for a typedef whose only use site is itself deviated away
-        // -- the typedef is still created (as a side effect of building
-        // the schema tree, before deviations run) but is now reachable
-        // from nowhere, so its own dangling leafref is inert. Nothing
-        // live ever needs it resolved, and typedefs_excludes_one_whose_
-        // only_use_site_is_deviated_away already covers that it's
-        // correctly excluded from lookup -- this just confirms the
-        // dangling leafref doesn't hard-error the whole build.
+    fn a_dangling_leafref_reached_through_a_typedef_is_an_error() {
+        // "pick" uses "removed-ref", a typedef whose own leafref points
+        // at a node a deviation removes -- interpret_type clones the
+        // typedef's own leafref_path/source_module into "pick"'s own
+        // descriptor, so the ordinary node-level dangling-leafref check
+        // (resolve_leafrefs's only leafref check now that a typedef's
+        // own canonical entry never gets a target -- see
+        // a_typedefs_own_canonical_entry_never_gets_a_leafref_target)
+        // still catches it even though the leafref was declared on a
+        // typedef, not directly on "pick".
         let src = r#"
             module foo {
               namespace "urn:foo";
@@ -3306,12 +3507,10 @@ mod tests {
               deviation /f:removed {
                 deviate not-supported;
               }
-              deviation /f:pick {
-                deviate not-supported;
-              }
             }
         "#;
-        assert!(build(&[src.to_string()], &[], &[]).is_ok());
+        let err = build(&[src.to_string()], &[], &[]).err().unwrap();
+        assert!(err.0.contains("removed"), "{}", err.0);
     }
 
     #[test]
