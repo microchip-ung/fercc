@@ -31,6 +31,7 @@ use serde::Deserialize;
 pub struct CatalogFiles {
     pub yang: Vec<String>,
     pub sid: Vec<String>,
+    pub ui_tailoring: Option<String>,
 }
 
 #[derive(Debug)]
@@ -109,7 +110,13 @@ pub fn load_workspace(repo_root: &Path) -> R<CatalogFiles> {
                 .map_err(|e| err(format!("reading {}: {e}", yang_path.display())))?,
         );
     }
-    Ok(CatalogFiles { yang, sid })
+    let ui_tailoring_path = repo_root.join("docs/sw_refs/yang/ui-tailoring.yaml");
+    let ui_tailoring = fs::read_to_string(&ui_tailoring_path).ok();
+    Ok(CatalogFiles {
+        yang,
+        sid,
+        ui_tailoring,
+    })
 }
 
 /// Load every `.yang`/`.sid` file directly in `dir` (a downloaded and
@@ -117,15 +124,24 @@ pub fn load_workspace(repo_root: &Path) -> R<CatalogFiles> {
 pub fn load_from_dir(dir: &Path) -> R<CatalogFiles> {
     let mut yang = Vec::new();
     let mut sid = Vec::new();
+    let mut ui_tailoring = None;
     for entry in fs::read_dir(dir)? {
         let path = entry?.path();
+        if path.file_name().and_then(|n| n.to_str()) == Some("ui-tailoring.yaml") {
+            ui_tailoring = Some(fs::read_to_string(&path)?);
+            continue;
+        }
         match path.extension().and_then(|e| e.to_str()) {
             Some("yang") => yang.push(fs::read_to_string(&path)?),
             Some("sid") => sid.push(fs::read_to_string(&path)?),
             _ => {}
         }
     }
-    Ok(CatalogFiles { yang, sid })
+    Ok(CatalogFiles {
+        yang,
+        sid,
+        ui_tailoring,
+    })
 }
 
 /// Fetch the catalog tarball named by `checksum` (the DUT's YANG-library
@@ -250,6 +266,61 @@ mod tests {
     }
 
     #[test]
+    fn load_from_dir_leaves_ui_tailoring_none_when_the_file_is_absent() {
+        let dir = unique_path("no-ui-tailoring");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("foo.yang"),
+            "module foo { namespace \"urn:foo\"; prefix f; }",
+        )
+        .unwrap();
+
+        let files = load_from_dir(&dir).unwrap();
+        assert!(files.ui_tailoring.is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_workspace_reads_ui_tailoring_when_present_and_leaves_it_none_when_absent() {
+        let repo_root = unique_path("workspace-ui-tailoring");
+        let yang_dir = repo_root.join("docs/sw_refs/yang");
+        fs::create_dir_all(&yang_dir).unwrap();
+        fs::create_dir_all(repo_root.join("support/scripts")).unwrap();
+        fs::write(
+            repo_root.join("support/scripts/gen-cc-nodes.yaml"),
+            "sid-files:\n- foo@2024-01-01.sid\n",
+        )
+        .unwrap();
+        fs::write(
+            yang_dir.join("foo.yang"),
+            "module foo { namespace \"urn:foo\"; prefix f; }",
+        )
+        .unwrap();
+        fs::write(
+            yang_dir.join("foo@2024-01-01.sid"),
+            r#"{"module": "foo", "revision": "2024-01-01", "identifier": "foo", "entries": []}"#,
+        )
+        .unwrap();
+
+        let files = load_workspace(&repo_root).unwrap();
+        assert!(files.ui_tailoring.is_none());
+
+        fs::write(
+            yang_dir.join("ui-tailoring.yaml"),
+            "ui-tailoring:\n  identity-accept-list: []\n",
+        )
+        .unwrap();
+        let files = load_workspace(&repo_root).unwrap();
+        assert_eq!(
+            files.ui_tailoring.unwrap(),
+            "ui-tailoring:\n  identity-accept-list: []\n"
+        );
+
+        let _ = fs::remove_dir_all(&repo_root);
+    }
+
+    #[test]
     fn nonexistent_fetcher_command_gives_a_clear_error() {
         let err =
             run_command_capturing_stdout("this-program-does-not-exist-anywhere", &[]).unwrap_err();
@@ -306,6 +377,9 @@ mod tests {
         let files = load_from_dir(&dest_dir).unwrap();
         assert!(!files.yang.is_empty());
         assert!(!files.sid.is_empty());
+        assert!(files
+            .ui_tailoring
+            .is_some_and(|t| t.contains("identity-accept-list")));
         assert!(dest_dir.join(".complete").is_file());
 
         // A repeat call must be short-circuited by the `.complete`

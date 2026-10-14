@@ -218,11 +218,7 @@ fn matches_all_patterns(s: &str, patterns: &[String]) -> R<bool> {
 /// fed to a generic validator library (considered and deliberately not
 /// done -- see this session's notes: it would need a real dependency
 /// for what `TypeDescriptor::ranges`/`patterns` already hold directly on
-/// the node being encoded, and it can't help disagreeing with the encoder's
-/// own identityref acceptance rule, since `type2schema`'s `enum`
-/// deliberately excludes the base identity to match Ruby while the
-/// encoder's own `all_identity_bases` correctly includes it per RFC
-/// 7950 "derived from or equal to"). Any failure here -- shape,
+/// the node being encoded). Any failure here -- shape,
 /// range, length, pattern, or an unknown enum/bit/identity name (already
 /// hard-checked by `encode_enum`/`encode_bits`/`encode_identityref`) --
 /// gets the exact same `--continue` treatment via `lenient`, matching
@@ -1883,7 +1879,7 @@ mod tests {
     // exercises (see yang/tests/fixtures.rs).
 
     fn empty_schema() -> Schema {
-        crate::schema::build(&[], &[], &[]).expect("empty schema builds")
+        crate::schema::build(&[], &[], &[], &[]).expect("empty schema builds")
     }
 
     #[test]
@@ -2191,7 +2187,7 @@ mod tests {
                 {"namespace": "data", "identifier": "/test:box/setting", "sid": 1009}
             ]
         }"#;
-        crate::schema::build(&[yang.to_string()], &[sid.to_string()], &[])
+        crate::schema::build(&[yang.to_string()], &[sid.to_string()], &[], &[])
             .expect("validation test schema builds")
     }
 

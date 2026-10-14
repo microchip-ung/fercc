@@ -237,6 +237,20 @@ pub struct Identity {
     pub sid: Option<i64>,
 }
 
+fn transitive_derived_excluding_self(
+    identities: &[Identity],
+    start: IdentityId,
+) -> std::collections::HashSet<IdentityId> {
+    let mut out = std::collections::HashSet::new();
+    let mut stack: Vec<IdentityId> = identities[start].derived.clone();
+    while let Some(id) = stack.pop() {
+        if out.insert(id) {
+            stack.extend(identities[id].derived.iter().copied());
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone)]
 pub struct Node {
     pub kw: String,
@@ -261,6 +275,7 @@ pub struct Node {
     pub status: Option<Status>,
     pub default: Option<String>,
     pub synthetic: bool,
+    references_modules: Vec<String>,
 }
 
 impl Node {
@@ -506,17 +521,14 @@ impl<'a> IdentityRef<'a> {
             .map(move |&id| IdentityRef { schema, id })
     }
 
-    /// All identities transitively derived from this one (including
-    /// itself), mirroring `Identity#derived_from`.
+    /// All identities transitively derived from this one, never
+    /// including itself, mirroring `Identity#derived_from`.
     pub fn derived_from(&self) -> std::collections::HashSet<IdentityRef<'a>> {
-        let mut out = std::collections::HashSet::new();
-        let mut stack = vec![*self];
-        while let Some(id) = stack.pop() {
-            if out.insert(id) {
-                stack.extend(id.derived());
-            }
-        }
-        out
+        let schema = self.schema;
+        transitive_derived_excluding_self(&schema.identities, self.id)
+            .into_iter()
+            .map(|id| IdentityRef { schema, id })
+            .collect()
     }
 }
 
@@ -791,8 +803,11 @@ struct Builder<'a> {
     module_root: HashMap<String, Module>,
     yang_data_roots: HashMap<String, NodeId>,
     implemented_yang_data_roots: std::collections::HashSet<String>,
+    identity_accept_lists: HashMap<String, Vec<String>>,
     reachable_typedefs: std::collections::HashSet<TypedefId>,
     reachable_identities: std::collections::HashSet<IdentityId>,
+    implemented_identities: std::collections::HashSet<IdentityId>,
+    referenced_modules: std::collections::HashSet<String>,
 }
 
 /// Parse `.yang` sources and build the full schema, including flattening
@@ -809,6 +824,7 @@ pub fn build(
     yang_sources: &[String],
     sid_sources: &[String],
     implemented_yang_data_roots: &[&str],
+    identity_accept_lists: &[(&str, &[&str])],
 ) -> R<Schema> {
     let parsed: Vec<Stmt> = yang_sources
         .iter()
@@ -851,8 +867,19 @@ pub fn build(
             .iter()
             .map(|s| s.to_string())
             .collect(),
+        identity_accept_lists: identity_accept_lists
+            .iter()
+            .map(|&(base, accepted)| {
+                (
+                    base.to_string(),
+                    accepted.iter().map(|s| s.to_string()).collect(),
+                )
+            })
+            .collect(),
         reachable_typedefs: Default::default(),
         reachable_identities: Default::default(),
+        implemented_identities: Default::default(),
+        referenced_modules: Default::default(),
     };
 
     let module_names: Vec<String> = parsed.iter().map(|m| m.arg_str().to_string()).collect();
@@ -861,7 +888,7 @@ pub fn build(
     }
 
     b.apply_deviations(&parsed)?;
-    b.compute_reachable_typedefs();
+    b.compute_reachable_typedefs()?;
     b.resolve_leafrefs()?;
 
     for sid_src in sid_sources {
@@ -898,6 +925,7 @@ impl<'a> Builder<'a> {
             status: None,
             default: None,
             synthetic,
+            references_modules: Vec::new(),
         });
         if !detached {
             if let Some(p) = parent {
@@ -1084,8 +1112,17 @@ impl<'a> Builder<'a> {
         resolve: &str,
         naming: &str,
         s: &'a Stmt,
-        _parent: Option<NodeId>,
+        parent: Option<NodeId>,
     ) -> R<()> {
+        let ext_module = s.prefix.as_deref().and_then(|prefix| {
+            self.contexts
+                .get(resolve)
+                .and_then(|ctx| ctx.resolve_prefix(prefix))
+                .map(str::to_string)
+        });
+        if let (Some(p), Some(m)) = (parent, &ext_module) {
+            self.nodes[p].references_modules.push(m.clone());
+        }
         // Only the RFC 8040 `rc:yang-data` extension is handled (matches
         // yang-utils.rb): must contain exactly one container, promoted to
         // a top-level root node named "module:<container's own name>" --
@@ -1123,6 +1160,9 @@ impl<'a> Builder<'a> {
             self.nodes[root].parent = None;
             self.nodes[root].name = name.clone();
             self.clear_config_in_subtree(root);
+            if let Some(m) = &ext_module {
+                self.nodes[root].references_modules.push(m.clone());
+            }
             // `rc:yang-data` roots aren't children of their module's
             // node (they're "not part of the datastore" -- see
             // finish()'s comment -- so must stay out of module_root's
@@ -1339,7 +1379,22 @@ impl<'a> Builder<'a> {
         let mut inner_scope = def_scope;
         inner_scope.push((raw, use_site_scope.clone()));
         self.interpret_scope_typedefs(&def_module, &use_site_scope, &inner_scope, &raw.subs)?;
-        self.interpret_children(&def_module, naming, &inner_scope, &raw.subs, parent)?;
+        match parent {
+            Some(p) => {
+                self.interpret_children(&def_module, naming, &inner_scope, &raw.subs, parent)?;
+                self.nodes[p].references_modules.push(def_module.clone());
+            }
+            None => {
+                let module = &self.module_root[naming];
+                let before = module.root_nodes.len();
+                self.interpret_children(&def_module, naming, &inner_scope, &raw.subs, parent)?;
+                let module = &self.module_root[naming];
+                let new_roots: Vec<NodeId> = module.root_nodes[before..].to_vec();
+                for root in new_roots {
+                    self.nodes[root].references_modules.push(def_module.clone());
+                }
+            }
+        }
 
         // An augment nested inside this `uses` targets a path within the
         // grouping's own body, which was just spliced in above. It's
@@ -1891,7 +1946,71 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
-    fn compute_reachable_typedefs(&mut self) {
+    fn restrict_identity_accept_lists(&mut self) -> R<()> {
+        for (base_name, accepted_names) in &self.identity_accept_lists {
+            let (base_module, base_local) = base_name.split_once(':').ok_or_else(|| {
+                err(format!(
+                    "identity accept-list base {base_name:?} must be a qualified \"module:name\""
+                ))
+            })?;
+            let Some(&base_id) = self
+                .identity_by_module_name
+                .get(&(base_module.to_string(), base_local.to_string()))
+            else {
+                continue;
+            };
+            let mut accepted_ids = Vec::new();
+            for accepted_name in accepted_names {
+                let (module, local) = accepted_name.split_once(':').ok_or_else(|| {
+                    err(format!(
+                        "identity accept-list entry {accepted_name:?} must be a qualified \"module:name\""
+                    ))
+                })?;
+                let id = *self
+                    .identity_by_module_name
+                    .get(&(module.to_string(), local.to_string()))
+                    .ok_or_else(|| {
+                        err(format!(
+                            "identity accept-list entry {accepted_name:?} (accepted by base {base_name:?}) does not name a real identity"
+                        ))
+                    })?;
+                accepted_ids.push(id);
+            }
+
+            let mut allowed: std::collections::HashSet<IdentityId> =
+                accepted_ids.iter().copied().collect();
+            for (accepted_id, accepted_name) in accepted_ids.iter().zip(accepted_names.iter()) {
+                let mut ancestors = std::collections::HashSet::new();
+                let mut stack = vec![*accepted_id];
+                while let Some(id) = stack.pop() {
+                    for &parent in &self.identities[id].base {
+                        if ancestors.insert(parent) {
+                            stack.push(parent);
+                        }
+                    }
+                }
+                if !ancestors.contains(&base_id) {
+                    return Err(err(format!(
+                        "identity accept-list entry {accepted_name:?} is not actually derived from base {base_name:?}"
+                    )));
+                }
+                ancestors.remove(&base_id);
+                allowed.extend(ancestors);
+            }
+
+            self.identities[base_id]
+                .derived
+                .retain(|d| allowed.contains(d));
+            for &id in &allowed {
+                self.identities[id].derived.retain(|d| allowed.contains(d));
+            }
+        }
+        Ok(())
+    }
+
+    fn compute_reachable_typedefs(&mut self) -> R<()> {
+        self.restrict_identity_accept_lists()?;
+
         let implemented_yang_data_root_ids: std::collections::HashSet<NodeId> = self
             .yang_data_roots
             .values()
@@ -1906,6 +2025,7 @@ impl<'a> Builder<'a> {
 
         let mut reachable_typedefs = std::collections::HashSet::new();
         let mut identity_base_seeds = std::collections::HashSet::new();
+        let mut referenced_modules = std::collections::HashSet::new();
         let all_root_nodes: Vec<NodeId> = self
             .module_root
             .values()
@@ -1917,18 +2037,28 @@ impl<'a> Builder<'a> {
                 root,
                 &mut reachable_typedefs,
                 &mut identity_base_seeds,
+                &mut referenced_modules,
             );
         }
         self.reachable_typedefs = reachable_typedefs;
+        self.referenced_modules = referenced_modules;
 
         let mut reachable_identities = std::collections::HashSet::new();
-        let mut stack: Vec<IdentityId> = identity_base_seeds.into_iter().collect();
+        let mut stack: Vec<IdentityId> = identity_base_seeds.iter().copied().collect();
         while let Some(id) = stack.pop() {
             if reachable_identities.insert(id) {
                 stack.extend(self.identities[id].derived.iter().copied());
             }
         }
         self.reachable_identities = reachable_identities;
+
+        let mut implemented_identities = std::collections::HashSet::new();
+        for &seed in &identity_base_seeds {
+            implemented_identities
+                .extend(transitive_derived_excluding_self(&self.identities, seed));
+        }
+        self.implemented_identities = implemented_identities;
+        Ok(())
     }
 
     fn finish(mut self) -> R<Schema> {
@@ -1936,6 +2066,12 @@ impl<'a> Builder<'a> {
             .yang_data_roots
             .values()
             .map(|&id| self.nodes[id].owner_module.as_str())
+            .collect();
+
+        let implemented_identity_owners: std::collections::HashSet<&str> = self
+            .implemented_identities
+            .iter()
+            .map(|&id| self.identities[id].module.as_str())
             .collect();
 
         let implemented_names: std::collections::HashSet<String> = self
@@ -1950,35 +2086,58 @@ impl<'a> Builder<'a> {
                 });
                 let has_deviation = raw.sub("deviation").is_some();
                 let has_yang_data = yang_data_owners.contains(name.as_str());
-                has_root_nodes || has_surviving_augment || has_deviation || has_yang_data
+                let has_implemented_identity = implemented_identity_owners.contains(name.as_str());
+                has_root_nodes
+                    || has_surviving_augment
+                    || has_deviation
+                    || has_yang_data
+                    || has_implemented_identity
             })
             .map(|(name, _)| name.clone())
             .collect();
 
+        let mut used_names: std::collections::HashSet<String> = self
+            .reachable_typedefs
+            .iter()
+            .map(|&id| self.typedefs[id].module.clone())
+            .chain(
+                self.reachable_identities
+                    .iter()
+                    .map(|&id| self.identities[id].module.clone()),
+            )
+            .chain(self.referenced_modules.iter().cloned())
+            .collect();
+        used_names.retain(|name| !implemented_names.contains(name));
+
+        let graph_names: std::collections::HashSet<&str> = implemented_names
+            .iter()
+            .map(String::as_str)
+            .chain(used_names.iter().map(String::as_str))
+            .collect();
         let mut import_only_modules: Vec<ImportOnlyModule> = Vec::new();
-        let mut seen_keys = std::collections::HashSet::new();
-        let mut visited = std::collections::HashSet::new();
-        let mut stack: Vec<&str> = implemented_names.iter().map(|name| name.as_str()).collect();
-        while let Some(name) = stack.pop() {
-            if !visited.insert(name) {
-                continue;
-            }
-            let raw = self.raw_modules[name];
-            for imp in raw.subs_of("import") {
-                let imp_name = imp.arg_str();
-                if !implemented_names.contains(imp_name) {
-                    let revision_date = imp.sub("revision-date").map(|r| r.arg_str().to_string());
-                    if seen_keys.insert((imp_name.to_string(), revision_date.clone())) {
-                        let imported = &self.module_root[imp_name];
-                        import_only_modules.push(ImportOnlyModule {
-                            name: imported.name.clone(),
-                            namespace: imported.namespace.clone(),
-                            import_revision_date: revision_date,
-                            sid: imported.sid,
-                        });
+        for name in &used_names {
+            let module = &self.module_root[name];
+            let mut revision_dates: std::collections::HashSet<Option<String>> =
+                std::collections::HashSet::new();
+            for &importer in &graph_names {
+                let raw = self.raw_modules[importer];
+                for imp in raw.subs_of("import") {
+                    if imp.arg_str() == name.as_str() {
+                        revision_dates
+                            .insert(imp.sub("revision-date").map(|r| r.arg_str().to_string()));
                     }
-                    stack.push(imp_name);
                 }
+            }
+            if revision_dates.is_empty() {
+                revision_dates.insert(None);
+            }
+            for revision_date in revision_dates {
+                import_only_modules.push(ImportOnlyModule {
+                    name: module.name.clone(),
+                    namespace: module.namespace.clone(),
+                    import_revision_date: revision_date,
+                    sid: module.sid,
+                });
             }
         }
         self.module_root
@@ -2021,12 +2180,19 @@ impl<'a> Builder<'a> {
         node: NodeId,
         out: &mut std::collections::HashSet<TypedefId>,
         identity_base_seeds: &mut std::collections::HashSet<IdentityId>,
+        referenced_modules: &mut std::collections::HashSet<String>,
     ) {
         if let Some(ty) = &self.nodes[node].ty {
             self.mark_reachable_typedefs(ty, out, identity_base_seeds);
         }
+        referenced_modules.extend(self.nodes[node].references_modules.iter().cloned());
         for &c in &self.nodes[node].children {
-            self.mark_reachable_typedefs_in_subtree(c, out, identity_base_seeds);
+            self.mark_reachable_typedefs_in_subtree(
+                c,
+                out,
+                identity_base_seeds,
+                referenced_modules,
+            );
         }
     }
 
@@ -2079,7 +2245,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         let bar = schema.node_by_data_path("/foo:bar").unwrap();
         assert_eq!(bar.status, Some(Status::Current));
         let baz = bar.find_child("baz").unwrap();
@@ -2109,7 +2275,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &["/ietf-coreconf:error"]).unwrap();
+        let schema = build(&[src.to_string()], &[], &["/ietf-coreconf:error"], &[]).unwrap();
         let error_root = schema
             .yang_data_root_by_name("ietf-coreconf:error")
             .unwrap();
@@ -2140,7 +2306,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &["/ietf-coreconf:error"]).unwrap();
+        let schema = build(&[src.to_string()], &[], &["/ietf-coreconf:error"], &[]).unwrap();
         let error_root = schema
             .yang_data_root_by_name("ietf-coreconf:error")
             .unwrap();
@@ -2165,7 +2331,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         let bar = schema.node_by_data_path("/foo:bar").unwrap();
         assert_eq!(bar.status, Some(Status::Deprecated));
         let baz = bar.find_child("baz").unwrap();
@@ -2185,7 +2351,7 @@ mod tests {
               }
             }
         "#;
-        let err = build(&[src.to_string()], &[], &[]).err().unwrap();
+        let err = build(&[src.to_string()], &[], &[], &[]).err().unwrap();
         assert!(err.0.contains("future-proofed"), "{}", err.0);
     }
 
@@ -2209,7 +2375,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         // choice/case are spliced out of the flattened data-node-path
         // tree, so resolve via schema-node-path to see the synthesized
         // case node.
@@ -2243,7 +2409,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         let input = schema.node_by_schema_path("/foo:bar/input").unwrap();
         let output = schema.node_by_schema_path("/foo:bar/output").unwrap();
         assert_eq!(input.status, None);
@@ -2294,7 +2460,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
 
         let bar_input = schema.node_by_schema_path("/foo:bar/input").unwrap();
         let bar_output = schema.node_by_schema_path("/foo:bar/output").unwrap();
@@ -2342,7 +2508,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         assert!(schema.node_by_data_path("/foo:c/x").is_some());
     }
 
@@ -2379,7 +2545,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         let outer = schema.node_by_data_path("/foo:outer").unwrap();
         let c = outer.find_child("c").unwrap();
         let x = c.find_child("x");
@@ -2410,7 +2576,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         let animal = schema.identity_by_name("foo", "animal").unwrap();
         assert_eq!(animal.name, "animal");
         let dog = schema.identity_by_name("foo", "dog").unwrap();
@@ -2449,7 +2615,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         let mut names: Vec<String> = schema.identities().map(|i| i.name.clone()).collect();
         names.sort();
         assert_eq!(names, vec!["animal", "dog"]);
@@ -2480,7 +2646,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         let animal = schema.identity_by_name("foo", "animal").unwrap();
         assert_eq!(animal.description.as_deref(), Some("a living creature"));
         let rock = schema.identity_by_name("foo", "rock").unwrap();
@@ -2506,7 +2672,7 @@ mod tests {
                 {"namespace": "module", "identifier": "foo", "sid": 5000}
             ]
         }"#;
-        let schema = build(&[src.to_string()], &[sid.to_string()], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[sid.to_string()], &[], &[]).unwrap();
         let module = schema.module_by_sid(5000).unwrap();
         assert_eq!(module.name, "foo");
         assert!(schema.module_by_sid(9999).is_none());
@@ -2548,6 +2714,7 @@ mod tests {
             &[src.to_string()],
             &[sid.to_string()],
             &["/ietf-coreconf:error"],
+            &[],
         )
         .unwrap();
         let error_root = schema
@@ -2623,6 +2790,7 @@ mod tests {
             &[foo.to_string(), bar.to_string(), baz.to_string()],
             &[sid.to_string(), sid2.to_string()],
             &[],
+            &[],
         )
         .unwrap();
 
@@ -2652,7 +2820,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         let module = schema.module_by_name("foo").unwrap();
         let names: Vec<String> = module
             .root_nodes()
@@ -2690,7 +2858,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         let percent = schema.typedef_by_name("foo", "percent").unwrap();
         assert_eq!(percent.ty().ranges, vec![(0, 100)]);
 
@@ -2718,7 +2886,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         assert!(schema.typedef_by_name("foo", "string").is_none());
         assert!(schema.typedef_by_name("foo", "no-such-typedef").is_none());
     }
@@ -2751,7 +2919,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         let bar = schema.node_by_data_path("/foo:bar").unwrap();
 
         let inline = bar.find_child("inline").unwrap().ty().unwrap();
@@ -2791,7 +2959,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
 
         let bar = schema.node_by_data_path("/foo:bar").unwrap();
         let bar_ty = bar.ty().unwrap();
@@ -2835,7 +3003,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         let names: Vec<String> = schema.typedefs().map(|t| t.name.clone()).collect();
         assert_eq!(names, vec!["percent"]);
         let percent = schema.typedef_by_name("foo", "percent").unwrap();
@@ -2872,7 +3040,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         let names: Vec<String> = schema.typedefs().map(|t| t.name.clone()).collect();
         assert_eq!(names, vec!["z", "a"]);
     }
@@ -2901,7 +3069,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         let names: Vec<String> = schema.typedefs().map(|t| t.name.clone()).collect();
         assert_eq!(names, vec!["z", "a"]);
     }
@@ -2950,7 +3118,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         let names_and_scopes: Vec<(String, String)> = schema
             .typedefs()
             .map(|t| (t.name.clone(), t.scope.clone()))
@@ -2992,7 +3160,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         assert_eq!(schema.typedefs().count(), 0);
         assert!(schema.typedef_by_name("foo", "percent").is_none());
     }
@@ -3019,7 +3187,7 @@ mod tests {
               }
             }
         "#;
-        let err = build(&[src.to_string()], &[], &[]).err().unwrap();
+        let err = build(&[src.to_string()], &[], &[], &[]).err().unwrap();
         assert!(err.0.contains("no-such-type"), "{}", err.0);
     }
 
@@ -3041,7 +3209,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         assert_eq!(schema.identities().count(), 0);
         assert!(schema.identity_by_name("foo", "animal").is_none());
     }
@@ -3074,7 +3242,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         assert_eq!(schema.typedefs().count(), 0);
         assert!(schema.typedef_by_name("foo", "percent").is_none());
     }
@@ -3119,7 +3287,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         assert_eq!(schema.typedefs().count(), 0);
         assert!(schema.typedef_by_name("foo", "percent").is_none());
         assert_eq!(schema.identities().count(), 0);
@@ -3150,7 +3318,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         let x = schema.node_by_data_path("/foo:bar/x").unwrap();
         let ty = x.ty().unwrap();
         assert_eq!(ty.ranges, vec![(0, 100)]);
@@ -3191,7 +3359,7 @@ mod tests {
               }
             }
         "#;
-        let err = build(&[src.to_string()], &[], &[]).err().unwrap();
+        let err = build(&[src.to_string()], &[], &[], &[]).err().unwrap();
         assert!(err.0.contains("percent"), "{}", err.0);
     }
 
@@ -3242,7 +3410,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
 
         let list_x = schema.node_by_data_path("/foo:entry/x").unwrap();
         assert_eq!(list_x.ty().unwrap().ranges, vec![(0, 100)]);
@@ -3274,7 +3442,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         assert!(schema.node_by_data_path("/foo:bar/inner/x").is_some());
     }
 
@@ -3298,7 +3466,7 @@ mod tests {
               }
             }
         "#;
-        let err = build(&[src.to_string()], &[], &[]).err().unwrap();
+        let err = build(&[src.to_string()], &[], &[], &[]).err().unwrap();
         assert!(err.0.contains("g"), "{}", err.0);
     }
 
@@ -3329,7 +3497,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         assert!(schema.node_by_data_path("/foo:bar/x").is_some());
     }
 
@@ -3366,7 +3534,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
 
         let bar_x = schema.node_by_data_path("/foo:bar/x").unwrap();
         let bar_base = bar_x.ty().unwrap().base().unwrap();
@@ -3424,7 +3592,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         let pick = schema.node_by_data_path("/foo:pick").unwrap();
         let target = pick.ty().unwrap().leafref_target().unwrap();
         assert_eq!(target.kw, "leaf");
@@ -3467,7 +3635,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         let bar_ref = schema.typedef_by_name("foo", "bar-ref").unwrap();
         assert!(bar_ref.ty().leafref_target().is_none());
     }
@@ -3509,7 +3677,7 @@ mod tests {
               }
             }
         "#;
-        let err = build(&[src.to_string()], &[], &[]).err().unwrap();
+        let err = build(&[src.to_string()], &[], &[], &[]).err().unwrap();
         assert!(err.0.contains("removed"), "{}", err.0);
     }
 
@@ -3527,7 +3695,7 @@ mod tests {
               }
             }
         "#;
-        let err = build(&[src.to_string()], &[], &[]).err().unwrap();
+        let err = build(&[src.to_string()], &[], &[], &[]).err().unwrap();
         assert!(err.0.contains("no-such-node"), "{}", err.0);
     }
 
@@ -3551,7 +3719,7 @@ mod tests {
               }
             }
         "#;
-        let err = build(&[src.to_string()], &[], &[]).err().unwrap();
+        let err = build(&[src.to_string()], &[], &[], &[]).err().unwrap();
         assert!(err.0.contains("container"), "{}", err.0);
     }
 
@@ -3589,7 +3757,7 @@ mod tests {
               }
             }
         "#;
-        assert!(build(&[src.to_string()], &[], &[]).is_ok());
+        assert!(build(&[src.to_string()], &[], &[], &[]).is_ok());
     }
 
     #[test]
@@ -3617,7 +3785,7 @@ mod tests {
                 {"namespace": "data", "identifier": "/foo:gone", "sid": 5000}
             ]
         }"#;
-        let present = build(&[src.to_string()], &[sid.to_string()], &[]).unwrap();
+        let present = build(&[src.to_string()], &[sid.to_string()], &[], &[]).unwrap();
         assert!(present.node_by_sid(5000).is_some());
         assert!(present.node_by_schema_path("/foo:gone").is_some());
         assert!(present.node_by_data_path("/foo:gone").is_some());
@@ -3638,7 +3806,7 @@ mod tests {
               }
             }
         "#;
-        let deviated = build(&[src_deviated.to_string()], &[sid.to_string()], &[]).unwrap();
+        let deviated = build(&[src_deviated.to_string()], &[sid.to_string()], &[], &[]).unwrap();
         assert!(deviated.node_by_sid(5000).is_none());
         assert!(deviated.node_by_schema_path("/foo:gone").is_none());
         assert!(deviated.node_by_data_path("/foo:gone").is_none());
@@ -3662,7 +3830,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
 
         let via_schema_path = schema
             .node_by_schema_path("/foo:bar/pick/picked/sub")
@@ -3722,7 +3890,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string(), src2.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string(), src2.to_string()], &[], &[], &[]).unwrap();
 
         let foo_shared = schema.node_by_schema_path("/foo:shared").unwrap();
         assert!(foo_shared.find_child("x").is_some());
@@ -3759,7 +3927,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &["/ietf-coreconf:error"]).unwrap();
+        let schema = build(&[src.to_string()], &[], &["/ietf-coreconf:error"], &[]).unwrap();
         let error_root = schema
             .yang_data_root_by_name("ietf-coreconf:error")
             .unwrap();
@@ -3782,7 +3950,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         assert!(schema.node_by_schema_path("/foo:no-such-node").is_none());
         assert!(schema.node_by_schema_path("/no-such-module:bar").is_none());
         assert!(schema.node_by_data_path("/foo:no-such-node").is_none());
@@ -3803,7 +3971,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         let module = schema.module_by_name("foo").unwrap();
         assert_eq!(module.namespace, "urn:foo");
         assert_eq!(module.revision.as_deref(), Some("2026-01-01"));
@@ -3821,7 +3989,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         let module = schema.module_by_name("foo").unwrap();
         assert_eq!(module.revision, None);
     }
@@ -3833,10 +4001,14 @@ mod tests {
         // deviations. "foo" declares a real container, but "foo-dev"
         // (which has no data nodes of its own, only a deviation)
         // deviates it away entirely with deviate not-supported -- so
-        // "foo" implements nothing live and must be import-only, even
-        // though its raw text alone would look like a real module.
+        // "foo" implements nothing live and must not be in modules(),
+        // even though its raw text alone would look like a real module.
         // "foo-dev" stays implemented, since the deviation statement
-        // itself counts even without any node of its own.
+        // itself counts even without any node of its own. "foo" isn't
+        // import-only either: a deviation names a schema-node path, not
+        // a reusable definition (typedef/identity/grouping/extension),
+        // so "foo-dev" never actually resolves against anything "foo"
+        // declares -- "foo" belongs in neither set.
         let foo = r#"
             module foo {
               namespace "urn:foo";
@@ -3863,14 +4035,10 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[foo.to_string(), foo_dev.to_string()], &[], &[]).unwrap();
+        let schema = build(&[foo.to_string(), foo_dev.to_string()], &[], &[], &[]).unwrap();
         assert!(schema.module_by_name("foo").is_none());
         assert!(schema.module_by_name("foo-dev").is_some());
-        let import_only_names: Vec<&str> = schema
-            .import_only_modules()
-            .map(|m| m.name.as_str())
-            .collect();
-        assert_eq!(import_only_names, vec!["foo"]);
+        assert!(schema.import_only_modules().all(|m| m.name != "foo"));
     }
 
     #[test]
@@ -3906,7 +4074,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[foo.to_string(), bar.to_string()], &[], &[]).unwrap();
+        let schema = build(&[foo.to_string(), bar.to_string()], &[], &[], &[]).unwrap();
         assert!(schema.module_by_name("bar").is_some());
         assert!(schema.import_only_modules().all(|m| m.name != "bar"));
     }
@@ -3946,7 +4114,7 @@ mod tests {
               uses l:g;
             }
         "#;
-        let schema = build(&[lib.to_string(), foo.to_string()], &[], &[]).unwrap();
+        let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[]).unwrap();
         assert!(schema.module_by_name("foo").is_some());
         assert!(schema.import_only_modules().all(|m| m.name != "foo"));
         // And "lib" itself (declares only the grouping, never used
@@ -3984,7 +4152,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &["/ietf-coreconf:error"]).unwrap();
+        let schema = build(&[src.to_string()], &[], &["/ietf-coreconf:error"], &[]).unwrap();
         assert!(schema.module_by_name("ietf-coreconf").is_some());
         assert!(schema
             .import_only_modules()
@@ -4000,11 +4168,13 @@ mod tests {
         // "ietf-restconf" case (whose own yang-errors/yang-api
         // templates build real nodes just like any other rc:yang-data
         // body, but must never flip this module to implemented, since
-        // this device never implements RESTCONF). "bar" imports "foo"
-        // so it's actually listed (an import-only module nothing
-        // imports appears in neither collection, see
+        // this device never implements RESTCONF). "bar" has nothing of
+        // its own that resolves against anything "foo" declares -- its
+        // leaf is plain "string", not even using "foo"'s own
+        // yang-data-building extension -- so "foo" belongs in neither
+        // set, matching
         // a_standalone_module_shaped_like_import_only_and_imported_by_
-        // nothing_is_in_neither_set).
+        // nothing_is_in_neither_set.
         let foo = r#"
             module foo {
               namespace "urn:foo";
@@ -4033,9 +4203,122 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[foo.to_string(), bar.to_string()], &[], &[]).unwrap();
+        let schema = build(&[foo.to_string(), bar.to_string()], &[], &[], &[]).unwrap();
         assert!(schema.module_by_name("foo").is_none());
-        assert!(schema.import_only_modules().any(|m| m.name == "foo"));
+        assert!(schema.import_only_modules().all(|m| m.name != "foo"));
+    }
+
+    #[test]
+    fn a_module_declaring_only_a_live_identityrefs_base_identity_is_import_only() {
+        // RFC 7950 7.18.2: identity derivation is irreflexive -- an
+        // identity is never derived from itself -- so 9.10.2's "valid
+        // values ... are any identities derived from" a live
+        // identityref's base excludes the base itself. "bases" declares
+        // only "animal" (the base "foo"'s leaf names), nothing actually
+        // derived from it, so nothing in "bases" is ever a real wire
+        // value -- it must stay import-only even though its own
+        // identity is named directly by a live identityref's "base".
+        // Confirmed against the real device: the real catalog's own
+        // ieee802-dot1q-types (which declares only base identities like
+        // "type-of-operation", reached by ieee802-dot1q-sched's live
+        // "operation-name" leaf) is tagged import-only in the real
+        // firmware's own generated classification
+        // (lma_cc_module_ieee802_dot1q_types.c's
+        // lma_cc_import_only_module_t), not implemented.
+        let bases = r#"
+            module bases {
+              namespace "urn:bases";
+              prefix bs;
+
+              identity animal;
+            }
+        "#;
+        let foo = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              import bases {
+                prefix bs;
+              }
+
+              leaf pet {
+                type identityref {
+                  base bs:animal;
+                }
+              }
+            }
+        "#;
+        let schema = build(&[bases.to_string(), foo.to_string()], &[], &[], &[]).unwrap();
+        assert!(schema.module_by_name("bases").is_none());
+        assert!(schema.import_only_modules().any(|m| m.name == "bases"));
+    }
+
+    #[test]
+    fn a_module_whose_identity_is_reached_only_through_another_identitys_derivation_is_implemented()
+    {
+        // Mirrors the real catalog's ieee802-dot1q-sched/-types case:
+        // "derived" (declaring "dog", derived from "animal" in
+        // "bases") is never itself named by any identityref's own
+        // "base" -- only "animal" is -- but "dog" is still a legal
+        // identityref value (RFC 7950 9.10.2's derived-identity closure,
+        // already proven document-wide by
+        // identities_only_lists_ones_reachable_from_an_identityref_
+        // usage), so "derived" must count as implemented -- but "bases"
+        // (declaring only the base identity itself, never a real wire
+        // value per 7.18.2's irreflexivity -- see
+        // a_module_declaring_only_a_live_identityrefs_base_identity_is_
+        // import_only) must stay import-only even here, where something
+        // real is genuinely implemented through it.
+        let bases = r#"
+            module bases {
+              namespace "urn:bases";
+              prefix bs;
+
+              identity animal;
+            }
+        "#;
+        let derived = r#"
+            module derived {
+              namespace "urn:derived";
+              prefix d;
+
+              import bases {
+                prefix bs;
+              }
+
+              identity dog {
+                base bs:animal;
+              }
+            }
+        "#;
+        let foo = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              import bases {
+                prefix bs;
+              }
+
+              leaf pet {
+                type identityref {
+                  base bs:animal;
+                }
+              }
+            }
+        "#;
+        let schema = build(
+            &[bases.to_string(), derived.to_string(), foo.to_string()],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert!(schema.module_by_name("derived").is_some());
+        assert!(schema.import_only_modules().all(|m| m.name != "derived"));
+        assert!(schema.module_by_name("bases").is_none());
+        assert!(schema.import_only_modules().any(|m| m.name == "bases"));
     }
 
     #[test]
@@ -4062,7 +4345,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         assert_eq!(schema.yang_data_roots().count(), 0);
         assert!(schema.yang_data_root_by_name("foo:error").is_none());
     }
@@ -4097,7 +4380,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &["/ietf-coreconf:error"]).unwrap();
+        let schema = build(&[src.to_string()], &[], &["/ietf-coreconf:error"], &[]).unwrap();
         let root = schema
             .yang_data_root_by_name("ietf-coreconf:error")
             .expect("uses-spliced yang-data container must be built");
@@ -4125,7 +4408,7 @@ mod tests {
               }
             }
         "#;
-        assert!(build(&[src.to_string()], &[], &[]).is_err());
+        assert!(build(&[src.to_string()], &[], &[], &[]).is_err());
     }
 
     #[test]
@@ -4145,7 +4428,7 @@ mod tests {
               }
             }
         "#;
-        assert!(build(&[src.to_string()], &[], &[]).is_err());
+        assert!(build(&[src.to_string()], &[], &[], &[]).is_err());
     }
 
     #[test]
@@ -4195,6 +4478,7 @@ mod tests {
         "#;
         let schema = build(
             &[lib.to_string(), mid.to_string(), foo.to_string()],
+            &[],
             &[],
             &[],
         )
@@ -4255,7 +4539,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[lib.to_string(), foo.to_string()], &[], &[]).unwrap();
+        let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[]).unwrap();
         assert!(schema.module_by_name("lib").is_none());
         assert!(schema.module_by_name("foo").is_some());
 
@@ -4287,7 +4571,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         assert!(schema.module_by_name("lib").is_none());
         assert_eq!(schema.import_only_modules().count(), 0);
     }
@@ -4329,7 +4613,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[lib.to_string(), mid.to_string()], &[], &[]).unwrap();
+        let schema = build(&[lib.to_string(), mid.to_string()], &[], &[], &[]).unwrap();
         assert!(schema.module_by_name("lib").is_none());
         assert!(schema.module_by_name("mid").is_none());
         assert_eq!(schema.import_only_modules().count(), 0);
@@ -4385,6 +4669,7 @@ mod tests {
             &[lib.to_string(), mid.to_string(), foo.to_string()],
             &[],
             &[],
+            &[],
         )
         .unwrap();
         let names: std::collections::HashSet<String> = schema
@@ -4430,7 +4715,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[lib.to_string(), foo.to_string()], &[], &[]).unwrap();
+        let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[]).unwrap();
         let import_only: Vec<&ImportOnlyModule> = schema.import_only_modules().collect();
         assert_eq!(import_only.len(), 1);
         assert_eq!(
@@ -4491,6 +4776,7 @@ mod tests {
             &[lib.to_string(), foo.to_string(), baz.to_string()],
             &[],
             &[],
+            &[],
         )
         .unwrap();
         let mut dates: Vec<Option<String>> = schema
@@ -4508,13 +4794,268 @@ mod tests {
     }
 
     #[test]
+    fn a_module_imported_only_for_an_unused_grouping_is_listed_nowhere() {
+        // "lib" declares a grouping, but "foo" (which imports "lib")
+        // never actually `uses` it -- an import statement alone, with
+        // no real reference to anything "lib" declares, must not make
+        // "lib" import-only.
+        let lib = r#"
+            module lib {
+              namespace "urn:lib";
+              prefix l;
+
+              grouping widget {
+                leaf name {
+                  type string;
+                }
+              }
+            }
+        "#;
+        let foo = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              import lib {
+                prefix l;
+              }
+
+              leaf bar {
+                type string;
+              }
+            }
+        "#;
+        let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[]).unwrap();
+        assert!(schema.module_by_name("lib").is_none());
+        assert!(schema.import_only_modules().all(|m| m.name != "lib"));
+    }
+
+    #[test]
+    fn a_module_whose_grouping_is_actually_spliced_in_by_a_live_uses_is_import_only() {
+        // Same "lib" as above, but "foo" genuinely `uses` its grouping
+        // on a live, surviving node -- "lib" must now be listed.
+        let lib = r#"
+            module lib {
+              namespace "urn:lib";
+              prefix l;
+
+              grouping widget {
+                leaf name {
+                  type string;
+                }
+              }
+            }
+        "#;
+        let foo = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              import lib {
+                prefix l;
+              }
+
+              container bar {
+                uses l:widget;
+              }
+            }
+        "#;
+        let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[]).unwrap();
+        assert!(schema.module_by_name("lib").is_none());
+        assert!(schema.import_only_modules().any(|m| m.name == "lib"));
+    }
+
+    #[test]
+    fn a_grouping_spliced_in_by_a_since_deviated_away_uses_is_listed_nowhere() {
+        // Mirrors the typedef/identity liveness rule: "foo"'s own
+        // "bar" container genuinely `uses` "lib"'s grouping, but
+        // "foo-dev" deviates "bar" away entirely -- the splice never
+        // actually survives into the live tree, so "lib" must not be
+        // listed either, the same way an unreachable typedef/identity
+        // isn't.
+        let lib = r#"
+            module lib {
+              namespace "urn:lib";
+              prefix l;
+
+              grouping widget {
+                leaf name {
+                  type string;
+                }
+              }
+            }
+        "#;
+        let foo = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              import lib {
+                prefix l;
+              }
+
+              container bar {
+                uses l:widget;
+              }
+            }
+        "#;
+        let foo_dev = r#"
+            module foo-dev {
+              namespace "urn:foo-dev";
+              prefix fd;
+
+              import foo {
+                prefix f;
+              }
+
+              deviation "/f:bar" {
+                deviate not-supported;
+              }
+            }
+        "#;
+        let schema = build(
+            &[lib.to_string(), foo.to_string(), foo_dev.to_string()],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert!(schema.import_only_modules().all(|m| m.name != "lib"));
+    }
+
+    #[test]
+    fn a_module_imported_only_for_an_unused_extension_is_listed_nowhere() {
+        // "lib" declares an extension, but "foo" (which imports "lib")
+        // never actually invokes it on anything -- an import statement
+        // alone must not make "lib" import-only.
+        let lib = r#"
+            module lib {
+              namespace "urn:lib";
+              prefix l;
+
+              extension tag {
+                description "An inert annotation.";
+              }
+            }
+        "#;
+        let foo = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              import lib {
+                prefix l;
+              }
+
+              leaf bar {
+                type string;
+              }
+            }
+        "#;
+        let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[]).unwrap();
+        assert!(schema.module_by_name("lib").is_none());
+        assert!(schema.import_only_modules().all(|m| m.name != "lib"));
+    }
+
+    #[test]
+    fn a_module_whose_extension_is_actually_invoked_on_a_live_node_is_import_only() {
+        // Same "lib" as above, but "foo" genuinely invokes "l:tag" on
+        // a live, surviving leaf -- "lib" must now be listed.
+        let lib = r#"
+            module lib {
+              namespace "urn:lib";
+              prefix l;
+
+              extension tag {
+                description "An inert annotation.";
+              }
+            }
+        "#;
+        let foo = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              import lib {
+                prefix l;
+              }
+
+              leaf bar {
+                type string;
+                l:tag;
+              }
+            }
+        "#;
+        let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[]).unwrap();
+        assert!(schema.module_by_name("lib").is_none());
+        assert!(schema.import_only_modules().any(|m| m.name == "lib"));
+    }
+
+    #[test]
+    fn an_extension_invoked_on_a_since_deviated_away_node_is_listed_nowhere() {
+        // Mirrors the grouping case: "foo"'s own "bar" leaf genuinely
+        // invokes "l:tag", but "foo-dev" deviates "bar" away entirely
+        // -- the invocation never survives into the live tree, so
+        // "lib" must not be listed either.
+        let lib = r#"
+            module lib {
+              namespace "urn:lib";
+              prefix l;
+
+              extension tag {
+                description "An inert annotation.";
+              }
+            }
+        "#;
+        let foo = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              import lib {
+                prefix l;
+              }
+
+              container top {
+                leaf bar {
+                  type string;
+                  l:tag;
+                }
+              }
+            }
+        "#;
+        let foo_dev = r#"
+            module foo-dev {
+              namespace "urn:foo-dev";
+              prefix fd;
+
+              import foo {
+                prefix f;
+              }
+
+              deviation "/f:top/f:bar" {
+                deviate not-supported;
+              }
+            }
+        "#;
+        let schema = build(
+            &[lib.to_string(), foo.to_string(), foo_dev.to_string()],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert!(schema.import_only_modules().all(|m| m.name != "lib"));
+    }
+
+    #[test]
     fn a_missing_namespace_statement_is_a_schema_error() {
         let src = r#"
             module foo {
               prefix f;
             }
         "#;
-        let err = build(&[src.to_string()], &[], &[]).err().unwrap();
+        let err = build(&[src.to_string()], &[], &[], &[]).err().unwrap();
         assert!(err.0.contains("namespace"), "{}", err.0);
     }
 
@@ -4539,7 +5080,7 @@ mod tests {
               }
             }
         "#;
-        let schema = build(&[src.to_string()], &[], &[]).unwrap();
+        let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
         let entry = schema.node_by_data_path("/foo:entry").unwrap();
         let key_names: Vec<String> = entry.keys().map(|k| k.local_name().to_string()).collect();
         assert_eq!(key_names, vec!["name", "index"]);
@@ -4560,7 +5101,7 @@ mod tests {
               }
             }
         "#;
-        let err = build(&[src.to_string()], &[], &[]).err().unwrap();
+        let err = build(&[src.to_string()], &[], &[], &[]).err().unwrap();
         assert!(err.0.contains("missing"), "{}", err.0);
         assert!(err.0.contains("entry"), "{}", err.0);
     }

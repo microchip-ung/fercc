@@ -57,12 +57,63 @@ fn read_bundled_catalog_files() -> (Vec<String>, Vec<String>) {
 
 const IMPLEMENTED_YANG_DATA_ROOTS: &[&str] = &["/ietf-coreconf:error"];
 
+const IDENTITY_ACCEPT_LISTS: &[(&str, &[&str])] = &[
+    (
+        "ietf-interfaces:interface-type",
+        &[
+            "iana-if-type:ethernetCsmacd",
+            "iana-if-type:ieee8023adLag",
+            "iana-if-type:l3ipvlan",
+        ],
+    ),
+    (
+        "ieee802-dot1q-types:type-of-operation",
+        &[
+            "ieee802-dot1q-sched:set-gate-states",
+            "ieee802-dot1q-sched:set-and-hold-mac",
+            "ieee802-dot1q-sched:set-and-release-mac",
+        ],
+    ),
+    (
+        "ieee802-dot1q-bridge:type-of-port",
+        &[
+            "ieee802-dot1q-bridge:c-vlan-bridge-port",
+            "ieee802-dot1q-bridge:provider-network-port",
+            "ieee802-dot1q-bridge:d-bridge-port",
+            "mchp-velocitysp-bridge:provider-custom-network-port",
+        ],
+    ),
+    (
+        "iana-hardware:hardware-class",
+        &[
+            "iana-hardware:chassis",
+            "iana-hardware:module",
+            "iana-hardware:sensor",
+            "iana-hardware:port",
+            "iana-hardware:container",
+        ],
+    ),
+    (
+        "ietf-datastores:datastore",
+        &[
+            "ietf-datastores:running",
+            "ietf-datastores:startup",
+            "ietf-datastores:operational",
+        ],
+    ),
+];
+
 fn schema() -> &'static Schema {
     static SCHEMA: OnceLock<Schema> = OnceLock::new();
     SCHEMA.get_or_init(|| {
         let (yang_sources, sid_sources) = read_bundled_catalog_files();
-        yang::schema::build(&yang_sources, &sid_sources, IMPLEMENTED_YANG_DATA_ROOTS)
-            .expect("build schema from bundled catalog")
+        yang::schema::build(
+            &yang_sources,
+            &sid_sources,
+            IMPLEMENTED_YANG_DATA_ROOTS,
+            IDENTITY_ACCEPT_LISTS,
+        )
+        .expect("build schema from bundled catalog")
     })
 }
 
@@ -382,51 +433,65 @@ fn every_module_in_the_real_catalog_partitions_as_hand_classified() {
     // its own data nodes/RPCs/actions/notifications/deviations --
     // including a node its own augment places into another module's
     // tree, since that node's owner is the augmenting module, not the
-    // target. Everything else is import-only-shaped, and is listed
-    // only if reached, directly or transitively, by an implemented
-    // module's own `import` statements. "ietf-netconf-acm" is the one
-    // non-obvious case here: its own container is fully deviated away
-    // by "ietf-netconf-acm-dev" (deviate not-supported), so it
-    // implements nothing live and is import-only despite declaring a
-    // real container in its own text -- confirmed against this
-    // firmware's own real module classification in
-    // ~/sw-lmstax-labs/appl/src/cc/node/src/lma_cc_module_*.c (an
-    // independent oracle, not fercc code), which also lists
-    // "ietf-restconf" as import-only -- this device is a CoreCONF
-    // server, not a RESTCONF one, so it genuinely doesn't implement
-    // "ietf-restconf"'s yang-errors/yang-api structures at all (its
-    // `uses errors;`/`uses restconf;` templates build real nodes just
-    // like any other rc:yang-data body, but neither is on
-    // IMPLEMENTED_YANG_DATA_ROOTS, which is the only thing that matters
-    // here). If this catalog's own modules ever change, this list must
-    // be re-derived by hand again, not regenerated from fercc's own
+    // target -- or an identity actually derived (RFC 7950 7.18.2:
+    // irreflexively, so never the base identity itself) from a live
+    // identityref's own base, narrowed by IDENTITY_ACCEPT_LISTS where
+    // an entry applies (e.g. ieee802-dot1q-psfp's own
+    // "set-gate-and-ipv" is excluded by its own "type-of-operation"
+    // entry, which is why ieee802-dot1q-psfp -- declaring nothing else
+    // -- is import-only despite its sibling psfp-bridge staying
+    // implemented via its own real node content). A module not
+    // implemented is import-only-shaped, but only actually listed if
+    // something in the live, implemented tree genuinely resolves
+    // against one of its own reusable definitions -- a typedef, an
+    // identity, a grouping actually spliced in by a surviving `uses`,
+    // or an extension actually invoked by a surviving node -- never
+    // merely because some implemented module's text happens to
+    // `import` it. This is why "iana-crypt-hash" (its own "crypt-hash"
+    // typedef's one real use site, ietf-system's own "password" leaf,
+    // is itself deviated away by ietf-system-dev) and
+    // "ietf-yang-structure-ext" (its "sx:structure" extension is only
+    // ever invoked inside ietf-sid-file's own text, which nothing live
+    // implements either) are listed nowhere at all, despite being
+    // imported by real, implemented modules. "ietf-netconf-acm" is the
+    // one non-obvious case that IS still listed: its own container is
+    // fully deviated away by "ietf-netconf-acm-dev" (deviate
+    // not-supported), but ietf-system's own live nodes genuinely invoke
+    // its "nacm:default-deny-all"/"nacm:default-deny-write" extensions
+    // as annotations, so it's used despite implementing nothing of its
+    // own. "ietf-restconf" is listed because this device is a CoreCONF
+    // server, not a RESTCONF one: it never actually invokes
+    // "ietf-restconf"'s own `rc:yang-data` extension (`uses
+    // errors;`/`uses restconf;` builds real nodes inside
+    // "ietf-restconf" itself, but nothing live elsewhere ever uses
+    // them) -- except "ietf-coreconf"'s own `coreconf-error` body,
+    // which DOES invoke `rc:yang-data`, and that body IS implemented
+    // (on IMPLEMENTED_YANG_DATA_ROOTS), so "ietf-restconf" is listed on
+    // that real usage, not merely for existing in some import graph. If
+    // this catalog's own modules ever change, this list must be
+    // re-derived by hand again, not regenerated from fercc's own
     // classification. Disjointness and node-array shape
     // are already covered, independent of this hand classification, by
     // modules_and_import_only_modules_are_disjoint_and_import_only_
     // entries_lack_node_arrays -- this test is purely about whether the
     // membership itself is correct.
     const EXPECTED_IMPORT_ONLY: &[&str] = &[
-        "iana-crypt-hash",
-        "iana-hardware",
-        "iana-if-type",
         "ieee802-dot1ab-types",
-        "ieee802-dot1cb-stream-identification-types",
         "ieee802-dot1q-preemption",
         "ieee802-dot1q-psfp",
-        "ieee802-dot1q-sched",
         "ieee802-dot1q-stream-filters-gates",
         "ieee802-dot1q-types",
         "ieee802-types",
-        "ietf-datastores",
         "ietf-inet-types",
         "ietf-netconf-acm",
         "ietf-restconf",
         "ietf-routing-types",
         "ietf-sid-file",
-        "ietf-yang-structure-ext",
         "ietf-yang-types",
     ];
     const EXPECTED_IMPLEMENTED: &[&str] = &[
+        "iana-hardware",
+        "iana-if-type",
         "ieee1588-ptp",
         "ieee1588-ptp-dev",
         "ieee802-dot1ab-lldp",
@@ -439,11 +504,13 @@ fn every_module_in_the_real_catalog_partitions_as_hand_classified() {
         "ieee802-dot1q-bridge-dev",
         "ieee802-dot1q-preemption-bridge",
         "ieee802-dot1q-psfp-bridge",
+        "ieee802-dot1q-sched",
         "ieee802-dot1q-sched-bridge",
         "ieee802-ethernet-interface",
         "ietf-constrained-yang-library",
         "ietf-constrained-yang-library-dev",
         "ietf-coreconf",
+        "ietf-datastores",
         "ietf-hardware",
         "ietf-hardware-dev",
         "ietf-igmp-mld-snooping",
@@ -507,6 +574,17 @@ fn a_modules_own_typedefs_and_identities_follow_source_declaration_order_not_alp
     // sorted, which is itself part of what this test proves -- a
     // regression back to alphabetical or first-use order would still
     // pass a bare "is this sorted" check but fail this one.
+    //
+    // ieee802-dot1q-bridge's own identities only lists 4 of its 7 real
+    // "type-of-port"-derived identities here: "customer-network-port"/
+    // "customer-edge-port"/"remote-customer-access-port" are pruned by
+    // IDENTITY_ACCEPT_LISTS's own "ieee802-dot1q-bridge:type-of-port"
+    // entry (the real device deviates its "port-type" leaf's own type
+    // to a narrower identityref, "mchp-vlan-port-type", that excludes
+    // them -- see mchp-velocitysp-bridge.yang's own doc comment on that
+    // typedef and ietf-interfaces-dev.yang's deviation), so they're
+    // unreachable identities entirely, not merely out of declaration
+    // order.
     let d = doc();
     assert_eq!(
         d["modules"]["ieee802-dot1q-bridge"]["identities"],
@@ -514,10 +592,7 @@ fn a_modules_own_typedefs_and_identities_follow_source_declaration_order_not_alp
             "ieee802-dot1q-bridge:type-of-port",
             "ieee802-dot1q-bridge:c-vlan-bridge-port",
             "ieee802-dot1q-bridge:provider-network-port",
-            "ieee802-dot1q-bridge:customer-network-port",
-            "ieee802-dot1q-bridge:customer-edge-port",
             "ieee802-dot1q-bridge:d-bridge-port",
-            "ieee802-dot1q-bridge:remote-customer-access-port",
         ])
     );
     assert_eq!(

@@ -31,6 +31,55 @@ const SID_CHECKSUM: i64 = 29304;
 
 const IMPLEMENTED_YANG_DATA_ROOTS: &[&str] = &["/ietf-coreconf:error"];
 
+#[derive(serde::Deserialize)]
+struct UiTailoringFile {
+    #[serde(rename = "ui-tailoring")]
+    ui_tailoring: UiTailoringBody,
+}
+
+#[derive(serde::Deserialize)]
+struct UiTailoringBody {
+    #[serde(rename = "identity-accept-list")]
+    identity_accept_list: Vec<UiTailoringAcceptListEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct UiTailoringAcceptListEntry {
+    base: String,
+    #[serde(rename = "accept-list")]
+    accept_list: Vec<UiTailoringIdentity>,
+}
+
+#[derive(serde::Deserialize)]
+struct UiTailoringIdentity {
+    identity: String,
+}
+
+fn parse_identity_accept_lists(text: &str) -> Result<Vec<(String, Vec<String>)>, String> {
+    let file: UiTailoringFile =
+        serde_yml::from_str(text).map_err(|e| format!("parsing ui-tailoring.yaml: {e}"))?;
+    Ok(file
+        .ui_tailoring
+        .identity_accept_list
+        .into_iter()
+        .map(|entry| {
+            (
+                entry.base,
+                entry.accept_list.into_iter().map(|i| i.identity).collect(),
+            )
+        })
+        .collect())
+}
+
+fn identity_accept_lists_from(
+    files: &yang::catalog::CatalogFiles,
+) -> Result<Vec<(String, Vec<String>)>, String> {
+    match &files.ui_tailoring {
+        Some(text) => parse_identity_accept_lists(text),
+        None => Ok(Vec::new()),
+    }
+}
+
 pub fn run() -> Result<(), String> {
     let opts = Opts::parse();
 
@@ -123,6 +172,26 @@ pub fn run() -> Result<(), String> {
     Ok(())
 }
 
+fn build_schema_from_catalog_files(files: &yang::catalog::CatalogFiles) -> Result<Schema, String> {
+    let identity_accept_lists = identity_accept_lists_from(files)?;
+    let accepted_slices: Vec<Vec<&str>> = identity_accept_lists
+        .iter()
+        .map(|(_, accepted)| accepted.iter().map(String::as_str).collect())
+        .collect();
+    let identity_accept_lists: Vec<(&str, &[&str])> = identity_accept_lists
+        .iter()
+        .zip(&accepted_slices)
+        .map(|((base, _), accepted)| (base.as_str(), accepted.as_slice()))
+        .collect();
+    yang::schema::build(
+        &files.yang,
+        &files.sid,
+        IMPLEMENTED_YANG_DATA_ROOTS,
+        &identity_accept_lists,
+    )
+    .map_err(|e| e.to_string())
+}
+
 pub fn load_workspace_schema(verbose: bool) -> Result<Schema, String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let repo_root = yang::catalog::find_repo_root(&cwd).ok_or(
@@ -134,8 +203,7 @@ pub fn load_workspace_schema(verbose: bool) -> Result<Schema, String> {
         eprintln!("workspace root: {}", repo_root.display());
     }
     let files = yang::catalog::load_workspace(&repo_root).map_err(|e| e.to_string())?;
-    yang::schema::build(&files.yang, &files.sid, IMPLEMENTED_YANG_DATA_ROOTS)
-        .map_err(|e| e.to_string())
+    build_schema_from_catalog_files(&files)
 }
 
 fn load_downloaded_schema(
@@ -156,8 +224,7 @@ fn load_schema_by_checksum(
     verbose: bool,
 ) -> Result<Schema, String> {
     let files = load_catalog_files_by_checksum(checksum, catalog_fetcher, verbose)?;
-    yang::schema::build(&files.yang, &files.sid, IMPLEMENTED_YANG_DATA_ROOTS)
-        .map_err(|e| e.to_string())
+    build_schema_from_catalog_files(&files)
 }
 
 fn load_catalog_files_by_checksum(
@@ -222,8 +289,13 @@ pub fn build_explicit_schema(yangs: &[String], sids: &[String]) -> Result<Schema
     };
     let yang_sources = read_all(yangs)?;
     let sid_sources = read_all(sids)?;
-    yang::schema::build(&yang_sources, &sid_sources, IMPLEMENTED_YANG_DATA_ROOTS)
-        .map_err(|e| e.to_string())
+    yang::schema::build(
+        &yang_sources,
+        &sid_sources,
+        IMPLEMENTED_YANG_DATA_ROOTS,
+        &[],
+    )
+    .map_err(|e| e.to_string())
 }
 
 fn read_data_file_or_stdin_text(data_file: Option<&str>) -> Result<String, String> {
@@ -743,5 +815,45 @@ fn decode_response_payload(
             "<could not decode {}-byte response payload: {e}>",
             resp.payload.len()
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_identity_accept_lists_round_trips_the_real_interface_type_entry() {
+        let text = r#"
+ui-tailoring:
+  identity-accept-list:
+  - base: "ietf-interfaces:interface-type"
+    accept-list:
+    - identity: "iana-if-type:ethernetCsmacd"
+    - identity: "iana-if-type:ieee8023adLag"
+    - identity: "iana-if-type:l3ipvlan"
+"#;
+        let lists = parse_identity_accept_lists(text).unwrap();
+        assert_eq!(
+            lists,
+            vec![(
+                "ietf-interfaces:interface-type".to_string(),
+                vec![
+                    "iana-if-type:ethernetCsmacd".to_string(),
+                    "iana-if-type:ieee8023adLag".to_string(),
+                    "iana-if-type:l3ipvlan".to_string(),
+                ]
+            )]
+        );
+    }
+
+    #[test]
+    fn identity_accept_lists_from_is_empty_when_no_ui_tailoring_file_is_present() {
+        let files = yang::catalog::CatalogFiles {
+            yang: Vec::new(),
+            sid: Vec::new(),
+            ui_tailoring: None,
+        };
+        assert_eq!(identity_accept_lists_from(&files).unwrap(), Vec::new());
     }
 }

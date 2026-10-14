@@ -1089,7 +1089,8 @@ mod tests {
                 {"namespace": "data", "identifier": "/foo:bar/b", "sid": 1003}
             ]
         }"#;
-        let schema = crate::schema::build(&[src.to_string()], &[sid_src.to_string()], &[]).unwrap();
+        let schema =
+            crate::schema::build(&[src.to_string()], &[sid_src.to_string()], &[], &[]).unwrap();
         let doc = to_resolved_catalog(&schema, "deadbeef").unwrap();
 
         assert!(doc["typedefs"].get("foo:percent").is_some());

@@ -408,29 +408,17 @@ fn type2schema(t: TypeRef<'_>) -> Json {
 
         // The permissible identity names are the intersection of
         // identities derived from each base identity. See RFC 7950
-        // section 9.10.2 -- note "or equal to" there: this port's own
-        // `all_identity_bases`/`IdentityRef::derived_from` (used for
-        // encode/decode, where a value equal to the base itself really
-        // is legal per the RFC) includes each base itself in the
-        // returned set, but Ruby's `Identity#derived_from` this mirrors
-        // for JSON-Schema generation specifically does not ("@derived +
-        // @derived.flat_map(&:derived_from)" -- an identity's *own*
-        // list of things derived from it, never including itself). So
-        // the bases themselves are excluded here, deliberately
-        // diverging from `all_identity_bases`'s own RFC-correct
-        // semantics, to match what the real reference tool actually
-        // emits (confirmed by diffing this port's `fercc schema` output
-        // against a real `yang-enc schema` run on the same catalog --
-        // see `yang/tests/json_schema_conformance.rs`).
+        // section 9.10.2 and 7.18.2 (derivation is irreflexive, so a
+        // base identity is never among its own derived set) --
+        // `all_identity_bases`/`IdentityRef::derived_from` already
+        // excludes each base identity itself, matching the real
+        // reference tool's own `Identity#derived_from` ("@derived +
+        // @derived.flat_map(&:derived_from)").
         Builtin::Identityref => {
             let candidates = all_identity_bases(t).unwrap_or_default();
-            let bases: Vec<_> = t.identity_bases().collect();
             let source_module = t.source_module.as_deref();
             let mut enums = Vec::new();
             for identity in candidates {
-                if bases.contains(&identity) {
-                    continue;
-                }
                 enums.push(format!("{}:{}", identity.module, identity.name));
                 if Some(identity.module.as_str()) == source_module {
                     enums.push(identity.name.clone());
