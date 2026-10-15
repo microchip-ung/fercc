@@ -399,6 +399,117 @@ fn yang_data_root_is_present_and_separate_from_schema_nodes() {
 }
 
 #[test]
+fn the_bundled_ietf_sid_files_structure_is_interpreted_with_its_own_sids() {
+    // ietf-sid-file defines the .sid file format itself as
+    // `sx:structure sid-file { uses sid-file-contents; }` (RFC 8791), and
+    // its own .sid file assigns SIDs 29001..29017 to that structure's
+    // nodes, addressed under the structure's name. Every one of those
+    // must resolve to a node of the structure: the root, its five leafs,
+    // and its three lists with all of their own children, each SID on
+    // exactly the node the .sid file names. Which children exist and
+    // which SIDs they carry is taken from this catalog's own
+    // ietf-sid-file.yang and ietf-sid-file@2023-10-27.sid, read by hand.
+    let schema = schema();
+    let names: Vec<String> = schema.structure_roots().map(|r| r.name.clone()).collect();
+    assert_eq!(names, vec!["ietf-sid-file:sid-file"]);
+    let root = schema.structure_roots().next().unwrap();
+    assert_eq!(root.kw, "container");
+    assert_eq!(root.sid, Some(29001));
+
+    type Child = (
+        &'static str,
+        i64,
+        &'static str,
+        &'static [(&'static str, i64)],
+    );
+    let expected: &[Child] = &[
+        (
+            "assignment-range",
+            29002,
+            "list",
+            &[("entry-point", 29003), ("size", 29004)],
+        ),
+        (
+            "dependency-revision",
+            29005,
+            "list",
+            &[("module-name", 29006), ("module-revision", 29007)],
+        ),
+        ("description", 29008, "leaf", &[]),
+        (
+            "item",
+            29009,
+            "list",
+            &[
+                ("identifier", 29010),
+                ("namespace", 29011),
+                ("sid", 29012),
+                ("status", 29013),
+            ],
+        ),
+        ("module-name", 29014, "leaf", &[]),
+        ("module-revision", 29015, "leaf", &[]),
+        ("sid-file-status", 29016, "leaf", &[]),
+        ("sid-file-version", 29017, "leaf", &[]),
+    ];
+    let mut children: Vec<String> = root
+        .children()
+        .map(|c| c.local_name().to_string())
+        .collect();
+    children.sort();
+    let mut expected_children: Vec<&str> = expected.iter().map(|e| e.0).collect();
+    expected_children.sort();
+    assert_eq!(children, expected_children);
+
+    for &(name, sid, kw, grandchildren) in expected {
+        let child = root.find_child(name).unwrap();
+        assert_eq!(child.kw, kw, "{name}");
+        assert_eq!(child.sid, Some(sid), "{name}");
+        // RFC 8791: the config-stmt is ignored inside a structure.
+        assert!(!child.config, "{name} must not be config");
+        let mut names: Vec<String> = child
+            .children()
+            .map(|c| c.local_name().to_string())
+            .collect();
+        names.sort();
+        let mut expected_names: Vec<&str> = grandchildren.iter().map(|g| g.0).collect();
+        expected_names.sort();
+        assert_eq!(names, expected_names, "children of {name}");
+        for &(grandchild, grandchild_sid) in grandchildren {
+            assert_eq!(
+                child.find_child(grandchild).unwrap().sid,
+                Some(grandchild_sid),
+                "{name}/{grandchild}"
+            );
+        }
+    }
+
+    // The sid-file-contents grouping's own typedef uses resolve through
+    // the structure: entry-point is ietf-sid-file's own `sid` typedef.
+    let entry_point = root
+        .find_child("assignment-range")
+        .unwrap()
+        .find_child("entry-point")
+        .unwrap();
+    assert_eq!(entry_point.ty().unwrap().base().unwrap().name, "sid");
+
+    // A structure is not part of any datastore: it isn't a schema node,
+    // a yang-data root, a wire-addressable SID, or anything the resolved
+    // catalog reports.
+    assert!(schema
+        .node_by_schema_path("/ietf-sid-file:sid-file")
+        .is_none());
+    assert!(schema
+        .yang_data_root_by_name("ietf-sid-file:sid-file")
+        .is_none());
+    assert!((29001..=29017).all(|sid| schema.node_by_sid(sid).is_none()));
+    let d = doc();
+    assert!(d["schema-nodes"].get("/ietf-sid-file:sid-file").is_none());
+    assert!(d["yang-data"].get("/ietf-sid-file:sid-file").is_none());
+    assert!((29001..=29017).all(|sid| d["sid-index"].get(sid.to_string()).is_none()));
+}
+
+#[test]
 fn every_yang_data_node_reports_config_false() {
     // RFC 8040 Sec. 8: "The config-stmt is ignored if present" inside a
     // yang-data extension's content -- it isn't real config/state

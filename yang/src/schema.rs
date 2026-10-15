@@ -7,9 +7,10 @@
 //!
 //! Ported from `support/yang-enc/yang-utils.rb`'s `Yang::ModuleSet` /
 //! `Module` / `Statement` / `Type` / `Identity` classes -- same feature
-//! set, not more (no `when`/`must`, only the `yang-data` extension,
-//! `deviate add/delete` unimplemented), cross-checked structurally against
-//! `sw-velocitydrive-devclient`'s `src/yang/yang-utils.ts`.
+//! set, not more (no `when`/`must`, only the `yang-data` and `structure`
+//! extensions, `deviate add/delete` unimplemented), cross-checked
+//! structurally against `sw-velocitydrive-devclient`'s
+//! `src/yang/yang-utils.ts`.
 //!
 //! Arena-based (`Vec<Node>` etc. plus `NodeId` indices) rather than an
 //! object graph with parent pointers, which is the natural shape in Rust.
@@ -339,6 +340,7 @@ pub struct Schema {
     module_root: HashMap<String, Module>,
     import_only_modules: Vec<ImportOnlyModule>,
     yang_data_roots: HashMap<String, NodeId>,
+    structure_roots: HashMap<String, NodeId>,
     sid_index: HashMap<i64, NodeId>,
     reachable_typedefs: std::collections::HashSet<TypedefId>,
     reachable_identities: std::collections::HashSet<IdentityId>,
@@ -724,6 +726,10 @@ impl Schema {
         self.yang_data_roots.values().map(|&id| self.node_ref(id))
     }
 
+    pub fn structure_roots(&self) -> impl Iterator<Item = NodeRef<'_>> + '_ {
+        self.structure_roots.values().map(|&id| self.node_ref(id))
+    }
+
     pub fn node_by_data_path(&self, path: &str) -> Option<NodeRef<'_>> {
         let mut segs = path.split('/').filter(|s| !s.is_empty());
         let first = segs.next()?;
@@ -802,6 +808,7 @@ struct Builder<'a> {
     typedef_cache: HashMap<(String, String), (TypedefId, PendingTypedefType<'a>)>,
     module_root: HashMap<String, Module>,
     yang_data_roots: HashMap<String, NodeId>,
+    structure_roots: HashMap<String, NodeId>,
     implemented_yang_data_roots: std::collections::HashSet<String>,
     identity_accept_lists: HashMap<String, Vec<String>>,
     reachable_typedefs: std::collections::HashSet<TypedefId>,
@@ -864,6 +871,7 @@ pub fn build(
         typedef_cache: HashMap::new(),
         module_root: HashMap::new(),
         yang_data_roots: HashMap::new(),
+        structure_roots: HashMap::new(),
         implemented_yang_data_roots: implemented_yang_data_roots
             .iter()
             .map(|s| s.to_string())
@@ -1015,6 +1023,19 @@ impl<'a> Builder<'a> {
         let ctx_name = name.to_string();
         self.interpret_scope_typedefs(&ctx_name, &ctx_name, &[], &raw.subs)?;
         self.interpret_children(&ctx_name, &ctx_name, &[], &raw.subs, None)?;
+        for root in self.structure_roots.values() {
+            let structure = &self.nodes[*root];
+            if structure.owner_module == ctx_name
+                && self
+                    .find_in_module(&self.module_root[&ctx_name], structure.local_name())
+                    .is_some()
+            {
+                return Err(err(format!(
+                    "structure {:?} in module {ctx_name:?} collides with a top-level data node of the same name",
+                    structure.local_name()
+                )));
+            }
+        }
 
         self.built.insert(name.to_string());
         self.building.remove(name);
@@ -1125,9 +1146,9 @@ impl<'a> Builder<'a> {
         if let (Some(p), Some(m)) = (parent, &ext_module) {
             self.nodes[p].references_modules.push(m.clone());
         }
-        // Only the RFC 8040 `rc:yang-data` extension is handled (matches
-        // yang-utils.rb): must contain exactly one container, promoted to
-        // a top-level root node named "module:<container's own name>" --
+        // RFC 8040 `rc:yang-data` (matches yang-utils.rb): must contain
+        // exactly one container, promoted to a top-level root node named
+        // "module:<container's own name>" --
         // NOT the yang-data statement's own argument, which is merely a
         // label (e.g. `rc:yang-data coreconf-error { container error {...`
         // promotes to "ietf-coreconf:error", matching the .sid file, not
@@ -1175,6 +1196,40 @@ impl<'a> Builder<'a> {
             // these SIDs on the wire. Register separately so
             // resolve_sid_data_identifier can still find them.
             self.yang_data_roots.insert(name, root);
+        } else if s.keyword == "structure"
+            && ext_module.as_deref() == Some("ietf-yang-structure-ext")
+        {
+            if parent.is_some() {
+                return Err(err(format!(
+                    "structure {:?} in module {naming:?} must be a top-level statement",
+                    s.arg_str()
+                )));
+            }
+            let name = format!("{naming}:{}", s.arg_str());
+            if self.structure_roots.contains_key(&name) {
+                return Err(err(format!(
+                    "structure {:?} is defined more than once in module {naming:?}",
+                    s.arg_str()
+                )));
+            }
+            let root = self.new_node(
+                "container",
+                name.clone(),
+                naming.to_string(),
+                None,
+                true,
+                true,
+            );
+            self.nodes[root].status = Some(read_status(s)?);
+            if let Some(d) = s.sub("description") {
+                self.nodes[root].description = Some(d.arg_str().to_string());
+            }
+            let scope_label = self.schema_node_path_of(root);
+            let scope = [(s, scope_label.clone())];
+            self.interpret_scope_typedefs(resolve, &scope_label, &scope, &s.subs)?;
+            self.interpret_children(resolve, naming, &scope, &s.subs, Some(root))?;
+            self.clear_config_in_subtree(root);
+            self.structure_roots.insert(name, root);
         }
         Ok(())
     }
@@ -1485,6 +1540,7 @@ impl<'a> Builder<'a> {
     fn resolve_sid_data_identifier(&self, path: &str) -> R<NodeId> {
         resolve_schema_path(&self.nodes, &self.module_root, path)
             .or_else(|| resolve_yang_data_path(&self.nodes, &self.yang_data_roots, path))
+            .or_else(|| resolve_yang_data_path(&self.nodes, &self.structure_roots, path))
             .ok_or_else(|| {
                 err(format!(
                     "target segment not found in SID data identifier {path:?}"
@@ -1936,10 +1992,7 @@ impl<'a> Builder<'a> {
                     // every node the *standard* defines, but a real
                     // device's own `*-dev.yang` module deviates a good
                     // number of them away (`deviate not-supported`) for
-                    // this product profile, and a handful of SIDs belong
-                    // to yang-data-extension meta-schema (e.g.
-                    // `ietf-sid-file`, describing the .sid file format
-                    // itself) that's never addressed on the wire at all.
+                    // this product profile.
                     if let Ok(target) = self.resolve_sid_data_identifier(&item.identifier) {
                         self.nodes[target].sid = Some(item.sid);
                     }
@@ -2175,6 +2228,7 @@ impl<'a> Builder<'a> {
             module_root: self.module_root,
             import_only_modules,
             yang_data_roots: self.yang_data_roots,
+            structure_roots: self.structure_roots,
             sid_index,
             reachable_typedefs: self.reachable_typedefs,
             reachable_identities: self.reachable_identities,

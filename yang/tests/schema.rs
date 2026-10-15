@@ -2944,3 +2944,294 @@ fn a_key_naming_something_other_than_a_direct_child_is_a_schema_error() {
     assert!(err.0.contains("missing"), "{}", err.0);
     assert!(err.0.contains("entry"), "{}", err.0);
 }
+
+#[test]
+fn a_structures_own_typedefs_and_groupings_resolve_from_inside_it() {
+    // RFC 8791 allows typedef and grouping statements directly inside
+    // `sx:structure`, scoped to that structure: "doc" declares both, and
+    // its own nodes must resolve against them -- "name" gets its type
+    // from the structure's own "label" typedef, through the structure's
+    // own "entry-fields" grouping. Same names at module level must not be
+    // what they resolve to, so the module's own versions differ.
+    let sx = r#"
+        module ietf-yang-structure-ext {
+          namespace "urn:ietf:params:xml:ns:yang:ietf-yang-structure-ext";
+          prefix sx;
+
+          extension structure {
+            argument name;
+          }
+        }
+    "#;
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          import ietf-yang-structure-ext {
+            prefix sx;
+          }
+
+          typedef label {
+            type uint8;
+          }
+
+          sx:structure doc {
+            typedef label {
+              type string;
+            }
+            grouping entry-fields {
+              leaf name {
+                type label;
+              }
+            }
+            list entry {
+              uses entry-fields;
+            }
+          }
+        }
+    "#;
+    let schema = build(&[sx.to_string(), src.to_string()], &[], &[], &[]).unwrap();
+    let doc = schema
+        .structure_roots()
+        .find(|r| r.name == "foo:doc")
+        .unwrap();
+    let name = doc.find_child("entry").unwrap().find_child("name").unwrap();
+    let ty = name.ty().unwrap();
+    assert_eq!(ty.builtin, Builtin::String);
+    assert_eq!(ty.base().unwrap().name, "label");
+    assert_eq!(ty.base().unwrap().scope, "/foo:doc");
+}
+
+const STRUCTURE_EXT: &str = r#"
+    module ietf-yang-structure-ext {
+      namespace "urn:ietf:params:xml:ns:yang:ietf-yang-structure-ext";
+      prefix sx;
+
+      extension structure {
+        argument name;
+      }
+    }
+"#;
+
+#[test]
+fn a_structures_root_carries_its_own_status_and_description() {
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          import ietf-yang-structure-ext {
+            prefix sx;
+          }
+
+          sx:structure old-doc {
+            status deprecated;
+            description "An old document format.";
+            leaf name {
+              type string;
+            }
+          }
+
+          sx:structure doc {
+            leaf name {
+              type string;
+            }
+          }
+        }
+    "#;
+    let schema = build(&[STRUCTURE_EXT.to_string(), src.to_string()], &[], &[], &[]).unwrap();
+    let mut names: Vec<String> = schema.structure_roots().map(|r| r.name.clone()).collect();
+    names.sort();
+    assert_eq!(names, vec!["foo:doc", "foo:old-doc"]);
+    let old = schema
+        .structure_roots()
+        .find(|r| r.name == "foo:old-doc")
+        .unwrap();
+    assert_eq!(old.status, Some(Status::Deprecated));
+    assert_eq!(old.description.as_deref(), Some("An old document format."));
+    // RFC 7950 7.21.2: status defaults to "current" when unstated.
+    let doc = schema
+        .structure_roots()
+        .find(|r| r.name == "foo:doc")
+        .unwrap();
+    assert_eq!(doc.status, Some(Status::Current));
+    assert_eq!(doc.description, None);
+}
+
+#[test]
+fn a_structure_that_isnt_a_top_level_statement_is_a_schema_error() {
+    // RFC 8791: "This extension is only valid as a top-level statement,
+    // i.e., given as a substatement to 'module' or 'submodule'."
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          import ietf-yang-structure-ext {
+            prefix sx;
+          }
+
+          container top {
+            sx:structure doc {
+              leaf name {
+                type string;
+              }
+            }
+          }
+        }
+    "#;
+    let err = build(&[STRUCTURE_EXT.to_string(), src.to_string()], &[], &[], &[])
+        .err()
+        .unwrap();
+    assert!(err.0.contains("\"doc\""), "{}", err.0);
+    assert!(err.0.contains("top-level"), "{}", err.0);
+}
+
+#[test]
+fn a_structure_defined_twice_in_one_module_is_a_schema_error() {
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          import ietf-yang-structure-ext {
+            prefix sx;
+          }
+
+          sx:structure doc {
+            leaf name {
+              type string;
+            }
+          }
+
+          sx:structure doc {
+            leaf other {
+              type string;
+            }
+          }
+        }
+    "#;
+    let err = build(&[STRUCTURE_EXT.to_string(), src.to_string()], &[], &[], &[])
+        .err()
+        .unwrap();
+    assert!(err.0.contains("\"doc\""), "{}", err.0);
+    assert!(err.0.contains("more than once"), "{}", err.0);
+}
+
+#[test]
+fn a_structure_colliding_with_a_top_level_data_node_is_a_schema_error() {
+    // The structure's name and the module's top-level data nodes share
+    // one identifier namespace (libyang rejects this collision too).
+    // The container is declared after the structure, so the check has
+    // to see the whole module, not just what came before.
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          import ietf-yang-structure-ext {
+            prefix sx;
+          }
+
+          sx:structure doc {
+            leaf name {
+              type string;
+            }
+          }
+
+          container doc {
+            leaf other {
+              type string;
+            }
+          }
+        }
+    "#;
+    let err = build(&[STRUCTURE_EXT.to_string(), src.to_string()], &[], &[], &[])
+        .err()
+        .unwrap();
+    assert!(err.0.contains("\"doc\""), "{}", err.0);
+    assert!(err.0.contains("collides"), "{}", err.0);
+}
+
+#[test]
+fn same_named_structures_in_different_modules_are_independent() {
+    // Both checks are per module: "doc" in foo and "doc" in bar are
+    // different structures, and bar's top-level "doc" container doesn't
+    // collide with foo's structure.
+    let foo = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          import ietf-yang-structure-ext {
+            prefix sx;
+          }
+
+          sx:structure doc {
+            leaf name {
+              type string;
+            }
+          }
+        }
+    "#;
+    let bar = r#"
+        module bar {
+          namespace "urn:bar";
+          prefix b;
+
+          import ietf-yang-structure-ext {
+            prefix sx;
+          }
+
+          sx:structure doc {
+            leaf other {
+              type string;
+            }
+          }
+
+          container top {
+            leaf x {
+              type string;
+            }
+          }
+        }
+    "#;
+    let baz = r#"
+        module baz {
+          namespace "urn:baz";
+          prefix z;
+
+          container doc {
+            leaf y {
+              type string;
+            }
+          }
+        }
+    "#;
+    let schema = build(
+        &[
+            STRUCTURE_EXT.to_string(),
+            foo.to_string(),
+            bar.to_string(),
+            baz.to_string(),
+        ],
+        &[],
+        &[],
+        &[],
+    )
+    .unwrap();
+    assert!(schema
+        .structure_roots()
+        .find(|r| r.name == "foo:doc")
+        .unwrap()
+        .find_child("name")
+        .is_some());
+    assert!(schema
+        .structure_roots()
+        .find(|r| r.name == "bar:doc")
+        .unwrap()
+        .find_child("other")
+        .is_some());
+    assert!(schema.node_by_schema_path("/baz:doc").is_some());
+}
