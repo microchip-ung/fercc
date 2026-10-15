@@ -454,13 +454,15 @@ fn every_module_in_the_real_catalog_partitions_as_hand_classified() {
     // ever invoked inside ietf-sid-file's own text, which nothing live
     // implements either) are listed nowhere at all, despite being
     // imported by real, implemented modules. "ietf-netconf-acm" is the
-    // one non-obvious case that IS still listed: its own container is
-    // fully deviated away by "ietf-netconf-acm-dev" (deviate
-    // not-supported), but ietf-system's own live nodes genuinely invoke
-    // its "nacm:default-deny-all"/"nacm:default-deny-write" extensions
-    // as annotations, so it's used despite implementing nothing of its
-    // own. "ietf-restconf" is listed because this device is a CoreCONF
-    // server, not a RESTCONF one: it never actually invokes
+    // one non-obvious implemented case: its own container is fully
+    // deviated away by "ietf-netconf-acm-dev" (deviate not-supported),
+    // but a deviated module is always implemented -- a server can't
+    // implement "ietf-netconf-acm-dev"'s deviations of a module it
+    // doesn't implement, and ietf-constrained-yang-library can only
+    // report a module's deviations on its own `module` entry, never on
+    // an `import-only-module` one. "ietf-restconf" is listed because
+    // this device is a CoreCONF server, not a RESTCONF one: it never
+    // actually invokes
     // "ietf-restconf"'s own `rc:yang-data` extension (`uses
     // errors;`/`uses restconf;` builds real nodes inside
     // "ietf-restconf" itself, but nothing live elsewhere ever uses
@@ -483,7 +485,6 @@ fn every_module_in_the_real_catalog_partitions_as_hand_classified() {
         "ieee802-dot1q-types",
         "ieee802-types",
         "ietf-inet-types",
-        "ietf-netconf-acm",
         "ietf-restconf",
         "ietf-routing-types",
         "ietf-sid-file",
@@ -519,6 +520,7 @@ fn every_module_in_the_real_catalog_partitions_as_hand_classified() {
         "ietf-interfaces-dev",
         "ietf-ip",
         "ietf-ipv4-unicast-routing",
+        "ietf-netconf-acm",
         "ietf-netconf-acm-dev",
         "ietf-routing",
         "ietf-routing-dev",

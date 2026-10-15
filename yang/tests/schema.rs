@@ -1766,20 +1766,16 @@ fn module_revision_is_none_when_unstated() {
 }
 
 #[test]
-fn a_module_whose_only_content_is_fully_deviated_away_is_import_only() {
-    // RFC 7950 5.6.5: a server implements a module if it implements
-    // the module's own data nodes/RPCs/actions/notifications/
-    // deviations. "foo" declares a real container, but "foo-dev"
-    // (which has no data nodes of its own, only a deviation)
-    // deviates it away entirely with deviate not-supported -- so
-    // "foo" implements nothing live and must not be in modules(),
-    // even though its raw text alone would look like a real module.
-    // "foo-dev" stays implemented, since the deviation statement
-    // itself counts even without any node of its own. "foo" isn't
-    // import-only either: a deviation names a schema-node path, not
-    // a reusable definition (typedef/identity/grouping/extension),
-    // so "foo-dev" never actually resolves against anything "foo"
-    // declares -- "foo" belongs in neither set.
+fn a_module_whose_only_content_is_fully_deviated_away_is_still_implemented() {
+    // "foo-dev" (no data nodes of its own, only a deviation) deviates
+    // away "foo"'s only container. "foo-dev" is implemented by virtue
+    // of its deviation statement (RFC 7950 5.6.5), and a server can't
+    // implement deviations of a module it doesn't implement -- so
+    // "foo" must stay implemented too, even with nothing of its own
+    // left live. ietf-constrained-yang-library requires this as well:
+    // a module's deviations can only be reported on its own `module`
+    // entry, whose `deviation` leafrefs point at other `module`
+    // entries, and `import-only-module` has no way to carry them.
     let foo = r#"
         module foo {
           namespace "urn:foo";
@@ -1807,9 +1803,82 @@ fn a_module_whose_only_content_is_fully_deviated_away_is_import_only() {
         }
     "#;
     let schema = build(&[foo.to_string(), foo_dev.to_string()], &[], &[], &[]).unwrap();
-    assert!(schema.module_by_name("foo").is_none());
+    assert!(schema.module_by_name("foo").is_some());
     assert!(schema.module_by_name("foo-dev").is_some());
     assert!(schema.import_only_modules().all(|m| m.name != "foo"));
+    assert_eq!(
+        schema.module_by_name("foo").unwrap().root_nodes().count(),
+        0
+    );
+}
+
+#[test]
+fn deviating_an_augmented_node_keeps_the_augmenting_module_implemented() {
+    // "aug" contributes nothing but a leaf augmented into "host"'s
+    // container, and "aug-dev" deviates that leaf away, then the
+    // container itself -- so "aug" has neither a surviving node nor a
+    // surviving augment target left. The deviated leaf's definition
+    // belongs to "aug" (its own augment), not "host" (whose prefix the
+    // deviation path starts with), so "aug" is a module being deviated
+    // and must stay implemented.
+    let host = r#"
+        module host {
+          namespace "urn:host";
+          prefix h;
+
+          container top {
+            leaf own {
+              type string;
+            }
+          }
+        }
+    "#;
+    let aug = r#"
+        module aug {
+          namespace "urn:aug";
+          prefix a;
+
+          import host {
+            prefix h;
+          }
+
+          augment "/h:top" {
+            leaf extra {
+              type string;
+            }
+          }
+        }
+    "#;
+    let aug_dev = r#"
+        module aug-dev {
+          namespace "urn:aug-dev";
+          prefix ad;
+
+          import host {
+            prefix h;
+          }
+          import aug {
+            prefix a;
+          }
+
+          deviation "/h:top/a:extra" {
+            deviate not-supported;
+          }
+          deviation "/h:top" {
+            deviate not-supported;
+          }
+        }
+    "#;
+    let schema = build(
+        &[host.to_string(), aug.to_string(), aug_dev.to_string()],
+        &[],
+        &[],
+        &[],
+    )
+    .unwrap();
+    assert!(schema.module_by_name("aug").is_some());
+    assert!(schema.import_only_modules().all(|m| m.name != "aug"));
+    assert!(schema.node_by_schema_path("/host:top/aug:extra").is_none());
 }
 
 #[test]
