@@ -465,6 +465,95 @@ fn module_by_sid_finds_a_module_with_an_attached_sid() {
 }
 
 #[test]
+fn a_sid_files_data_identifier_that_resolves_to_no_node_is_a_schema_error() {
+    // SIDs are attached before deviations are applied, so every data
+    // identifier a .sid file names must resolve against the
+    // pre-deviation schema tree. A miss means the .sid file and the
+    // YANG text disagree, not that the node was deviated away.
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          container top {
+            leaf a {
+              type string;
+            }
+          }
+        }
+    "#;
+    let sid = r#"{
+        "module-name": "foo",
+        "module-revision": "2026-01-01",
+        "items": [
+            {"namespace": "data", "identifier": "/foo:top", "sid": 1001},
+            {"namespace": "data", "identifier": "/foo:top/missing", "sid": 1002}
+        ]
+    }"#;
+    let err = build(&[src.to_string()], &[sid.to_string()], &[], &[])
+        .err()
+        .expect("an unresolvable .sid data identifier must fail");
+    assert!(err.0.contains("/foo:top/missing"), "{}", err.0);
+}
+
+#[test]
+fn a_sid_files_data_identifier_for_a_since_deviated_away_node_is_not_an_error() {
+    // The .sid file is generated from the module itself, so it names
+    // the node a device's own deviation module later removes. That is
+    // consistent, not a .sid file bug: the SID attaches to the
+    // pre-deviation node, which the deviation then removes.
+    let foo = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          container top {
+            leaf keep {
+              type string;
+            }
+            leaf drop {
+              type string;
+            }
+          }
+        }
+    "#;
+    let dev = r#"
+        module foo-dev {
+          namespace "urn:foo-dev";
+          prefix fd;
+
+          import foo {
+            prefix f;
+          }
+
+          deviation "/f:top/f:drop" {
+            deviate not-supported;
+          }
+        }
+    "#;
+    let sid = r#"{
+        "module-name": "foo",
+        "module-revision": "2026-01-01",
+        "items": [
+            {"namespace": "data", "identifier": "/foo:top", "sid": 1001},
+            {"namespace": "data", "identifier": "/foo:top/keep", "sid": 1002},
+            {"namespace": "data", "identifier": "/foo:top/drop", "sid": 1003}
+        ]
+    }"#;
+    let schema = build(
+        &[foo.to_string(), dev.to_string()],
+        &[sid.to_string()],
+        &[],
+        &[],
+    )
+    .unwrap();
+    let top = schema.node_by_schema_path("/foo:top").unwrap();
+    assert!(top.find_child("drop").is_none());
+    assert_eq!(top.find_child("keep").unwrap().sid, Some(1002));
+    assert!(schema.node_by_sid(1003).is_none());
+}
+
+#[test]
 fn a_sid_files_data_identifier_can_attach_a_sid_to_a_yang_data_root() {
     // Real .sid files address a yang-data root's own container
     // directly by its full qualified name (e.g.

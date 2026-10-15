@@ -40,31 +40,12 @@ fn test_data_dir() -> PathBuf {
 }
 
 fn schema() -> Schema {
-    let tarball = test_data_dir().join("e6311dd5be50af0f0286fd3a6fb218a1.tar.gz");
-    let file = fs::File::open(&tarball).expect("open bundled catalog tarball");
-    let gz = flate2::read::GzDecoder::new(file);
-    let mut archive = tar::Archive::new(gz);
-
-    let mut yang_sources = Vec::new();
-    let mut sid_sources = Vec::new();
-    for entry in archive.entries().expect("read tar entries") {
-        let mut entry = entry.expect("tar entry");
-        let path = entry.path().expect("entry path").to_path_buf();
-        let mut content = String::new();
-        std::io::Read::read_to_string(&mut entry, &mut content).expect("read entry content");
-        match path.extension().and_then(|e| e.to_str()) {
-            Some("yang") => yang_sources.push(content),
-            Some("sid") => sid_sources.push(content),
-            _ => {}
-        }
-    }
-    yang::schema::build(
-        &yang_sources,
-        &sid_sources,
-        &["ietf-coreconf:coreconf-error"],
-        &[],
-    )
-    .expect("build schema from bundled catalog")
+    let tarball = test_data_dir().join("b8ab4b046249f34f7f5d669a17600bd4.tar.gz");
+    let bytes = fs::read(&tarball).expect("read bundled catalog tarball");
+    yang::catalog::load_from_tarball(&bytes)
+        .expect("load bundled catalog tarball")
+        .build_schema()
+        .expect("build schema from bundled catalog")
 }
 
 fn text_of(output: ConvOutput, desc: &str) -> String {

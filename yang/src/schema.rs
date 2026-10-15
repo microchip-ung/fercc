@@ -927,14 +927,14 @@ pub fn build(
         b.ensure_module(name)?;
     }
 
-    b.apply_deviations(&parsed)?;
-    b.compute_reachable_typedefs()?;
-    b.resolve_leafrefs()?;
-
     for sid_src in sid_sources {
         let f = sid::parse(sid_src).map_err(err)?;
         b.attach_sids(&f)?;
     }
+
+    b.apply_deviations(&parsed)?;
+    b.compute_reachable_typedefs()?;
+    b.resolve_leafrefs()?;
 
     b.finish()
 }
@@ -2066,15 +2066,8 @@ impl<'a> Builder<'a> {
                     }
                 }
                 Namespace::Data => {
-                    // A miss here is expected and correct, not a bug: the
-                    // generic RFC modules' own .sid files list SIDs for
-                    // every node the *standard* defines, but a real
-                    // device's own `*-dev.yang` module deviates a good
-                    // number of them away (`deviate not-supported`) for
-                    // this product profile.
-                    if let Ok(target) = self.resolve_sid_data_identifier(&item.identifier) {
-                        self.nodes[target].sid = Some(item.sid);
-                    }
+                    let target = self.resolve_sid_data_identifier(&item.identifier)?;
+                    self.nodes[target].sid = Some(item.sid);
                 }
                 Namespace::Feature => {}
             }

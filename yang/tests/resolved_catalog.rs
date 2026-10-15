@@ -30,102 +30,20 @@ fn validator() -> Validator {
     jsonschema::validator_for(&schema).expect("compile resolved-yang-catalog-schema")
 }
 
-fn read_bundled_catalog_files() -> (Vec<String>, Vec<String>) {
-    let tarball = test_data_dir().join("b9a283a2c36b799683c792d8a0c21559.tar.gz");
-    let file = fs::File::open(&tarball).expect("open bundled catalog tarball");
-    let gz = flate2::read::GzDecoder::new(file);
-    let mut archive = tar::Archive::new(gz);
-
-    let mut yang_sources = Vec::new();
-    let mut sid_sources = Vec::new();
-    for entry in archive.entries().expect("read tar entries") {
-        let mut entry = entry.expect("tar entry");
-        let path = entry.path().expect("entry path").to_path_buf();
-        if path.parent().is_some_and(|p| p != Path::new("")) {
-            continue;
-        }
-        let mut content = String::new();
-        std::io::Read::read_to_string(&mut entry, &mut content).expect("read entry content");
-        match path.extension().and_then(|e| e.to_str()) {
-            Some("yang") => yang_sources.push(content),
-            Some("sid") => sid_sources.push(content),
-            _ => {}
-        }
-    }
-    (yang_sources, sid_sources)
-}
-
-const IMPLEMENTED_YANG_DATA: &[&str] = &["ietf-coreconf:coreconf-error"];
-
-const IDENTITY_ACCEPT_LISTS: &[(&str, &[&str])] = &[
-    (
-        "ietf-interfaces:interface-type",
-        &[
-            "iana-if-type:ethernetCsmacd",
-            "iana-if-type:ieee8023adLag",
-            "iana-if-type:l3ipvlan",
-        ],
-    ),
-    (
-        "ieee802-dot1q-types:type-of-operation",
-        &[
-            "ieee802-dot1q-sched:set-gate-states",
-            "ieee802-dot1q-sched:set-and-hold-mac",
-            "ieee802-dot1q-sched:set-and-release-mac",
-        ],
-    ),
-    (
-        "ieee802-dot1q-bridge:type-of-port",
-        &[
-            "ieee802-dot1q-bridge:c-vlan-bridge-port",
-            "ieee802-dot1q-bridge:provider-network-port",
-            "ieee802-dot1q-bridge:d-bridge-port",
-            "mchp-velocitysp-bridge:provider-custom-network-port",
-        ],
-    ),
-    (
-        "iana-hardware:hardware-class",
-        &[
-            "iana-hardware:chassis",
-            "iana-hardware:module",
-            "iana-hardware:sensor",
-            "iana-hardware:port",
-            "iana-hardware:container",
-        ],
-    ),
-    (
-        "ietf-datastores:datastore",
-        &[
-            "ietf-datastores:running",
-            "ietf-datastores:startup",
-            "ietf-datastores:operational",
-        ],
-    ),
-];
-
 fn schema() -> &'static Schema {
     static SCHEMA: OnceLock<Schema> = OnceLock::new();
     SCHEMA.get_or_init(|| {
-        let (yang_sources, sid_sources) = read_bundled_catalog_files();
-        yang::schema::build(
-            &yang_sources,
-            &sid_sources,
-            IMPLEMENTED_YANG_DATA,
-            IDENTITY_ACCEPT_LISTS,
-        )
-        .expect("build schema from bundled catalog")
+        let tarball = test_data_dir().join("b8ab4b046249f34f7f5d669a17600bd4.tar.gz");
+        let bytes = fs::read(&tarball).expect("read bundled catalog tarball");
+        yang::catalog::load_from_tarball(&bytes)
+            .expect("load bundled catalog tarball")
+            .build_schema()
+            .expect("build schema from bundled catalog")
     })
 }
 
-const KNOWN_MISSING_SID_PATHS: &[&str] = &[
-    "/ietf-interfaces:interfaces/interface/ietf-ip:ipv4/mchp-velocitysp-ip:statistics/clear/input",
-    "/ietf-interfaces:interfaces/interface/ietf-ip:ipv4/mchp-velocitysp-ip:statistics/clear/output",
-    "/ietf-interfaces:interfaces/interface/mchp-velocitysp-acl:acl-port/clear/input",
-    "/ietf-interfaces:interfaces/interface/mchp-velocitysp-acl:acl-port/clear/output",
-];
-
 fn doc() -> Json {
-    to_resolved_catalog(schema(), "b9a283a2c36b799683c792d8a0c21559")
+    to_resolved_catalog(schema(), "b8ab4b046249f34f7f5d669a17600bd4")
         .expect("serialize resolved yang catalog")
 }
 
@@ -180,62 +98,15 @@ fn maps_and_arrays_without_source_order_semantics_are_sorted() {
 }
 
 #[test]
-fn the_bundled_catalog_tolerates_two_known_synthetic_input_output_sid_gaps() {
-    // mchp-velocitysp-ip's and mchp-velocitysp-acl's "clear" actions
-    // declare no explicit input/output substatement, and whatever
-    // generated this catalog's .sid files never assigned the resulting
-    // synthetic input/output nodes a SID (RFC 9595 6.4 says they always
-    // MUST get one) -- a known, temporary pyang bug (see notes.txt),
-    // not a fercc bug. to_resolved_catalog tolerates exactly this one
-    // case (synthetic input/output, no sid): the dump still succeeds,
-    // and these four nodes alone come out with no "sid" field.
-    let d = doc();
-    for path in KNOWN_MISSING_SID_PATHS {
-        let node = &d["schema-nodes"][*path];
-        assert!(
-            node.get("sid").is_none(),
-            "{path} unexpectedly has a sid now -- the known pyang gap may be fixed; \
-             update this test and the TODO in resolved_catalog.rs::schema_node_entry"
-        );
-    }
-}
-
-#[test]
 fn resolved_catalog_validates_against_the_real_schema() {
-    // Allow-listed by exact instance path: the four known, documented
-    // synthetic-input/output sid gaps (see notes.txt and
-    // the_bundled_catalog_tolerates_two_known_synthetic_input_output_sid_gaps
-    // above) are the only schema violations this document is allowed to
-    // have. Every other validation error is a real bug.
-    let allowed_instance_paths: Vec<String> = KNOWN_MISSING_SID_PATHS
-        .iter()
-        .map(|p| format!("/schema-nodes/{}", p.replace('/', "~1")))
-        .collect();
-
     let v = validator();
     let d = doc();
-    let errors: Vec<_> = v.iter_errors(&d).collect();
-    let unexpected: Vec<String> = errors
-        .iter()
-        .filter(|e| !allowed_instance_paths.contains(&e.instance_path().to_string()))
-        .map(|e| e.to_string())
-        .collect();
+    let errors: Vec<String> = v.iter_errors(&d).map(|e| e.to_string()).collect();
     assert!(
-        unexpected.is_empty(),
+        errors.is_empty(),
         "resolved catalog failed schema validation:\n{}",
-        unexpected.join("\n")
+        errors.join("\n")
     );
-
-    for path in &allowed_instance_paths {
-        assert!(
-            errors
-                .iter()
-                .any(|e| e.instance_path().to_string() == *path),
-            "expected a known missing-sid gap at {path}, but it's gone now -- \
-             the pyang bug may be fixed; remove it from KNOWN_MISSING_SID_PATHS \
-             and the TODO in resolved_catalog.rs::schema_node_entry"
-        );
-    }
 }
 
 #[test]
@@ -619,7 +490,8 @@ fn every_module_in_the_real_catalog_partitions_as_hand_classified() {
     // tree, since that node's owner is the augmenting module, not the
     // target -- or an identity actually derived (RFC 7950 7.18.2:
     // irreflexively, so never the base identity itself) from a live
-    // identityref's own base, narrowed by IDENTITY_ACCEPT_LISTS where
+    // identityref's own base, narrowed by the catalog's own
+    // ui-tailoring.yaml identity-accept-list where
     // an entry applies (e.g. ieee802-dot1q-psfp's own
     // "set-gate-and-ipv" is excluded by its own "type-of-operation"
     // entry, which is why ieee802-dot1q-psfp -- declaring nothing else
@@ -652,7 +524,8 @@ fn every_module_in_the_real_catalog_partitions_as_hand_classified() {
     // "ietf-restconf" itself, but nothing live elsewhere ever uses
     // them) -- except "ietf-coreconf"'s own `coreconf-error` body,
     // which DOES invoke `rc:yang-data`, and that body IS implemented
-    // (on IMPLEMENTED_YANG_DATA), so "ietf-restconf" is listed on
+    // (on ui-tailoring.yaml's yang-data-accept-list), so
+    // "ietf-restconf" is listed on
     // that real usage, not merely for existing in some import graph. If
     // this catalog's own modules ever change, this list must be
     // re-derived by hand again, not regenerated from fercc's own
@@ -764,7 +637,7 @@ fn a_modules_own_typedefs_and_identities_follow_source_declaration_order_not_alp
     // ieee802-dot1q-bridge's own identities only lists 4 of its 7 real
     // "type-of-port"-derived identities here: "customer-network-port"/
     // "customer-edge-port"/"remote-customer-access-port" are pruned by
-    // IDENTITY_ACCEPT_LISTS's own "ieee802-dot1q-bridge:type-of-port"
+    // ui-tailoring.yaml's own "ieee802-dot1q-bridge:type-of-port"
     // entry (the real device deviates its "port-type" leaf's own type
     // to a narrower identityref, "mchp-vlan-port-type", that excludes
     // them -- see mchp-velocitysp-bridge.yang's own doc comment on that

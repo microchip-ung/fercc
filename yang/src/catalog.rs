@@ -28,10 +28,111 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::schema::Schema;
+
 pub struct CatalogFiles {
     pub yang: Vec<String>,
     pub sid: Vec<String>,
     pub ui_tailoring: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct UiTailoringFile {
+    #[serde(rename = "ui-tailoring")]
+    ui_tailoring: UiTailoringBody,
+}
+
+#[derive(Deserialize)]
+struct UiTailoringBody {
+    #[serde(rename = "identity-accept-list")]
+    identity_accept_list: Vec<UiTailoringAcceptListEntry>,
+    #[serde(rename = "yang-data-accept-list", default)]
+    yang_data_accept_list: Vec<UiTailoringYangData>,
+}
+
+#[derive(Deserialize)]
+struct UiTailoringAcceptListEntry {
+    base: String,
+    #[serde(rename = "accept-list")]
+    accept_list: Vec<UiTailoringIdentity>,
+}
+
+#[derive(Deserialize)]
+struct UiTailoringIdentity {
+    identity: String,
+}
+
+#[derive(Deserialize)]
+struct UiTailoringYangData {
+    name: String,
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct UiTailoring {
+    identity_accept_lists: Vec<(String, Vec<String>)>,
+    implemented_yang_data: Vec<String>,
+}
+
+fn parse_ui_tailoring(text: &str) -> R<UiTailoring> {
+    let file: UiTailoringFile =
+        serde_yml::from_str(text).map_err(|e| err(format!("parsing ui-tailoring.yaml: {e}")))?;
+    let identity_accept_lists = file
+        .ui_tailoring
+        .identity_accept_list
+        .into_iter()
+        .map(|entry| {
+            (
+                entry.base,
+                entry.accept_list.into_iter().map(|i| i.identity).collect(),
+            )
+        })
+        .collect();
+    let implemented_yang_data = file
+        .ui_tailoring
+        .yang_data_accept_list
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect();
+    Ok(UiTailoring {
+        identity_accept_lists,
+        implemented_yang_data,
+    })
+}
+
+impl CatalogFiles {
+    fn ui_tailoring(&self) -> R<UiTailoring> {
+        match &self.ui_tailoring {
+            Some(text) => parse_ui_tailoring(text),
+            None => Ok(UiTailoring::default()),
+        }
+    }
+
+    pub fn build_schema(&self) -> R<Schema> {
+        let ui_tailoring = self.ui_tailoring()?;
+        let accepted_slices: Vec<Vec<&str>> = ui_tailoring
+            .identity_accept_lists
+            .iter()
+            .map(|(_, accepted)| accepted.iter().map(String::as_str).collect())
+            .collect();
+        let identity_accept_lists: Vec<(&str, &[&str])> = ui_tailoring
+            .identity_accept_lists
+            .iter()
+            .zip(&accepted_slices)
+            .map(|((base, _), accepted)| (base.as_str(), accepted.as_slice()))
+            .collect();
+        let implemented_yang_data: Vec<&str> = ui_tailoring
+            .implemented_yang_data
+            .iter()
+            .map(String::as_str)
+            .collect();
+        crate::schema::build(
+            &self.yang,
+            &self.sid,
+            &implemented_yang_data,
+            &identity_accept_lists,
+        )
+        .map_err(|e| err(e.to_string()))
+    }
 }
 
 #[derive(Debug)]
@@ -122,26 +223,63 @@ pub fn load_workspace(repo_root: &Path) -> R<CatalogFiles> {
 /// Load every `.yang`/`.sid` file directly in `dir` (a downloaded and
 /// extracted catalog tarball's contents).
 pub fn load_from_dir(dir: &Path) -> R<CatalogFiles> {
-    let mut yang = Vec::new();
-    let mut sid = Vec::new();
-    let mut ui_tailoring = None;
+    let mut files = CatalogFiles {
+        yang: Vec::new(),
+        sid: Vec::new(),
+        ui_tailoring: None,
+    };
     for entry in fs::read_dir(dir)? {
         let path = entry?.path();
-        if path.file_name().and_then(|n| n.to_str()) == Some("ui-tailoring.yaml") {
-            ui_tailoring = Some(fs::read_to_string(&path)?);
-            continue;
-        }
-        match path.extension().and_then(|e| e.to_str()) {
-            Some("yang") => yang.push(fs::read_to_string(&path)?),
-            Some("sid") => sid.push(fs::read_to_string(&path)?),
-            _ => {}
+        if path.is_file() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            files.add(name, fs::read_to_string(&path)?);
         }
     }
-    Ok(CatalogFiles {
-        yang,
-        sid,
-        ui_tailoring,
-    })
+    Ok(files)
+}
+
+pub fn load_from_tarball(bytes: &[u8]) -> R<CatalogFiles> {
+    let gz = flate2::read::GzDecoder::new(bytes);
+    let mut archive = tar::Archive::new(gz);
+    let mut files = CatalogFiles {
+        yang: Vec::new(),
+        sid: Vec::new(),
+        ui_tailoring: None,
+    };
+    for entry in archive
+        .entries()
+        .map_err(|e| err(format!("reading the catalog tarball: {e}")))?
+    {
+        let mut entry = entry.map_err(|e| err(format!("reading the catalog tarball: {e}")))?;
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let path = entry
+            .path()
+            .map_err(|e| err(format!("reading the catalog tarball: {e}")))?
+            .into_owned();
+        if path.components().count() != 1 {
+            continue;
+        }
+        let name = path.to_str().unwrap_or("").to_string();
+        let mut content = String::new();
+        std::io::Read::read_to_string(&mut entry, &mut content)
+            .map_err(|e| err(format!("reading {name} from the catalog tarball: {e}")))?;
+        files.add(&name, content);
+    }
+    Ok(files)
+}
+
+impl CatalogFiles {
+    fn add(&mut self, file_name: &str, content: String) {
+        if file_name == "ui-tailoring.yaml" {
+            self.ui_tailoring = Some(content);
+        } else if file_name.ends_with(".yang") {
+            self.yang.push(content);
+        } else if file_name.ends_with(".sid") {
+            self.sid.push(content);
+        }
+    }
 }
 
 /// Fetch the catalog tarball named by `checksum` (the DUT's YANG-library
@@ -318,6 +456,56 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(&repo_root);
+    }
+
+    #[test]
+    fn parse_ui_tailoring_round_trips_the_real_interface_type_and_coreconf_error_entries() {
+        let text = r#"
+ui-tailoring:
+  identity-accept-list:
+  - base: "ietf-interfaces:interface-type"
+    accept-list:
+    - identity: "iana-if-type:ethernetCsmacd"
+    - identity: "iana-if-type:ieee8023adLag"
+    - identity: "iana-if-type:l3ipvlan"
+
+  yang-data-accept-list:
+    - name: "ietf-coreconf:coreconf-error"
+"#;
+        let tailoring = parse_ui_tailoring(text).unwrap();
+        assert_eq!(
+            tailoring,
+            UiTailoring {
+                identity_accept_lists: vec![(
+                    "ietf-interfaces:interface-type".to_string(),
+                    vec![
+                        "iana-if-type:ethernetCsmacd".to_string(),
+                        "iana-if-type:ieee8023adLag".to_string(),
+                        "iana-if-type:l3ipvlan".to_string(),
+                    ]
+                )],
+                implemented_yang_data: vec!["ietf-coreconf:coreconf-error".to_string()],
+            }
+        );
+    }
+
+    #[test]
+    fn parse_ui_tailoring_without_a_yang_data_accept_list_implements_no_yang_data() {
+        let text = r#"
+ui-tailoring:
+  identity-accept-list: []
+"#;
+        assert_eq!(parse_ui_tailoring(text).unwrap(), UiTailoring::default());
+    }
+
+    #[test]
+    fn ui_tailoring_is_empty_when_no_ui_tailoring_file_is_present() {
+        let files = CatalogFiles {
+            yang: Vec::new(),
+            sid: Vec::new(),
+            ui_tailoring: None,
+        };
+        assert_eq!(files.ui_tailoring().unwrap(), UiTailoring::default());
     }
 
     #[test]

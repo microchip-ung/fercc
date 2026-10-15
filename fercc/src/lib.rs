@@ -29,76 +29,6 @@ use yang::schema::Schema;
 /// `ietf-constrained-yang-library:yang-library/checksum` (mup1cc:78).
 const SID_CHECKSUM: i64 = 29304;
 
-#[derive(serde::Deserialize)]
-struct UiTailoringFile {
-    #[serde(rename = "ui-tailoring")]
-    ui_tailoring: UiTailoringBody,
-}
-
-#[derive(serde::Deserialize)]
-struct UiTailoringBody {
-    #[serde(rename = "identity-accept-list")]
-    identity_accept_list: Vec<UiTailoringAcceptListEntry>,
-    #[serde(rename = "yang-data-accept-list", default)]
-    yang_data_accept_list: Vec<UiTailoringYangData>,
-}
-
-#[derive(serde::Deserialize)]
-struct UiTailoringAcceptListEntry {
-    base: String,
-    #[serde(rename = "accept-list")]
-    accept_list: Vec<UiTailoringIdentity>,
-}
-
-#[derive(serde::Deserialize)]
-struct UiTailoringIdentity {
-    identity: String,
-}
-
-#[derive(serde::Deserialize)]
-struct UiTailoringYangData {
-    name: String,
-}
-
-#[derive(Debug, Default, PartialEq)]
-struct UiTailoring {
-    identity_accept_lists: Vec<(String, Vec<String>)>,
-    implemented_yang_data: Vec<String>,
-}
-
-fn parse_ui_tailoring(text: &str) -> Result<UiTailoring, String> {
-    let file: UiTailoringFile =
-        serde_yml::from_str(text).map_err(|e| format!("parsing ui-tailoring.yaml: {e}"))?;
-    let identity_accept_lists = file
-        .ui_tailoring
-        .identity_accept_list
-        .into_iter()
-        .map(|entry| {
-            (
-                entry.base,
-                entry.accept_list.into_iter().map(|i| i.identity).collect(),
-            )
-        })
-        .collect();
-    let implemented_yang_data = file
-        .ui_tailoring
-        .yang_data_accept_list
-        .into_iter()
-        .map(|entry| entry.name)
-        .collect();
-    Ok(UiTailoring {
-        identity_accept_lists,
-        implemented_yang_data,
-    })
-}
-
-fn ui_tailoring_from(files: &yang::catalog::CatalogFiles) -> Result<UiTailoring, String> {
-    match &files.ui_tailoring {
-        Some(text) => parse_ui_tailoring(text),
-        None => Ok(UiTailoring::default()),
-    }
-}
-
 pub fn run() -> Result<(), String> {
     let opts = Opts::parse();
 
@@ -192,29 +122,7 @@ pub fn run() -> Result<(), String> {
 }
 
 fn build_schema_from_catalog_files(files: &yang::catalog::CatalogFiles) -> Result<Schema, String> {
-    let ui_tailoring = ui_tailoring_from(files)?;
-    let identity_accept_lists = &ui_tailoring.identity_accept_lists;
-    let accepted_slices: Vec<Vec<&str>> = identity_accept_lists
-        .iter()
-        .map(|(_, accepted)| accepted.iter().map(String::as_str).collect())
-        .collect();
-    let identity_accept_lists: Vec<(&str, &[&str])> = identity_accept_lists
-        .iter()
-        .zip(&accepted_slices)
-        .map(|((base, _), accepted)| (base.as_str(), accepted.as_slice()))
-        .collect();
-    let implemented_yang_data: Vec<&str> = ui_tailoring
-        .implemented_yang_data
-        .iter()
-        .map(String::as_str)
-        .collect();
-    yang::schema::build(
-        &files.yang,
-        &files.sid,
-        &implemented_yang_data,
-        &identity_accept_lists,
-    )
-    .map_err(|e| e.to_string())
+    files.build_schema().map_err(|e| e.to_string())
 }
 
 pub fn load_workspace_schema(verbose: bool) -> Result<Schema, String> {
@@ -871,56 +779,6 @@ fn decode_response_payload(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parse_ui_tailoring_round_trips_the_real_interface_type_and_coreconf_error_entries() {
-        let text = r#"
-ui-tailoring:
-  identity-accept-list:
-  - base: "ietf-interfaces:interface-type"
-    accept-list:
-    - identity: "iana-if-type:ethernetCsmacd"
-    - identity: "iana-if-type:ieee8023adLag"
-    - identity: "iana-if-type:l3ipvlan"
-
-  yang-data-accept-list:
-    - name: "ietf-coreconf:coreconf-error"
-"#;
-        let tailoring = parse_ui_tailoring(text).unwrap();
-        assert_eq!(
-            tailoring,
-            UiTailoring {
-                identity_accept_lists: vec![(
-                    "ietf-interfaces:interface-type".to_string(),
-                    vec![
-                        "iana-if-type:ethernetCsmacd".to_string(),
-                        "iana-if-type:ieee8023adLag".to_string(),
-                        "iana-if-type:l3ipvlan".to_string(),
-                    ]
-                )],
-                implemented_yang_data: vec!["ietf-coreconf:coreconf-error".to_string()],
-            }
-        );
-    }
-
-    #[test]
-    fn parse_ui_tailoring_without_a_yang_data_accept_list_implements_no_yang_data() {
-        let text = r#"
-ui-tailoring:
-  identity-accept-list: []
-"#;
-        assert_eq!(parse_ui_tailoring(text).unwrap(), UiTailoring::default());
-    }
-
-    #[test]
-    fn ui_tailoring_from_is_empty_when_no_ui_tailoring_file_is_present() {
-        let files = yang::catalog::CatalogFiles {
-            yang: Vec::new(),
-            sid: Vec::new(),
-            ui_tailoring: None,
-        };
-        assert_eq!(ui_tailoring_from(&files).unwrap(), UiTailoring::default());
-    }
 
     #[test]
     fn partition_catalog_files_picks_out_ui_tailoring_yaml_by_file_name() {

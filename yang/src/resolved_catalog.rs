@@ -322,16 +322,6 @@ fn schema_node_entry(node: NodeRef<'_>) -> R<Json> {
     opt_insert(&mut m, "description", node.description.clone().map(s));
     if matches!(node.kw.as_str(), "choice" | "case") {
         opt_insert(&mut m, "sid", node.sid.map(|v| s(v.to_string())));
-    } else if node.synthetic && matches!(node.kw.as_str(), "input" | "output") && node.sid.is_none()
-    {
-        // TODO: known pyang bug (RFC 9595 6.4 requires a sid here) --
-        // some catalogs omit the sid on a synthetic input/output node.
-        // Remove this branch once every supported catalog's pyang
-        // generation is fixed and always assigns one.
-        eprintln!(
-            "warning: synthetic schema node {} has no sid (known pyang bug) -- omitting it",
-            node.path()
-        );
     } else {
         m.insert(
             "sid".to_string(),
