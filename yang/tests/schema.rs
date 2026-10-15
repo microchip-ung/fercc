@@ -28,11 +28,10 @@ fn status_defaults_to_current_when_unstated() {
 fn a_yang_data_roots_status_defaults_to_current_too() {
     // The root is created outside interpret_schema_node's own
     // default-status handling (see interpret_extension), so it needs
-    // its own path to the same RFC 7950 7.21.2 default. Module/root
-    // named to land on IMPLEMENTED_YANG_DATA_ROOTS's one real entry
-    // ("/ietf-coreconf:error"), since only an allow-listed yang-data
-    // root is exposed at all -- see
-    // a_yang_data_root_not_on_the_allow_list_is_absent_entirely.
+    // its own path to the same RFC 7950 7.21.2 default. The template
+    // is accept-listed, since only an accept-listed yang-data template
+    // is exposed at all -- see
+    // a_yang_data_template_not_on_the_accept_list_is_absent_entirely.
     let src = r#"
         module ietf-coreconf {
           namespace "urn:foo";
@@ -47,10 +46,18 @@ fn a_yang_data_roots_status_defaults_to_current_too() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &["/ietf-coreconf:error"], &[]).unwrap();
+    let schema = build(
+        &[src.to_string()],
+        &[],
+        &["ietf-coreconf:error-template"],
+        &[],
+    )
+    .unwrap();
     let error_root = schema
-        .yang_data_root_by_name("ietf-coreconf:error")
-        .unwrap();
+        .yang_data()
+        .find(|y| y.name == "error-template")
+        .unwrap()
+        .root();
     assert_eq!(error_root.status, Some(Status::Current));
 }
 
@@ -59,9 +66,8 @@ fn a_yang_data_roots_config_is_always_false_even_with_an_explicit_config_true() 
     // RFC 8040 Sec. 8: "The config-stmt is ignored if present" inside
     // a yang-data extension's content -- an explicit `config true`
     // must not survive into the resulting node, unlike an ordinary
-    // schema node where it would. Module/root named to land on
-    // IMPLEMENTED_YANG_DATA_ROOTS's one real entry, same reason as
-    // a_yang_data_roots_status_defaults_to_current_too above.
+    // schema node where it would. The template is accept-listed, same
+    // reason as a_yang_data_roots_status_defaults_to_current_too above.
     let src = r#"
         module ietf-coreconf {
           namespace "urn:foo";
@@ -78,10 +84,18 @@ fn a_yang_data_roots_config_is_always_false_even_with_an_explicit_config_true() 
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &["/ietf-coreconf:error"], &[]).unwrap();
+    let schema = build(
+        &[src.to_string()],
+        &[],
+        &["ietf-coreconf:error-template"],
+        &[],
+    )
+    .unwrap();
     let error_root = schema
-        .yang_data_root_by_name("ietf-coreconf:error")
-        .unwrap();
+        .yang_data()
+        .find(|y| y.name == "error-template")
+        .unwrap()
+        .root();
     assert!(!error_root.config);
     let message = error_root.find_child("message").unwrap();
     assert!(!message.config);
@@ -456,9 +470,8 @@ fn a_sid_files_data_identifier_can_attach_a_sid_to_a_yang_data_root() {
     // directly by its full qualified name (e.g.
     // "/ietf-coreconf:error") -- confirmed against a real catalog's
     // ietf-coreconf@*.sid. Attaching that SID must reach the
-    // yang-data root, not just ordinary module schema nodes.
-    // Module/root named to land on IMPLEMENTED_YANG_DATA_ROOTS's one
-    // real entry, same reason as
+    // yang-data root, not just ordinary module schema nodes. The
+    // template is accept-listed, same reason as
     // a_yang_data_roots_status_defaults_to_current_too above.
     let src = r#"
         module ietf-coreconf {
@@ -485,13 +498,15 @@ fn a_sid_files_data_identifier_can_attach_a_sid_to_a_yang_data_root() {
     let schema = build(
         &[src.to_string()],
         &[sid.to_string()],
-        &["/ietf-coreconf:error"],
+        &["ietf-coreconf:coreconf-error"],
         &[],
     )
     .unwrap();
     let error_root = schema
-        .yang_data_root_by_name("ietf-coreconf:error")
-        .unwrap();
+        .yang_data()
+        .find(|y| y.name == "coreconf-error")
+        .unwrap()
+        .root();
     assert_eq!(error_root.sid, Some(38455));
     let message = error_root.find_child("message").unwrap();
     assert_eq!(message.sid, Some(38456));
@@ -1677,13 +1692,13 @@ fn node_by_schema_path_disambiguates_the_first_segment_by_module() {
 }
 
 #[test]
-fn yang_data_root_by_name_finds_it_but_node_by_schema_path_and_data_path_do_not() {
+fn yang_data_finds_it_but_node_by_schema_path_and_data_path_do_not() {
     // A yang-data root is its own separate document (RFC 8040 Sec.
     // 8), never reachable by walking any module's own schema tree --
     // so it has no schema-node-path and no data-node-path, and needs
-    // its own dedicated entry point. Module/root named to land on
-    // IMPLEMENTED_YANG_DATA_ROOTS's one real entry, same reason as
-    // a_yang_data_roots_status_defaults_to_current_too above.
+    // its own dedicated entry point. The template is accept-listed,
+    // same reason as a_yang_data_roots_status_defaults_to_current_too
+    // above.
     let src = r#"
         module ietf-coreconf {
           namespace "urn:foo";
@@ -1698,10 +1713,18 @@ fn yang_data_root_by_name_finds_it_but_node_by_schema_path_and_data_path_do_not(
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &["/ietf-coreconf:error"], &[]).unwrap();
+    let schema = build(
+        &[src.to_string()],
+        &[],
+        &["ietf-coreconf:coreconf-error"],
+        &[],
+    )
+    .unwrap();
     let error_root = schema
-        .yang_data_root_by_name("ietf-coreconf:error")
-        .unwrap();
+        .yang_data()
+        .find(|y| y.name == "coreconf-error")
+        .unwrap()
+        .root();
     assert_eq!(error_root.kw, "container");
     assert!(error_root.find_child("message").is_some());
 
@@ -1966,18 +1989,19 @@ fn a_module_whose_only_top_level_content_is_a_uses_is_implemented() {
 }
 
 #[test]
-fn a_module_whose_only_content_is_an_allow_listed_yang_data_root_is_implemented() {
+fn a_module_whose_only_content_is_an_accept_listed_yang_data_template_is_implemented() {
     // Whether a yang-data root is "protocol accessible" (this
     // device's own ietf-constrained-yang-library's wording for
     // what distinguishes a real module from an import-only one)
     // can't be derived from the YANG text or from whether fercc's
     // interpreter happens to build the node -- it's a real,
     // separately-maintained fact about what this device's wire
-    // protocol actually serves (IMPLEMENTED_YANG_DATA_ROOTS).
-    // "ietf-coreconf" declares nothing but this one rc:yang-data
-    // template, with an inline container -- no ordinary schema
-    // node, no augment, no deviation -- so it's implemented only
-    // because "/ietf-coreconf:error" is on that allow-list.
+    // protocol actually serves (ui-tailoring.yaml's
+    // yang-data-accept-list). "ietf-coreconf" declares nothing but
+    // this one rc:yang-data template, with an inline container -- no
+    // ordinary schema node, no augment, no deviation -- so it's
+    // implemented only because "ietf-coreconf:error" is on that
+    // accept-list.
     let src = r#"
         module ietf-coreconf {
           namespace "urn:foo";
@@ -1992,7 +2016,7 @@ fn a_module_whose_only_content_is_an_allow_listed_yang_data_root_is_implemented(
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &["/ietf-coreconf:error"], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &["ietf-coreconf:error"], &[]).unwrap();
     assert!(schema.module_by_name("ietf-coreconf").is_some());
     assert!(schema
         .import_only_modules()
@@ -2000,10 +2024,11 @@ fn a_module_whose_only_content_is_an_allow_listed_yang_data_root_is_implemented(
 }
 
 #[test]
-fn a_module_whose_only_content_is_a_built_but_not_allow_listed_yang_data_root_is_import_only() {
-    // Same shape as the allow-listed case above, but under a
-    // different module/root name that was never added to
-    // IMPLEMENTED_YANG_DATA_ROOTS -- successfully building the
+fn a_module_whose_only_content_is_a_built_but_not_accept_listed_yang_data_template_is_import_only()
+{
+    // Same shape as the accept-listed case above, but under a
+    // different template name that was never added to the
+    // yang-data accept-list -- successfully building the
     // node is not enough on its own; the real-catalog
     // "ietf-restconf" case (whose own yang-errors/yang-api
     // templates build real nodes just like any other rc:yang-data
@@ -2161,15 +2186,14 @@ fn a_module_whose_identity_is_reached_only_through_another_identitys_derivation_
 }
 
 #[test]
-fn a_yang_data_root_not_on_the_allow_list_is_absent_entirely() {
+fn a_yang_data_template_not_on_the_accept_list_is_absent_entirely() {
     // schema.rs must not distinguish between "implemented
     // yang-data" and "yang-data" -- the only yang-data a Schema
-    // exposes at all, through any accessor, is the allow-listed
+    // exposes at all, through any accessor, is the accept-listed
     // kind. "foo"'s template is successfully built (a real,
-    // well-formed container) but isn't on
-    // IMPLEMENTED_YANG_DATA_ROOTS, so it must not merely fail to
-    // count toward "implemented" -- it must not exist in
-    // yang_data_roots() or be reachable by name at all.
+    // well-formed container) but isn't on the accept-list, so it
+    // must not merely fail to count toward "implemented" -- it must
+    // not exist in yang_data() at all.
     let src = r#"
         module foo {
           namespace "urn:foo";
@@ -2185,8 +2209,7 @@ fn a_yang_data_root_not_on_the_allow_list_is_absent_entirely() {
         }
     "#;
     let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
-    assert_eq!(schema.yang_data_roots().count(), 0);
-    assert!(schema.yang_data_root_by_name("foo:error").is_none());
+    assert_eq!(schema.yang_data().count(), 0);
 }
 
 #[test]
@@ -2195,12 +2218,10 @@ fn a_yang_data_bodys_uses_is_spliced_just_like_a_direct_container() {
     // yang-data body of `uses reusable;` must splice through to the
     // grouping's own container exactly like a direct one would --
     // the real-catalog "ietf-restconf" case: `rc:yang-data
-    // yang-errors { uses errors; }`. Module/root named to land on
-    // IMPLEMENTED_YANG_DATA_ROOTS's one real entry
-    // ("/ietf-coreconf:error") so the spliced result is actually
-    // observable through the public API (which exposes only
-    // allow-listed yang-data roots -- see
-    // a_yang_data_root_not_on_the_allow_list_is_absent_entirely).
+    // yang-errors { uses errors; }`. The template is accept-listed so
+    // the spliced result is actually observable through the public
+    // API (which exposes only accept-listed yang-data templates -- see
+    // a_yang_data_template_not_on_the_accept_list_is_absent_entirely).
     let src = r#"
         module ietf-coreconf {
           namespace "urn:foo";
@@ -2219,10 +2240,12 @@ fn a_yang_data_bodys_uses_is_spliced_just_like_a_direct_container() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &["/ietf-coreconf:error"], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &["ietf-coreconf:error"], &[]).unwrap();
     let root = schema
-        .yang_data_root_by_name("ietf-coreconf:error")
-        .expect("uses-spliced yang-data container must be built");
+        .yang_data()
+        .find(|y| y.name == "error")
+        .expect("uses-spliced yang-data container must be built")
+        .root();
     assert_eq!(root.children().count(), 1);
     assert!(schema.module_by_name("ietf-coreconf").is_some());
     assert!(schema
@@ -2268,6 +2291,168 @@ fn a_yang_data_body_whose_one_node_is_not_a_container_is_rejected() {
         }
     "#;
     assert!(build(&[src.to_string()], &[], &[], &[]).is_err());
+}
+
+#[test]
+fn an_accept_listed_yang_data_name_that_names_no_template_is_a_schema_error() {
+    // A typo in ui-tailoring.yaml's yang-data-accept-list must not
+    // silently implement nothing.
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          rc:yang-data error-template {
+            container error {
+              leaf message {
+                type string;
+              }
+            }
+          }
+        }
+    "#;
+    let err = build(&[src.to_string()], &[], &["foo:no-such-template"], &[])
+        .err()
+        .expect("an accept-listed name with no matching template must fail");
+    assert!(err.0.contains("\"foo:no-such-template\""), "{}", err.0);
+}
+
+#[test]
+fn the_yang_data_accept_list_names_a_template_not_its_container() {
+    // The template's container ("error") is the root's name, not the
+    // template's -- accept-listing "foo:error" must not match the
+    // "error-template" template.
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          rc:yang-data error-template {
+            container error {
+              leaf message {
+                type string;
+              }
+            }
+          }
+        }
+    "#;
+    assert!(build(&[src.to_string()], &[], &["foo:error"], &[]).is_err());
+    let schema = build(&[src.to_string()], &[], &["foo:error-template"], &[]).unwrap();
+    let template = schema.yang_data().next().unwrap();
+    assert_eq!(template.module, "foo");
+    assert_eq!(template.name, "error-template");
+    assert_eq!(template.root().path(), "/foo:error");
+}
+
+#[test]
+fn a_yang_data_template_defined_twice_in_one_module_is_a_schema_error() {
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          rc:yang-data error-template {
+            container first {
+            }
+          }
+          rc:yang-data error-template {
+            container second {
+            }
+          }
+        }
+    "#;
+    let err = build(&[src.to_string()], &[], &[], &[])
+        .err()
+        .expect("a duplicate template name must fail");
+    assert!(err.0.contains("\"error-template\""), "{}", err.0);
+    assert!(err.0.contains("more than once"), "{}", err.0);
+}
+
+#[test]
+fn two_yang_data_templates_with_the_same_container_name_in_one_module_are_a_schema_error() {
+    // Both containers would be addressed as "/foo:error", in schema-nodes
+    // and in the module's .sid file alike.
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          rc:yang-data first-template {
+            container error {
+            }
+          }
+          rc:yang-data second-template {
+            container error {
+            }
+          }
+        }
+    "#;
+    let err = build(&[src.to_string()], &[], &[], &[])
+        .err()
+        .expect("two same-named yang-data containers must fail");
+    assert!(err.0.contains("\"second-template\""), "{}", err.0);
+    assert!(err.0.contains("collides"), "{}", err.0);
+}
+
+#[test]
+fn a_yang_data_container_colliding_with_a_top_level_data_node_is_a_schema_error() {
+    // Both would be addressed as "/foo:error" in schema-nodes. The data
+    // node is declared after the template so the check can't depend on
+    // declaration order.
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          rc:yang-data error-template {
+            container error {
+            }
+          }
+          container error {
+          }
+        }
+    "#;
+    let err = build(&[src.to_string()], &[], &[], &[])
+        .err()
+        .expect("a yang-data container colliding with a data node must fail");
+    assert!(err.0.contains("\"error\""), "{}", err.0);
+    assert!(err.0.contains("collides"), "{}", err.0);
+}
+
+#[test]
+fn same_named_yang_data_containers_in_different_modules_are_independent() {
+    let foo = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          rc:yang-data error-template {
+            container error {
+            }
+          }
+        }
+    "#;
+    let bar = r#"
+        module bar {
+          namespace "urn:bar";
+          prefix b;
+
+          rc:yang-data error-template {
+            container error {
+            }
+          }
+        }
+    "#;
+    let schema = build(
+        &[foo.to_string(), bar.to_string()],
+        &[],
+        &["foo:error-template", "bar:error-template"],
+        &[],
+    )
+    .unwrap();
+    let mut roots: Vec<String> = schema.yang_data().map(|y| y.root().path()).collect();
+    roots.sort();
+    assert_eq!(roots, vec!["/bar:error", "/foo:error"]);
 }
 
 #[test]
@@ -3013,6 +3198,65 @@ const STRUCTURE_EXT: &str = r#"
       }
     }
 "#;
+
+#[test]
+fn a_structure_colliding_with_a_yang_data_container_is_a_schema_error() {
+    // Both would be addressed as "/foo:doc" by the module's .sid file.
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          import ietf-yang-structure-ext {
+            prefix sx;
+          }
+
+          rc:yang-data doc-template {
+            container doc {
+            }
+          }
+          sx:structure doc {
+            leaf x {
+              type string;
+            }
+          }
+        }
+    "#;
+    let err = build(&[STRUCTURE_EXT.to_string(), src.to_string()], &[], &[], &[])
+        .err()
+        .expect("a structure colliding with a yang-data container must fail");
+    assert!(err.0.contains("\"doc\""), "{}", err.0);
+    assert!(err.0.contains("collides"), "{}", err.0);
+}
+
+#[test]
+fn a_yang_data_container_colliding_with_a_structure_is_a_schema_error() {
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          import ietf-yang-structure-ext {
+            prefix sx;
+          }
+
+          sx:structure doc {
+            leaf x {
+              type string;
+            }
+          }
+          rc:yang-data doc-template {
+            container doc {
+            }
+          }
+        }
+    "#;
+    let err = build(&[STRUCTURE_EXT.to_string(), src.to_string()], &[], &[], &[])
+        .err()
+        .expect("a yang-data container colliding with a structure must fail");
+    assert!(err.0.contains("\"doc-template\""), "{}", err.0);
+    assert!(err.0.contains("collides"), "{}", err.0);
+}
 
 #[test]
 fn a_structures_root_carries_its_own_status_and_description() {

@@ -29,8 +29,6 @@ use yang::schema::Schema;
 /// `ietf-constrained-yang-library:yang-library/checksum` (mup1cc:78).
 const SID_CHECKSUM: i64 = 29304;
 
-const IMPLEMENTED_YANG_DATA_ROOTS: &[&str] = &["/ietf-coreconf:error"];
-
 #[derive(serde::Deserialize)]
 struct UiTailoringFile {
     #[serde(rename = "ui-tailoring")]
@@ -41,6 +39,8 @@ struct UiTailoringFile {
 struct UiTailoringBody {
     #[serde(rename = "identity-accept-list")]
     identity_accept_list: Vec<UiTailoringAcceptListEntry>,
+    #[serde(rename = "yang-data-accept-list", default)]
+    yang_data_accept_list: Vec<UiTailoringYangData>,
 }
 
 #[derive(serde::Deserialize)]
@@ -55,10 +55,21 @@ struct UiTailoringIdentity {
     identity: String,
 }
 
-fn parse_identity_accept_lists(text: &str) -> Result<Vec<(String, Vec<String>)>, String> {
+#[derive(serde::Deserialize)]
+struct UiTailoringYangData {
+    name: String,
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct UiTailoring {
+    identity_accept_lists: Vec<(String, Vec<String>)>,
+    implemented_yang_data: Vec<String>,
+}
+
+fn parse_ui_tailoring(text: &str) -> Result<UiTailoring, String> {
     let file: UiTailoringFile =
         serde_yml::from_str(text).map_err(|e| format!("parsing ui-tailoring.yaml: {e}"))?;
-    Ok(file
+    let identity_accept_lists = file
         .ui_tailoring
         .identity_accept_list
         .into_iter()
@@ -68,15 +79,23 @@ fn parse_identity_accept_lists(text: &str) -> Result<Vec<(String, Vec<String>)>,
                 entry.accept_list.into_iter().map(|i| i.identity).collect(),
             )
         })
-        .collect())
+        .collect();
+    let implemented_yang_data = file
+        .ui_tailoring
+        .yang_data_accept_list
+        .into_iter()
+        .map(|entry| entry.name)
+        .collect();
+    Ok(UiTailoring {
+        identity_accept_lists,
+        implemented_yang_data,
+    })
 }
 
-fn identity_accept_lists_from(
-    files: &yang::catalog::CatalogFiles,
-) -> Result<Vec<(String, Vec<String>)>, String> {
+fn ui_tailoring_from(files: &yang::catalog::CatalogFiles) -> Result<UiTailoring, String> {
     match &files.ui_tailoring {
-        Some(text) => parse_identity_accept_lists(text),
-        None => Ok(Vec::new()),
+        Some(text) => parse_ui_tailoring(text),
+        None => Ok(UiTailoring::default()),
     }
 }
 
@@ -173,7 +192,8 @@ pub fn run() -> Result<(), String> {
 }
 
 fn build_schema_from_catalog_files(files: &yang::catalog::CatalogFiles) -> Result<Schema, String> {
-    let identity_accept_lists = identity_accept_lists_from(files)?;
+    let ui_tailoring = ui_tailoring_from(files)?;
+    let identity_accept_lists = &ui_tailoring.identity_accept_lists;
     let accepted_slices: Vec<Vec<&str>> = identity_accept_lists
         .iter()
         .map(|(_, accepted)| accepted.iter().map(String::as_str).collect())
@@ -183,10 +203,15 @@ fn build_schema_from_catalog_files(files: &yang::catalog::CatalogFiles) -> Resul
         .zip(&accepted_slices)
         .map(|((base, _), accepted)| (base.as_str(), accepted.as_slice()))
         .collect();
+    let implemented_yang_data: Vec<&str> = ui_tailoring
+        .implemented_yang_data
+        .iter()
+        .map(String::as_str)
+        .collect();
     yang::schema::build(
         &files.yang,
         &files.sid,
-        IMPLEMENTED_YANG_DATA_ROOTS,
+        &implemented_yang_data,
         &identity_accept_lists,
     )
     .map_err(|e| e.to_string())
@@ -261,12 +286,16 @@ fn cache_base_dir() -> Result<PathBuf, String> {
 /// Sort trailing positional arguments into `.yang`/`.sid`/everything-else
 /// groups by extension, mirroring `yang-enc.rb:93-96` -- order on the
 /// command line doesn't matter, only each argument's own suffix.
-pub fn partition_catalog_files(files: &[String]) -> (Vec<String>, Vec<String>, Vec<String>) {
+fn partition_catalog_files(files: &[String]) -> CatalogArgs {
     let mut yangs = Vec::new();
     let mut sids = Vec::new();
+    let mut ui_tailoring = None;
     let mut rest = Vec::new();
     for f in files {
-        if f.ends_with(".yang") {
+        if std::path::Path::new(f).file_name().and_then(|n| n.to_str()) == Some("ui-tailoring.yaml")
+        {
+            ui_tailoring = Some(f.clone());
+        } else if f.ends_with(".yang") {
             yangs.push(f.clone());
         } else if f.ends_with(".sid") {
             sids.push(f.clone());
@@ -274,28 +303,39 @@ pub fn partition_catalog_files(files: &[String]) -> (Vec<String>, Vec<String>, V
             rest.push(f.clone());
         }
     }
-    (yangs, sids, rest)
+    CatalogArgs {
+        yangs,
+        sids,
+        ui_tailoring,
+        rest,
+    }
+}
+
+struct CatalogArgs {
+    yangs: Vec<String>,
+    sids: Vec<String>,
+    ui_tailoring: Option<String>,
+    rest: Vec<String>,
 }
 
 /// Build a schema straight from an explicit set of catalog files, no
 /// workspace/download acquisition at all -- mirrors `generate_yang_schema`
 /// (yang-schema.rb:27-30).
-pub fn build_explicit_schema(yangs: &[String], sids: &[String]) -> Result<Schema, String> {
+pub fn build_explicit_schema(
+    yangs: &[String],
+    sids: &[String],
+    ui_tailoring: Option<&str>,
+) -> Result<Schema, String> {
+    let read = |p: &str| std::fs::read_to_string(p).map_err(|e| format!("reading {p}: {e}"));
     let read_all = |paths: &[String]| -> Result<Vec<String>, String> {
-        paths
-            .iter()
-            .map(|p| std::fs::read_to_string(p).map_err(|e| format!("reading {p}: {e}")))
-            .collect()
+        paths.iter().map(|p| read(p)).collect()
     };
-    let yang_sources = read_all(yangs)?;
-    let sid_sources = read_all(sids)?;
-    yang::schema::build(
-        &yang_sources,
-        &sid_sources,
-        IMPLEMENTED_YANG_DATA_ROOTS,
-        &[],
-    )
-    .map_err(|e| e.to_string())
+    let files = yang::catalog::CatalogFiles {
+        yang: read_all(yangs)?,
+        sid: read_all(sids)?,
+        ui_tailoring: ui_tailoring.map(read).transpose()?,
+    };
+    build_schema_from_catalog_files(&files)
 }
 
 fn read_data_file_or_stdin_text(data_file: Option<&str>) -> Result<String, String> {
@@ -457,7 +497,12 @@ pub fn convert(
 /// `-o` here select an *encoding*, unlike the same flags on the flat
 /// device flow above, which select a *file path*.
 fn run_conv(args: &opts::ConvArgs) -> Result<(), String> {
-    let (yangs, sids, rest) = partition_catalog_files(&args.files);
+    let CatalogArgs {
+        yangs,
+        sids,
+        ui_tailoring,
+        rest,
+    } = partition_catalog_files(&args.files);
     if rest.len() > 1 {
         return Err(format!(
             "expected at most one data file on the command line, got {}: {}",
@@ -467,10 +512,10 @@ fn run_conv(args: &opts::ConvArgs) -> Result<(), String> {
     }
     let data_file = rest.first().map(String::as_str);
 
-    let schema = if yangs.is_empty() && sids.is_empty() {
+    let schema = if yangs.is_empty() && sids.is_empty() && ui_tailoring.is_none() {
         load_workspace_schema(false)?
     } else if !yangs.is_empty() && !sids.is_empty() {
-        build_explicit_schema(&yangs, &sids)?
+        build_explicit_schema(&yangs, &sids, ui_tailoring.as_deref())?
     } else {
         return Err("pass both .yang and .sid files together to use an explicit catalog (or neither, to use the workspace catalog) -- got only one kind".to_string());
     };
@@ -501,7 +546,12 @@ fn run_conv(args: &opts::ConvArgs) -> Result<(), String> {
 /// `yang-enc schema`: mirrors `main`'s `'schema'` branches (yang-enc.rb:
 /// 128-136, 170-171).
 fn run_schema(args: &opts::SchemaArgs) -> Result<(), String> {
-    let (yangs, sids, rest) = partition_catalog_files(&args.files);
+    let CatalogArgs {
+        yangs,
+        sids,
+        ui_tailoring,
+        rest,
+    } = partition_catalog_files(&args.files);
     if !rest.is_empty() {
         return Err(format!(
             "schema doesn't take a data file -- unexpected argument(s): {}",
@@ -513,10 +563,10 @@ fn run_schema(args: &opts::SchemaArgs) -> Result<(), String> {
             ".sid files aren't needed for a JSON Schema -- pass only .yang files".to_string(),
         );
     }
-    let schema = if yangs.is_empty() {
+    let schema = if yangs.is_empty() && ui_tailoring.is_none() {
         load_workspace_schema(false)?
     } else {
-        build_explicit_schema(&yangs, &[])?
+        build_explicit_schema(&yangs, &[], ui_tailoring.as_deref())?
     };
     let value = yang::json_schema::to_json_schema_for_catalog(&schema, "yang");
     print_normalized(&serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?);
@@ -823,7 +873,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_identity_accept_lists_round_trips_the_real_interface_type_entry() {
+    fn parse_ui_tailoring_round_trips_the_real_interface_type_and_coreconf_error_entries() {
         let text = r#"
 ui-tailoring:
   identity-accept-list:
@@ -832,28 +882,65 @@ ui-tailoring:
     - identity: "iana-if-type:ethernetCsmacd"
     - identity: "iana-if-type:ieee8023adLag"
     - identity: "iana-if-type:l3ipvlan"
+
+  yang-data-accept-list:
+    - name: "ietf-coreconf:coreconf-error"
 "#;
-        let lists = parse_identity_accept_lists(text).unwrap();
+        let tailoring = parse_ui_tailoring(text).unwrap();
         assert_eq!(
-            lists,
-            vec![(
-                "ietf-interfaces:interface-type".to_string(),
-                vec![
-                    "iana-if-type:ethernetCsmacd".to_string(),
-                    "iana-if-type:ieee8023adLag".to_string(),
-                    "iana-if-type:l3ipvlan".to_string(),
-                ]
-            )]
+            tailoring,
+            UiTailoring {
+                identity_accept_lists: vec![(
+                    "ietf-interfaces:interface-type".to_string(),
+                    vec![
+                        "iana-if-type:ethernetCsmacd".to_string(),
+                        "iana-if-type:ieee8023adLag".to_string(),
+                        "iana-if-type:l3ipvlan".to_string(),
+                    ]
+                )],
+                implemented_yang_data: vec!["ietf-coreconf:coreconf-error".to_string()],
+            }
         );
     }
 
     #[test]
-    fn identity_accept_lists_from_is_empty_when_no_ui_tailoring_file_is_present() {
+    fn parse_ui_tailoring_without_a_yang_data_accept_list_implements_no_yang_data() {
+        let text = r#"
+ui-tailoring:
+  identity-accept-list: []
+"#;
+        assert_eq!(parse_ui_tailoring(text).unwrap(), UiTailoring::default());
+    }
+
+    #[test]
+    fn ui_tailoring_from_is_empty_when_no_ui_tailoring_file_is_present() {
         let files = yang::catalog::CatalogFiles {
             yang: Vec::new(),
             sid: Vec::new(),
             ui_tailoring: None,
         };
-        assert_eq!(identity_accept_lists_from(&files).unwrap(), Vec::new());
+        assert_eq!(ui_tailoring_from(&files).unwrap(), UiTailoring::default());
+    }
+
+    #[test]
+    fn partition_catalog_files_picks_out_ui_tailoring_yaml_by_file_name() {
+        let files: Vec<String> = [
+            "a.yang",
+            "dir/ui-tailoring.yaml",
+            "a.sid",
+            "data.json",
+            "other.yaml",
+        ]
+        .iter()
+        .map(|f| f.to_string())
+        .collect();
+        let args = partition_catalog_files(&files);
+        assert_eq!(args.yangs, vec!["a.yang".to_string()]);
+        assert_eq!(args.sids, vec!["a.sid".to_string()]);
+        assert_eq!(args.ui_tailoring, Some("dir/ui-tailoring.yaml".to_string()));
+        assert_eq!(
+            args.rest,
+            vec!["data.json".to_string(), "other.yaml".to_string()]
+        );
     }
 }

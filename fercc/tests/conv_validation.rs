@@ -58,8 +58,13 @@ fn schema() -> Schema {
             _ => {}
         }
     }
-    yang::schema::build(&yang_sources, &sid_sources, &["/ietf-coreconf:error"], &[])
-        .expect("build schema from bundled catalog")
+    yang::schema::build(
+        &yang_sources,
+        &sid_sources,
+        &["ietf-coreconf:coreconf-error"],
+        &[],
+    )
+    .expect("build schema from bundled catalog")
 }
 
 fn text_of(output: ConvOutput, desc: &str) -> String {

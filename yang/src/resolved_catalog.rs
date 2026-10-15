@@ -423,6 +423,14 @@ fn module_entry(module: ModuleRef<'_>, schema: &Schema) -> R<Json> {
             .map(|i| s(qualified_name(&i.module, &i.name)))
             .collect()),
     );
+    m.insert(
+        "yang-data".to_string(),
+        arr(schema
+            .yang_data()
+            .filter(|y| y.module == module.name)
+            .map(|y| s(qualified_name(&y.module, &y.name)))
+            .collect()),
+    );
     Ok(Json::Object(m))
 }
 
@@ -517,8 +525,16 @@ pub fn to_resolved_catalog(schema: &Schema, yang_catalog: &str) -> R<Json> {
     }
 
     let mut yang_data = Map::new();
-    for root in schema.yang_data_roots() {
-        flatten_subtree(root, &mut yang_data)?;
+    for template in schema.yang_data() {
+        flatten_subtree(template.root(), &mut schema_nodes)?;
+        yang_data.insert(
+            qualified_name(&template.module, &template.name),
+            obj(vec![
+                ("module", s(template.module.clone())),
+                ("name", s(template.name.clone())),
+                ("root", s(template.root().path())),
+            ]),
+        );
     }
 
     let mut sid_index = Map::new();
@@ -563,8 +579,8 @@ pub fn to_resolved_catalog(schema: &Schema, yang_catalog: &str) -> R<Json> {
             index_node_sids(root, &mut sid_index);
         }
     }
-    for root in schema.yang_data_roots() {
-        index_node_sids(root, &mut sid_index);
+    for template in schema.yang_data() {
+        index_node_sids(template.root(), &mut sid_index);
     }
 
     let mut doc = Map::new();
@@ -623,7 +639,7 @@ fn collect_identityref_bases(ty: &Json, out: &mut std::collections::HashSet<Stri
 fn check_type_descriptor(
     ty: &Json,
     typedefs: &Map<String, Json>,
-    node_maps: &[&Map<String, Json>],
+    schema_nodes: &Map<String, Json>,
     from: &str,
     errors: &mut Vec<String>,
 ) {
@@ -635,15 +651,15 @@ fn check_type_descriptor(
         }
     }
     if let Some(target) = ty.get("target").and_then(Json::as_str) {
-        if !node_maps.iter().any(|m| m.contains_key(target)) {
+        if !schema_nodes.contains_key(target) {
             errors.push(format!(
-                "{from}.type.target: {target:?} not found in schema-nodes or yang-data"
+                "{from}.type.target: {target:?} not found in schema-nodes"
             ));
         }
     }
     if let Some(members) = ty.get("type").and_then(Json::as_array) {
         for member in members {
-            check_type_descriptor(member, typedefs, node_maps, from, errors);
+            check_type_descriptor(member, typedefs, schema_nodes, from, errors);
         }
     }
 }
@@ -658,63 +674,49 @@ fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
     let modules = doc["modules"].as_object().unwrap();
     let import_only_modules = doc["import-only-modules"].as_object().unwrap();
     let sid_index = doc["sid-index"].as_object().unwrap();
-    let node_maps = [schema_nodes, yang_data];
 
-    let check_node_path = |path: &str, map: &Map<String, Json>, map_name: &str, from: &str| {
-        if !map.contains_key(path) {
-            return Some(format!("{from}: {path:?} not found in {map_name}"));
-        }
-        None
-    };
-
-    for (own_map, map_name) in [(schema_nodes, "schema-nodes"), (yang_data, "yang-data")] {
-        for (path, node) in own_map {
-            let from = format!("{map_name}[{path:?}]");
-            if let Some(parent) = node.get("parent").and_then(Json::as_str) {
-                if let Some(e) =
-                    check_node_path(parent, own_map, map_name, &format!("{from}.parent"))
-                {
-                    errors.push(e);
-                } else if !own_map[parent]
-                    .get("children")
-                    .and_then(Json::as_array)
-                    .is_some_and(|children| {
-                        children.iter().any(|c| c.as_str() == Some(path.as_str()))
-                    })
-                {
-                    errors.push(format!(
-                        "{from}.parent is {parent:?}, but {parent:?}.children does not list {path:?} back"
-                    ));
-                }
+    for (path, node) in schema_nodes {
+        let from = format!("schema-nodes[{path:?}]");
+        if let Some(parent) = node.get("parent").and_then(Json::as_str) {
+            if !schema_nodes.contains_key(parent) {
+                errors.push(format!(
+                    "{from}.parent: {parent:?} not found in schema-nodes"
+                ));
+            } else if !schema_nodes[parent]
+                .get("children")
+                .and_then(Json::as_array)
+                .is_some_and(|children| children.iter().any(|c| c.as_str() == Some(path.as_str())))
+            {
+                errors.push(format!(
+                    "{from}.parent is {parent:?}, but {parent:?}.children does not list {path:?} back"
+                ));
             }
-            for field in ["children", "data-children", "keys"] {
-                if let Some(items) = node.get(field).and_then(Json::as_array) {
-                    for item in items {
-                        let p = item.as_str().unwrap();
-                        if let Some(e) =
-                            check_node_path(p, own_map, map_name, &format!("{from}.{field}"))
-                        {
-                            errors.push(e);
-                        } else if field == "children"
-                            && own_map[p].get("parent").and_then(Json::as_str)
-                                != Some(path.as_str())
-                        {
-                            errors.push(format!(
-                                "{from}.children lists {p:?}, but {p:?}.parent is not {path:?}"
-                            ));
-                        }
+        }
+        for field in ["children", "data-children", "keys"] {
+            if let Some(items) = node.get(field).and_then(Json::as_array) {
+                for item in items {
+                    let p = item.as_str().unwrap();
+                    if !schema_nodes.contains_key(p) {
+                        errors.push(format!("{from}.{field}: {p:?} not found in schema-nodes"));
+                    } else if field == "children"
+                        && schema_nodes[p].get("parent").and_then(Json::as_str)
+                            != Some(path.as_str())
+                    {
+                        errors.push(format!(
+                            "{from}.children lists {p:?}, but {p:?}.parent is not {path:?}"
+                        ));
                     }
                 }
             }
-            if let Some(t) = node.get("type") {
-                check_type_descriptor(t, typedefs, &node_maps, &from, &mut errors);
-            }
+        }
+        if let Some(t) = node.get("type") {
+            check_type_descriptor(t, typedefs, schema_nodes, &from, &mut errors);
         }
     }
 
     for (key, t) in typedefs {
         let from = format!("typedefs[{key:?}]");
-        check_type_descriptor(&t["type"], typedefs, &node_maps, &from, &mut errors);
+        check_type_descriptor(&t["type"], typedefs, schema_nodes, &from, &mut errors);
     }
 
     for (key, identity) in identities {
@@ -751,6 +753,49 @@ fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
                 errors.push(format!(
                     "{from}.identities: {key:?} not found in identities"
                 ));
+            }
+        }
+        for item in module["yang-data"].as_array().unwrap() {
+            let key = item.as_str().unwrap();
+            match yang_data.get(key) {
+                None => errors.push(format!("{from}.yang-data: {key:?} not found in yang-data")),
+                Some(template) if template["module"] != *mod_name => errors.push(format!(
+                    "{from}.yang-data lists {key:?}, but its module is {}",
+                    template["module"]
+                )),
+                Some(_) => {}
+            }
+        }
+    }
+
+    for (key, template) in yang_data {
+        let from = format!("yang-data[{key:?}]");
+        let module = template["module"].as_str().unwrap();
+        let name = template["name"].as_str().unwrap();
+        if *key != qualified_name(module, name) {
+            errors.push(format!(
+                "{from}'s key doesn't match its own \"module\" and \"name\" fields"
+            ));
+        }
+        let listed_by_its_module = modules
+            .get(module)
+            .and_then(|m| m["yang-data"].as_array())
+            .is_some_and(|list| list.iter().any(|k| k.as_str() == Some(key.as_str())));
+        if !listed_by_its_module {
+            errors.push(format!(
+                "{from} is not listed by modules[{module:?}].yang-data"
+            ));
+        }
+        let root = template["root"].as_str().unwrap();
+        match schema_nodes.get(root) {
+            None => errors.push(format!("{from}.root: {root:?} not found in schema-nodes")),
+            Some(node) => {
+                if node["keyword"] != "container" {
+                    errors.push(format!("{from}.root {root:?} is not a container"));
+                }
+                if node["module"] != *module {
+                    errors.push(format!("{from}.root {root:?} is not defined in {module:?}"));
+                }
             }
         }
     }
@@ -791,7 +836,7 @@ fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
                         .any(|m| m["name"] == *identifier)
             }
             "identity" => identities.contains_key(identifier),
-            "data" => schema_nodes.contains_key(identifier) || yang_data.contains_key(identifier),
+            "data" => schema_nodes.contains_key(identifier),
             other => {
                 errors.push(format!("sid-index[{sid:?}]: unknown namespace {other:?}"));
                 continue;
@@ -829,23 +874,21 @@ fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
             ));
         }
     }
-    for (map, map_name) in [(schema_nodes, "schema-nodes"), (yang_data, "yang-data")] {
-        for (path, node) in map {
-            let Some(sid) = node.get("sid").and_then(Json::as_str) else {
-                continue;
-            };
-            if sid_index.get(sid).map(|e| e["identifier"].as_str()) != Some(Some(path.as_str())) {
-                errors.push(format!(
-                    "{map_name}[{path:?}]'s sid {sid:?} not reverse-indexed"
-                ));
-            }
+    for (path, node) in schema_nodes {
+        let Some(sid) = node.get("sid").and_then(Json::as_str) else {
+            continue;
+        };
+        if sid_index.get(sid).map(|e| e["identifier"].as_str()) != Some(Some(path.as_str())) {
+            errors.push(format!(
+                "schema-nodes[{path:?}]'s sid {sid:?} not reverse-indexed"
+            ));
         }
     }
 
-    let mut sid_bearing = 0;
-    for map in [schema_nodes, yang_data] {
-        sid_bearing += map.values().filter(|n| n.get("sid").is_some()).count();
-    }
+    let mut sid_bearing = schema_nodes
+        .values()
+        .filter(|n| n.get("sid").is_some())
+        .count();
     sid_bearing += identities.len();
     let mut module_sids: std::collections::HashSet<String> = modules
         .values()
@@ -866,67 +909,59 @@ fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
         ));
     }
 
-    for (map_name, map) in [("schema-nodes", schema_nodes), ("yang-data", yang_data)] {
-        let mut visited = std::collections::HashSet::new();
-        let mut stack: Vec<&str> = map
-            .iter()
-            .filter(|(_, node)| node.get("parent").is_none())
-            .map(|(path, _)| path.as_str())
-            .collect();
-        while let Some(path) = stack.pop() {
-            if visited.insert(path.to_string()) {
-                if let Some(children) = map[path].get("children").and_then(Json::as_array) {
-                    for child in children {
-                        stack.push(child.as_str().unwrap());
-                    }
+    let mut visited = std::collections::HashSet::new();
+    let mut stack: Vec<&str> = schema_nodes
+        .iter()
+        .filter(|(_, node)| node.get("parent").is_none())
+        .map(|(path, _)| path.as_str())
+        .collect();
+    while let Some(path) = stack.pop() {
+        if visited.insert(path.to_string()) {
+            if let Some(children) = schema_nodes[path].get("children").and_then(Json::as_array) {
+                for child in children {
+                    stack.push(child.as_str().unwrap());
                 }
             }
         }
-        for path in map.keys() {
-            if !visited.contains(path.as_str()) {
-                errors.push(format!(
-                    "{map_name}[{path:?}] is unreachable by walking children from a root"
-                ));
-            }
-        }
     }
-
-    let mut root_nodes = std::collections::HashSet::new();
-    for module in modules.values() {
-        for item in module["root-nodes"].as_array().unwrap() {
-            root_nodes.insert(item.as_str().unwrap());
-        }
-    }
-    for (path, node) in schema_nodes {
-        let is_root = root_nodes.contains(path.as_str());
-        let has_parent = node.get("parent").is_some();
-        if is_root == has_parent {
+    for path in schema_nodes.keys() {
+        if !visited.contains(path.as_str()) {
             errors.push(format!(
-                "schema-nodes[{path:?}]: listed as a module root-node ({is_root}) must disagree with carrying a parent ({has_parent})"
+                "schema-nodes[{path:?}] is unreachable by walking children from a root"
             ));
         }
     }
-    let mut named_as_child = std::collections::HashSet::new();
-    for node in yang_data.values() {
-        if let Some(children) = node.get("children").and_then(Json::as_array) {
-            for child in children {
-                named_as_child.insert(child.as_str().unwrap());
-            }
+
+    let mut root_listings: std::collections::HashMap<&str, usize> =
+        std::collections::HashMap::new();
+    for module in modules.values() {
+        for item in module["root-nodes"].as_array().unwrap() {
+            *root_listings.entry(item.as_str().unwrap()).or_default() += 1;
         }
     }
-    for (path, node) in yang_data {
-        let is_root = !named_as_child.contains(path.as_str());
+    for template in yang_data.values() {
+        *root_listings
+            .entry(template["root"].as_str().unwrap())
+            .or_default() += 1;
+    }
+    for (path, node) in schema_nodes {
+        let listings = root_listings.get(path.as_str()).copied().unwrap_or(0);
         let has_parent = node.get("parent").is_some();
-        if is_root == has_parent {
+        if has_parent && listings != 0 {
             errors.push(format!(
-                "yang-data[{path:?}]: not named as anyone's child ({is_root}) must disagree with carrying a parent ({has_parent})"
+                "schema-nodes[{path:?}] carries a parent but is listed as a module root-node or a yang-data root"
+            ));
+        }
+        if !has_parent && listings != 1 {
+            errors.push(format!(
+                "schema-nodes[{path:?}] carries no parent, so must be listed exactly once as a module root-node or a yang-data root, but is listed {listings} times"
             ));
         }
     }
 
     let mut derived_from_refs = std::collections::HashSet::new();
     let mut identityref_base_refs = std::collections::HashSet::new();
-    for node in schema_nodes.values().chain(yang_data.values()) {
+    for node in schema_nodes.values() {
         if let Some(ty) = node.get("type") {
             collect_derived_from(ty, &mut derived_from_refs);
             collect_identityref_bases(ty, &mut identityref_base_refs);
@@ -997,14 +1032,6 @@ fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
             }
         } else {
             namespace_owners.insert(namespace, module_name);
-        }
-    }
-
-    for key in yang_data.keys() {
-        if !key.starts_with('/') {
-            errors.push(format!(
-                "yang-data key {key:?} is not a schema-node-path -- real yang-data keys must always start with \"/\""
-            ));
         }
     }
 
@@ -1112,5 +1139,157 @@ mod tests {
             errors.is_empty(),
             "document fails schema validation: {errors:?}"
         );
+    }
+
+    fn yang_data_doc() -> Map<String, Json> {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              rc:yang-data error-template {
+                container error {
+                  leaf message {
+                    type string;
+                  }
+                }
+              }
+            }
+        "#;
+        let sid_src = r#"{
+            "module-name": "foo",
+            "module-revision": "2026-01-01",
+            "items": [
+                {"namespace": "module", "identifier": "foo", "sid": 1000},
+                {"namespace": "data", "identifier": "/foo:error", "sid": 1001},
+                {"namespace": "data", "identifier": "/foo:error/message", "sid": 1002}
+            ]
+        }"#;
+        let schema = crate::schema::build(
+            &[src.to_string()],
+            &[sid_src.to_string()],
+            &["foo:error-template"],
+            &[],
+        )
+        .unwrap();
+        let Json::Object(doc) = to_resolved_catalog(&schema, "deadbeef").unwrap() else {
+            unreachable!()
+        };
+        doc
+    }
+
+    fn verify_error(doc: &Map<String, Json>) -> String {
+        verify_resolved_catalog(doc).expect_err("the corrupted document must fail verification")
+    }
+
+    #[test]
+    fn a_yang_data_templates_root_lives_in_schema_nodes_and_is_listed_by_its_module() {
+        let doc = yang_data_doc();
+        assert_eq!(
+            doc["yang-data"],
+            serde_json::json!({
+                "foo:error-template": {
+                    "module": "foo",
+                    "name": "error-template",
+                    "root": "/foo:error"
+                }
+            })
+        );
+        assert_eq!(
+            doc["modules"]["foo"]["yang-data"],
+            serde_json::json!(["foo:error-template"])
+        );
+        assert_eq!(doc["modules"]["foo"]["root-nodes"], serde_json::json!([]));
+        assert!(doc["schema-nodes"]["/foo:error"].get("parent").is_none());
+        assert_eq!(
+            doc["schema-nodes"]["/foo:error/message"]["parent"],
+            "/foo:error"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_a_parentless_node_that_is_neither_a_module_root_nor_a_yang_data_root() {
+        let mut doc = yang_data_doc();
+        doc["yang-data"].as_object_mut().unwrap().clear();
+        doc["modules"]["foo"]["yang-data"] = serde_json::json!([]);
+        let e = verify_error(&doc);
+        assert!(
+            e.contains("schema-nodes[\"/foo:error\"] carries no parent"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_a_parentless_node_that_is_both_a_module_root_and_a_yang_data_root() {
+        let mut doc = yang_data_doc();
+        doc["modules"]["foo"]["root-nodes"] = serde_json::json!(["/foo:error"]);
+        doc["modules"]["foo"]["data-root-nodes"] = serde_json::json!(["/foo:error"]);
+        let e = verify_error(&doc);
+        assert!(e.contains("listed 2 times"), "{e}");
+    }
+
+    #[test]
+    fn verify_rejects_a_yang_data_root_that_carries_a_parent() {
+        let mut doc = yang_data_doc();
+        doc["yang-data"]["foo:error-template"]["root"] = serde_json::json!("/foo:error/message");
+        let e = verify_error(&doc);
+        assert!(
+            e.contains("schema-nodes[\"/foo:error/message\"] carries a parent but is listed"),
+            "{e}"
+        );
+        assert!(e.contains("is not a container"), "{e}");
+    }
+
+    #[test]
+    fn verify_rejects_a_yang_data_root_missing_from_schema_nodes() {
+        let mut doc = yang_data_doc();
+        doc["yang-data"]["foo:error-template"]["root"] = serde_json::json!("/foo:nowhere");
+        let e = verify_error(&doc);
+        assert!(
+            e.contains("yang-data[\"foo:error-template\"].root: \"/foo:nowhere\" not found in schema-nodes"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_a_yang_data_key_that_disagrees_with_its_module_and_name() {
+        let mut doc = yang_data_doc();
+        doc["yang-data"]["foo:error-template"]["name"] = serde_json::json!("other");
+        let e = verify_error(&doc);
+        assert!(e.contains("key doesn't match"), "{e}");
+    }
+
+    #[test]
+    fn verify_rejects_a_yang_data_template_its_module_does_not_list() {
+        let mut doc = yang_data_doc();
+        doc["modules"]["foo"]["yang-data"] = serde_json::json!([]);
+        let e = verify_error(&doc);
+        assert!(
+            e.contains(
+                "yang-data[\"foo:error-template\"] is not listed by modules[\"foo\"].yang-data"
+            ),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_a_module_listing_a_yang_data_template_that_does_not_exist() {
+        let mut doc = yang_data_doc();
+        doc["modules"]["foo"]["yang-data"] =
+            serde_json::json!(["foo:error-template", "foo:missing"]);
+        let e = verify_error(&doc);
+        assert!(
+            e.contains("modules[\"foo\"].yang-data: \"foo:missing\" not found in yang-data"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_a_module_listing_another_modules_yang_data_template() {
+        let mut doc = yang_data_doc();
+        doc["yang-data"]["foo:error-template"]["module"] = serde_json::json!("bar");
+        let e = verify_error(&doc);
+        assert!(e.contains("but its module is \"bar\""), "{e}");
+        assert!(e.contains("is not defined in \"bar\""), "{e}");
     }
 }

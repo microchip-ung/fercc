@@ -55,7 +55,7 @@ fn read_bundled_catalog_files() -> (Vec<String>, Vec<String>) {
     (yang_sources, sid_sources)
 }
 
-const IMPLEMENTED_YANG_DATA_ROOTS: &[&str] = &["/ietf-coreconf:error"];
+const IMPLEMENTED_YANG_DATA: &[&str] = &["ietf-coreconf:coreconf-error"];
 
 const IDENTITY_ACCEPT_LISTS: &[(&str, &[&str])] = &[
     (
@@ -110,7 +110,7 @@ fn schema() -> &'static Schema {
         yang::schema::build(
             &yang_sources,
             &sid_sources,
-            IMPLEMENTED_YANG_DATA_ROOTS,
+            IMPLEMENTED_YANG_DATA,
             IDENTITY_ACCEPT_LISTS,
         )
         .expect("build schema from bundled catalog")
@@ -239,7 +239,7 @@ fn resolved_catalog_validates_against_the_real_schema() {
 }
 
 #[test]
-fn yang_data_keys_must_be_schema_node_paths_not_bare_qualified_names() {
+fn a_yang_data_entry_in_the_old_schema_node_shape_fails_validation() {
     // patternProperties alone can't make the schema validator reject an
     // unrecognized key shape -- a key matching no pattern is simply
     // skipped, not flagged (there's no additionalProperties/
@@ -254,20 +254,27 @@ fn yang_data_keys_must_be_schema_node_paths_not_bare_qualified_names() {
         "schema-version": "1.0.0",
         "yang-catalog": "deadbeef",
         "modules": {},
+        "import-only-modules": {},
         "typedefs": {},
         "identities": {},
         "schema-nodes": {},
         "sid-index": {}
     });
 
-    let malformed_entry = serde_json::json!({"this is not a schema-node": true});
+    // A schema node is not a yang-data template: it lacks "root".
+    let schema_node_shaped = serde_json::json!({
+        "keyword": "container",
+        "name": "error",
+        "module": "ietf-coreconf",
+        "implicit": false
+    });
 
     let mut with_real_key_shape = base;
     with_real_key_shape["yang-data"] =
-        serde_json::json!({ "/ietf-coreconf:error": malformed_entry });
+        serde_json::json!({ "ietf-coreconf:coreconf-error": schema_node_shaped });
     assert!(
         v.iter_errors(&with_real_key_shape).next().is_some(),
-        "a malformed entry under the real \"/module:name\" key shape must fail validation"
+        "a malformed entry under the real \"module:template\" key shape must fail validation"
     );
 }
 
@@ -390,12 +397,65 @@ fn two_modules_augmenting_the_same_parent_resolve_to_independent_nodes() {
 }
 
 #[test]
-fn yang_data_root_is_present_and_separate_from_schema_nodes() {
+fn the_coreconf_error_template_names_its_root_in_schema_nodes_but_no_module_root_nodes() {
+    // ietf-coreconf's `rc:yang-data coreconf-error { container error
+    // {...} }` is accept-listed: the template is keyed by its own name,
+    // its container lives in schema-nodes at the path its .sid file
+    // addresses it by, and nothing about it leaks into the module's
+    // datastore root-nodes.
     let d = doc();
-    let error_root = &d["yang-data"]["/ietf-coreconf:error"];
+    assert_eq!(
+        d["yang-data"],
+        serde_json::json!({
+            "ietf-coreconf:coreconf-error": {
+                "module": "ietf-coreconf",
+                "name": "coreconf-error",
+                "root": "/ietf-coreconf:error"
+            }
+        })
+    );
+    let module = &d["modules"]["ietf-coreconf"];
+    assert_eq!(
+        module["yang-data"],
+        serde_json::json!(["ietf-coreconf:coreconf-error"])
+    );
+    assert_eq!(module["root-nodes"], serde_json::json!([]));
+    assert_eq!(module["data-root-nodes"], serde_json::json!([]));
+    let error_root = &d["schema-nodes"]["/ietf-coreconf:error"];
     assert_eq!(error_root["keyword"], "container");
-    assert!(error_root["sid"].is_string());
-    assert!(d["schema-nodes"].get("/ietf-coreconf:error").is_none());
+    assert!(error_root.get("parent").is_none());
+    let sid = error_root["sid"].as_str().unwrap();
+    assert_eq!(
+        d["sid-index"][sid],
+        serde_json::json!({"namespace": "data", "identifier": "/ietf-coreconf:error"})
+    );
+    assert_eq!(
+        d["schema-nodes"]["/ietf-coreconf:error/error-tag"]["parent"],
+        "/ietf-coreconf:error"
+    );
+}
+
+#[test]
+fn every_module_lists_no_yang_data_except_ietf_coreconf() {
+    // ietf-restconf also declares yang-data templates (yang-errors,
+    // yang-api), but this device isn't a RESTCONF server, so they are
+    // not accept-listed and must not appear anywhere.
+    let d = doc();
+    for (name, module) in d["modules"].as_object().unwrap() {
+        if name != "ietf-coreconf" {
+            assert_eq!(
+                module["yang-data"],
+                serde_json::json!([]),
+                "modules[{name:?}].yang-data"
+            );
+        }
+    }
+    let schema = schema();
+    let names: Vec<String> = schema
+        .yang_data()
+        .map(|y| format!("{}:{}", y.module, y.name))
+        .collect();
+    assert_eq!(names, vec!["ietf-coreconf:coreconf-error"]);
 }
 
 #[test]
@@ -500,12 +560,16 @@ fn the_bundled_ietf_sid_files_structure_is_interpreted_with_its_own_sids() {
         .node_by_schema_path("/ietf-sid-file:sid-file")
         .is_none());
     assert!(schema
-        .yang_data_root_by_name("ietf-sid-file:sid-file")
-        .is_none());
+        .yang_data()
+        .all(|y| y.root().path() != "/ietf-sid-file:sid-file"));
     assert!((29001..=29017).all(|sid| schema.node_by_sid(sid).is_none()));
     let d = doc();
     assert!(d["schema-nodes"].get("/ietf-sid-file:sid-file").is_none());
-    assert!(d["yang-data"].get("/ietf-sid-file:sid-file").is_none());
+    assert!(d["yang-data"]
+        .as_object()
+        .unwrap()
+        .values()
+        .all(|y| y["root"] != "/ietf-sid-file:sid-file"));
     assert!((29001..=29017).all(|sid| d["sid-index"].get(sid.to_string()).is_none()));
 }
 
@@ -517,11 +581,20 @@ fn every_yang_data_node_reports_config_false() {
     // subtree, never the ordinary config:true default a schema node
     // gets when nothing says otherwise.
     let d = doc();
-    for (path, node) in d["yang-data"].as_object().unwrap() {
-        if let Some(config) = node.get("config") {
-            assert_eq!(config, false, "yang-data[{path:?}].config must be false");
+    let schema_nodes = d["schema-nodes"].as_object().unwrap();
+    let mut checked = 0;
+    for template in d["yang-data"].as_object().unwrap().values() {
+        let root = template["root"].as_str().unwrap();
+        for (path, node) in schema_nodes {
+            if path == root || path.starts_with(&format!("{root}/")) {
+                checked += 1;
+                if let Some(config) = node.get("config") {
+                    assert_eq!(config, false, "schema-nodes[{path:?}].config must be false");
+                }
+            }
         }
     }
+    assert!(checked > 1);
 }
 
 #[test]
@@ -579,7 +652,7 @@ fn every_module_in_the_real_catalog_partitions_as_hand_classified() {
     // "ietf-restconf" itself, but nothing live elsewhere ever uses
     // them) -- except "ietf-coreconf"'s own `coreconf-error` body,
     // which DOES invoke `rc:yang-data`, and that body IS implemented
-    // (on IMPLEMENTED_YANG_DATA_ROOTS), so "ietf-restconf" is listed on
+    // (on IMPLEMENTED_YANG_DATA), so "ietf-restconf" is listed on
     // that real usage, not merely for existing in some import graph. If
     // this catalog's own modules ever change, this list must be
     // re-derived by hand again, not regenerated from fercc's own

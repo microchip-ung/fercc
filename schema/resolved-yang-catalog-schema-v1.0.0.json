@@ -30,7 +30,7 @@
 
     "modules": {
       "type": "object",
-      "description": "Every YANG module in this catalog that defines its own data nodes, RPCs, actions, notifications, or deviations, keyed by module name.",
+      "description": "Every module implemented by the server this catalog belongs to, keyed by module name.",
       "patternProperties": {
         "^[A-Za-z_][A-Za-z0-9_.-]*$": { "$ref": "#/$defs/module" }
       }
@@ -62,7 +62,7 @@
 
     "schema-nodes": {
       "type": "object",
-      "description": "Every schema node, keyed by its schema-node-path.",
+      "description": "Every schema node, keyed by its schema-node-path, including the nodes of every yang-data template.",
       "patternProperties": {
         "^/[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*(/[A-Za-z_][A-Za-z0-9_.-]*(:[A-Za-z_][A-Za-z0-9_.-]*)?)*$": {
           "$ref": "#/$defs/schema-node"
@@ -72,11 +72,9 @@
 
     "yang-data": {
       "type": "object",
-      "description": "Every YANG data template (RFC 8040's yang-data extension, used e.g. by ietf-coreconf's error structure), keyed by schema-node-path.",
+      "description": "Every YANG data template (RFC 8040's yang-data extension, used e.g. by ietf-coreconf's error structure), keyed by \"module:template-name\".",
       "patternProperties": {
-        "^/[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*(/[A-Za-z_][A-Za-z0-9_.-]*(:[A-Za-z_][A-Za-z0-9_.-]*)?)*$": {
-          "$ref": "#/$defs/schema-node"
-        }
+        "^[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*$": { "$ref": "#/$defs/yang-data" }
       }
     },
 
@@ -117,7 +115,7 @@
     "qualified-name": {
       "type": "string",
       "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*$",
-      "description": "A \"module:local-name\" reference to an identity -- identities are only ever declared at module top level (RFC 7950 Sec. 7.18), so this form is unambiguous."
+      "description": "A \"module:local-name\" reference to an identity or a yang-data template."
     },
 
     "typedef-key": {
@@ -410,9 +408,28 @@
       }
     },
 
+    "yang-data": {
+      "type": "object",
+      "required": ["module", "name", "root"],
+      "properties": {
+        "module": {
+          "$ref": "#/$defs/module-name",
+          "description": "The module this template is declared in."
+        },
+        "name": {
+          "type": "string",
+          "description": "This template's own name, the argument of its yang-data statement."
+        },
+        "root": {
+          "$ref": "#/$defs/schema-node-path",
+          "description": "The template's single top-level container, in schema-nodes."
+        }
+      }
+    },
+
     "module": {
       "type": "object",
-      "required": ["namespace", "sid", "root-nodes", "data-root-nodes", "typedefs", "identities"],
+      "required": ["namespace", "sid", "root-nodes", "data-root-nodes", "typedefs", "identities", "yang-data"],
       "properties": {
         "namespace": {
           "type": "string",
@@ -449,6 +466,12 @@
           "type": "array",
           "items": { "$ref": "#/$defs/qualified-name" },
           "description": "Identities this module declares."
+        },
+
+        "yang-data": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/qualified-name" },
+          "description": "Yang-data templates this module declares."
         }
       }
     },
@@ -528,7 +551,7 @@
             },
             "parent": {
               "$ref": "#/$defs/schema-node-path",
-              "description": "The schema node's parent. Absent at a module's top level."
+              "description": "The schema node's parent. Absent at a module's top level and at a yang-data template's root."
             },
             "status": {
               "enum": ["current", "deprecated", "obsolete"],
