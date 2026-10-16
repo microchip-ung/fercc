@@ -122,6 +122,36 @@ pub struct EnumVal {
     pub value: i64,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ErrorInfo {
+    pub error_message: Option<String>,
+    pub error_app_tag: Option<String>,
+}
+
+impl ErrorInfo {
+    fn read(stmt: &Stmt) -> ErrorInfo {
+        ErrorInfo {
+            error_message: stmt.sub("error-message").map(|m| m.arg_str().to_string()),
+            error_app_tag: stmt.sub("error-app-tag").map(|t| t.arg_str().to_string()),
+        }
+    }
+
+    fn narrowed_by(&self, stmt: &Stmt) -> ErrorInfo {
+        let own = ErrorInfo::read(stmt);
+        ErrorInfo {
+            error_message: own.error_message.or_else(|| self.error_message.clone()),
+            error_app_tag: own.error_app_tag.or_else(|| self.error_app_tag.clone()),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Pattern {
+    pub regex: String,
+    pub invert_match: bool,
+    pub error: ErrorInfo,
+}
+
 #[derive(Debug, Clone)]
 pub struct TypeDescriptor {
     pub builtin: Builtin,
@@ -145,12 +175,16 @@ pub struct TypeDescriptor {
     /// builtin -- nothing in this port ever restricts or reads a range
     /// for them.
     pub ranges: Vec<(i128, i128)>,
+    pub range_error: ErrorInfo,
     /// `pattern` restrictions (string only), accumulated top-down through
     /// the typedef chain (RFC 7950: multiple pattern statements, whether
     /// inherited or local, are all ANDed together).
-    pub patterns: Vec<String>,
+    pub patterns: Vec<Pattern>,
     base: Option<TypedefId>,
     identity_values: Option<std::collections::HashSet<IdentityId>>,
+    pub require_instance: bool,
+    default: Option<String>,
+    units: Option<String>,
 }
 
 impl TypeDescriptor {
@@ -166,9 +200,13 @@ impl TypeDescriptor {
             leafref_target: None,
             union_members: Vec::new(),
             ranges: Vec::new(),
+            range_error: ErrorInfo::default(),
             patterns: Vec::new(),
             base: None,
             identity_values: None,
+            require_instance: true,
+            default: None,
+            units: None,
         }
     }
 }
@@ -180,6 +218,16 @@ pub struct Typedef {
     pub scope: String,
     pub description: Option<String>,
     ty: Option<TypeDescriptor>,
+}
+
+impl Typedef {
+    pub fn default(&self) -> Option<&str> {
+        self.ty.as_ref().and_then(|ty| ty.default.as_deref())
+    }
+
+    pub fn units(&self) -> Option<&str> {
+        self.ty.as_ref().and_then(|ty| ty.units.as_deref())
+    }
 }
 
 /// The natural bounds a builtin type starts with before any `range`/
@@ -302,6 +350,12 @@ pub struct Node {
     pub description: Option<String>,
     pub status: Option<Status>,
     pub default: Option<String>,
+    pub defaults: Vec<String>,
+    pub units: Option<String>,
+    own_defaults: Vec<String>,
+    own_units: Option<String>,
+    min_elements: u64,
+    is_key: bool,
     pub synthetic: bool,
     references_modules: Vec<String>,
 }
@@ -998,6 +1052,12 @@ impl<'a> Builder<'a> {
             description: None,
             status: None,
             default: None,
+            defaults: Vec::new(),
+            units: None,
+            own_defaults: Vec::new(),
+            own_units: None,
+            min_elements: 0,
+            is_key: false,
             synthetic,
             references_modules: Vec::new(),
         });
@@ -1395,16 +1455,27 @@ impl<'a> Builder<'a> {
             self.nodes[node].status = Some(read_status(s)?);
         }
 
-        if let Some(default) = s.sub("default") {
-            self.nodes[node].default = Some(default.arg_str().to_string());
+        if s.keyword == "choice" {
+            if let Some(default) = s.sub("default") {
+                self.nodes[node].default = Some(default.arg_str().to_string());
+            }
         }
-
         match s.keyword.as_str() {
             "leaf" | "leaf-list" => {
+                self.nodes[node].own_defaults = s
+                    .subs_of("default")
+                    .map(|d| d.arg_str().to_string())
+                    .collect();
+                self.nodes[node].own_units = s.sub("units").map(|u| u.arg_str().to_string());
+                self.nodes[node].min_elements = s
+                    .sub("min-elements")
+                    .and_then(|m| m.arg_str().parse::<u64>().ok())
+                    .unwrap_or(0);
                 if let Some(t) = s.sub("type") {
                     let ty = self.interpret_type(resolve, scope, t)?;
                     self.nodes[node].ty = Some(ty);
                 }
+                self.resolve_effective_default_and_units(node);
             }
             "rpc" | "action" => {
                 if s.sub("input").is_none() {
@@ -1471,6 +1542,8 @@ impl<'a> Builder<'a> {
                         ))
                     })?;
                     self.nodes[node].keys.push(key_id);
+                    self.nodes[key_id].is_key = true;
+                    self.resolve_effective_default_and_units(key_id);
                 }
             }
         }
@@ -1820,7 +1893,13 @@ impl<'a> Builder<'a> {
         let base = stmt
             .sub("type")
             .ok_or_else(|| err(format!("typedef {:?} has no type", self.typedefs[id].name)))?;
-        let ty = self.interpret_type(&def_module, &scope, base)?;
+        let mut ty = self.interpret_type(&def_module, &scope, base)?;
+        if let Some(d) = stmt.sub("default") {
+            ty.default = Some(d.arg_str().to_string());
+        }
+        if let Some(u) = stmt.sub("units") {
+            ty.units = Some(u.arg_str().to_string());
+        }
         self.typedefs[id].ty = Some(ty);
         Ok(())
     }
@@ -1859,13 +1938,24 @@ impl<'a> Builder<'a> {
         if !ty.ranges.is_empty() {
             if let Some(range) = t.sub("range") {
                 ty.ranges = restrict_range(&ty.ranges, range.arg_str());
+                ty.range_error = ty.range_error.narrowed_by(range);
             }
             if let Some(length) = t.sub("length") {
                 ty.ranges = restrict_range(&ty.ranges, length.arg_str());
+                ty.range_error = ty.range_error.narrowed_by(length);
             }
         }
         for p in t.subs_of("pattern") {
-            ty.patterns.push(p.arg_str().to_string());
+            ty.patterns.push(Pattern {
+                regex: p.arg_str().to_string(),
+                invert_match: p
+                    .sub("modifier")
+                    .is_some_and(|m| m.arg_str() == "invert-match"),
+                error: ErrorInfo::read(p),
+            });
+        }
+        if let Some(r) = t.sub("require-instance") {
+            ty.require_instance = r.arg_str() == "true";
         }
 
         Ok(ty)
@@ -1969,6 +2059,7 @@ impl<'a> Builder<'a> {
                             if let Some(t) = d.sub("type") {
                                 let ty = self.interpret_type(module, &[], t)?;
                                 self.nodes[target].ty = Some(ty);
+                                self.resolve_effective_default_and_units(target);
                             }
                         }
                         "add" | "delete" => {
@@ -1981,6 +2072,28 @@ impl<'a> Builder<'a> {
             }
         }
         Ok(())
+    }
+
+    fn resolve_effective_default_and_units(&mut self, node: NodeId) {
+        let n = &self.nodes[node];
+        let type_default = n.ty.as_ref().and_then(|ty| ty.default.clone());
+        let type_units = n.ty.as_ref().and_then(|ty| ty.units.clone());
+        let type_default_applies = match n.kw.as_str() {
+            "leaf" => !n.mandatory,
+            _ => n.min_elements == 0,
+        };
+        let defaults = if n.is_key {
+            Vec::new()
+        } else if !n.own_defaults.is_empty() {
+            n.own_defaults.clone()
+        } else if type_default_applies {
+            type_default.into_iter().collect()
+        } else {
+            Vec::new()
+        };
+        let units = n.own_units.clone().or(type_units);
+        self.nodes[node].defaults = defaults;
+        self.nodes[node].units = units;
     }
 
     fn remove_node(&mut self, target: NodeId) {

@@ -140,8 +140,14 @@
           },
           "minItems": 1
         },
-        "error-message": { "type": "string" },
-        "error-app-tag": { "type": "string" }
+        "error-message": {
+          "type": "string",
+          "description": "The message to report when a value is outside this range or length."
+        },
+        "error-app-tag": {
+          "type": "string",
+          "description": "The application tag to report when a value is outside this range or length."
+        }
       }
     },
 
@@ -164,8 +170,14 @@
           },
           "minItems": 1
         },
-        "error-message": { "type": "string" },
-        "error-app-tag": { "type": "string" }
+        "error-message": {
+          "type": "string",
+          "description": "The message to report when a value is outside this range."
+        },
+        "error-app-tag": {
+          "type": "string",
+          "description": "The application tag to report when a value is outside this range."
+        }
       }
     },
 
@@ -189,15 +201,21 @@
 
     "pattern-value": {
       "type": "object",
-      "required": ["pattern"],
+      "required": ["pattern", "invert-match"],
       "properties": {
         "pattern": { "type": "string" },
         "invert-match": {
           "type": "boolean",
-          "description": "The YANG 1.1 pattern modifier: true means the value must NOT match."
+          "description": "true if a value must NOT match the pattern."
         },
-        "error-message": { "type": "string" },
-        "error-app-tag": { "type": "string" }
+        "error-message": {
+          "type": "string",
+          "description": "The message to report when a value fails this pattern."
+        },
+        "error-app-tag": {
+          "type": "string",
+          "description": "The application tag to report when a value fails this pattern."
+        }
       }
     },
 
@@ -291,9 +309,13 @@
             {
               "title": "Instance-identifier",
               "type": "object",
+              "required": ["require-instance"],
               "properties": {
                 "builtin": { "const": "instance-identifier" },
-                "require-instance": { "type": "boolean" }
+                "require-instance": {
+                  "type": "boolean",
+                  "description": "Whether the referenced instance must exist."
+                }
               }
             },
             {
@@ -319,7 +341,7 @@
             {
               "title": "Leafref",
               "type": "object",
-              "required": ["path"],
+              "required": ["path", "require-instance"],
               "properties": {
                 "builtin": { "const": "leafref" },
                 "path": { "type": "string", "description": "The raw (possibly relative) path." },
@@ -327,7 +349,10 @@
                   "$ref": "#/$defs/schema-node-path",
                   "description": "Resolved target of `path`. Present on a schema node's own resolved type. Absent on a typedef's own declaration -- a typedef can be used in multiple places so there is no single target."
                 },
-                "require-instance": { "type": "boolean" }
+                "require-instance": {
+                  "type": "boolean",
+                  "description": "Whether a node with the referenced value must exist at `target`."
+                }
               }
             },
             {
@@ -384,9 +409,12 @@
         "type": { "$ref": "#/$defs/type-descriptor" },
         "default": {
           "type": "string",
-          "description": "This typedef's own default value, if any."
+          "description": "This type's default value, if it has one."
         },
-        "units": { "type": "string" }
+        "units": {
+          "type": "string",
+          "description": "This type's units, if it has any."
+        }
       }
     },
 
@@ -592,8 +620,14 @@
                 "config": { "type": "boolean" },
                 "type": { "$ref": "#/$defs/type-descriptor" },
                 "mandatory": { "type": "boolean" },
-                "default": { "type": "string" },
-                "units": { "type": "string" }
+                "default": {
+                  "type": "string",
+                  "description": "The value used when the leaf is absent, if it has one."
+                },
+                "units": {
+                  "type": "string",
+                  "description": "The leaf's units, if it has any."
+                }
               }
             },
             {
@@ -604,8 +638,16 @@
                 "keyword": { "const": "leaf-list" },
                 "config": { "type": "boolean" },
                 "type": { "$ref": "#/$defs/type-descriptor" },
-                "default": { "type": "array", "items": { "type": "string" } },
-                "units": { "type": "string" }
+                "default": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "minItems": 1,
+                  "description": "The values used when the leaf-list is absent, in order, if it has any."
+                },
+                "units": {
+                  "type": "string",
+                  "description": "The leaf-list's units, if it has any."
+                }
               }
             },
             {

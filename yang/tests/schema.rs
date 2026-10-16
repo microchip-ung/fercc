@@ -2898,6 +2898,348 @@ fn an_identityref_accept_list_entry_for_a_deviated_away_leaf_is_a_schema_error()
     );
 }
 
+const DEFAULTS: &str = r#"
+    module dflt {
+      namespace "urn:dflt";
+      prefix d;
+
+      typedef base-type {
+        type uint8;
+        default 5;
+        units "seconds";
+      }
+      typedef narrowed {
+        type base-type {
+          range "1..10";
+        }
+      }
+      typedef overridden {
+        type base-type;
+        default 7;
+        units "minutes";
+      }
+      typedef either {
+        type union {
+          type base-type;
+          type string;
+        }
+      }
+
+      leaf plain {
+        type narrowed;
+      }
+      leaf own {
+        type narrowed;
+        default 3;
+        units "hours";
+      }
+      leaf required {
+        type narrowed;
+        mandatory true;
+      }
+      leaf via-override {
+        type overridden;
+      }
+      leaf via-union {
+        type either;
+      }
+      leaf-list several {
+        type uint8;
+        default 1;
+        default 2;
+      }
+      leaf-list from-type {
+        type base-type;
+      }
+      leaf-list at-least-one {
+        type base-type;
+        min-elements 1;
+      }
+      list entries {
+        key "id";
+        leaf id {
+          type base-type;
+        }
+      }
+    }
+"#;
+
+fn node<'a>(schema: &'a Schema, path: &str) -> NodeRef<'a> {
+    schema.node_by_schema_path(path).unwrap()
+}
+
+#[test]
+fn a_typedef_inherits_its_bases_default_and_units_unless_it_sets_its_own() {
+    let schema = build(&[DEFAULTS.to_string()], &[], &[], &[], &[]).unwrap();
+    let narrowed = schema.typedef_by_name("dflt", "narrowed").unwrap();
+    assert_eq!(narrowed.default(), Some("5"));
+    assert_eq!(narrowed.units(), Some("seconds"));
+    let overridden = schema.typedef_by_name("dflt", "overridden").unwrap();
+    assert_eq!(overridden.default(), Some("7"));
+    assert_eq!(overridden.units(), Some("minutes"));
+}
+
+#[test]
+fn a_union_typedef_does_not_inherit_a_members_default_or_units() {
+    // RFC 7950 9.12: any default value or "units" property defined in
+    // the member types is not inherited by the union type.
+    let schema = build(&[DEFAULTS.to_string()], &[], &[], &[], &[]).unwrap();
+    let either = schema.typedef_by_name("dflt", "either").unwrap();
+    assert_eq!(either.default(), None);
+    assert_eq!(either.units(), None);
+    let via_union = node(&schema, "/dflt:via-union");
+    assert!(via_union.defaults.is_empty());
+    assert_eq!(via_union.units, None);
+}
+
+#[test]
+fn a_leaf_takes_its_types_default_and_units_unless_it_has_its_own() {
+    let schema = build(&[DEFAULTS.to_string()], &[], &[], &[], &[]).unwrap();
+    let plain = node(&schema, "/dflt:plain");
+    assert_eq!(plain.defaults, vec!["5"]);
+    assert_eq!(plain.units.as_deref(), Some("seconds"));
+    let own = node(&schema, "/dflt:own");
+    assert_eq!(own.defaults, vec!["3"]);
+    assert_eq!(own.units.as_deref(), Some("hours"));
+    assert_eq!(node(&schema, "/dflt:via-override").defaults, vec!["7"]);
+}
+
+#[test]
+fn a_mandatory_leaf_has_no_default_from_its_type() {
+    // RFC 7950 7.6.1: the type's default applies only if the leaf is
+    // not mandatory. Its units still come from the type.
+    let schema = build(&[DEFAULTS.to_string()], &[], &[], &[], &[]).unwrap();
+    let required = node(&schema, "/dflt:required");
+    assert!(required.defaults.is_empty());
+    assert_eq!(required.units.as_deref(), Some("seconds"));
+}
+
+#[test]
+fn a_leaf_list_keeps_all_its_own_defaults_in_order() {
+    let schema = build(&[DEFAULTS.to_string()], &[], &[], &[], &[]).unwrap();
+    assert_eq!(node(&schema, "/dflt:several").defaults, vec!["1", "2"]);
+}
+
+#[test]
+fn a_leaf_list_takes_one_instance_of_its_types_default_unless_min_elements_is_set() {
+    // RFC 7950 7.7.2: one instance of the type's default, unless the
+    // leaf-list has min-elements of at least 1.
+    let schema = build(&[DEFAULTS.to_string()], &[], &[], &[], &[]).unwrap();
+    assert_eq!(node(&schema, "/dflt:from-type").defaults, vec!["5"]);
+    assert!(node(&schema, "/dflt:at-least-one").defaults.is_empty());
+}
+
+#[test]
+fn a_list_keys_default_is_ignored() {
+    // RFC 7950 7.8.2: any default values in the key leafs or their
+    // types are ignored.
+    let schema = build(&[DEFAULTS.to_string()], &[], &[], &[], &[]).unwrap();
+    assert!(node(&schema, "/dflt:entries/id").defaults.is_empty());
+}
+
+#[test]
+fn a_deviate_replace_type_recomputes_the_default_and_units_from_the_new_type() {
+    let dev = r#"
+        module dflt-dev {
+          namespace "urn:dflt-dev";
+          prefix dd;
+
+          import dflt {
+            prefix d;
+          }
+
+          deviation /d:plain {
+            deviate replace {
+              type d:overridden;
+            }
+          }
+        }
+    "#;
+    let schema = build(&[DEFAULTS.to_string(), dev.to_string()], &[], &[], &[], &[]).unwrap();
+    let plain = node(&schema, "/dflt:plain");
+    assert_eq!(plain.defaults, vec!["7"]);
+    assert_eq!(plain.units.as_deref(), Some("minutes"));
+}
+
+#[test]
+fn require_instance_defaults_to_true_and_is_inherited_through_a_typedef() {
+    let src = r#"
+        module ri {
+          namespace "urn:ri";
+          prefix r;
+
+          typedef loose-ref {
+            type leafref {
+              path "/r:target";
+              require-instance false;
+            }
+          }
+
+          leaf target {
+            type string;
+          }
+          leaf strict {
+            type leafref {
+              path "/r:target";
+            }
+          }
+          leaf loose {
+            type loose-ref;
+          }
+          leaf any-node {
+            type instance-identifier;
+          }
+          leaf any-loose-node {
+            type instance-identifier {
+              require-instance false;
+            }
+          }
+        }
+    "#;
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
+    let ri = |path: &str| node(&schema, path).ty().unwrap().require_instance;
+    assert!(ri("/ri:strict"));
+    assert!(!ri("/ri:loose"));
+    assert!(ri("/ri:any-node"));
+    assert!(!ri("/ri:any-loose-node"));
+}
+
+#[test]
+fn a_patterns_invert_match_modifier_is_read() {
+    let src = r#"
+        module pat {
+          namespace "urn:pat";
+          prefix p;
+
+          leaf name {
+            type string {
+              pattern "[a-z]+";
+              pattern "x.*" {
+                modifier invert-match;
+              }
+            }
+          }
+        }
+    "#;
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
+    let ty = node(&schema, "/pat:name").ty().unwrap();
+    let flags: Vec<(String, bool)> = ty
+        .patterns
+        .iter()
+        .map(|p| (p.regex.clone(), p.invert_match))
+        .collect();
+    assert_eq!(
+        flags,
+        vec![("[a-z]+".to_string(), false), ("x.*".to_string(), true)]
+    );
+}
+
+const ERROR_INFO: &str = r#"
+    module emsg {
+      namespace "urn:emsg";
+      prefix e;
+
+      typedef percent {
+        type uint8 {
+          range "0..100" {
+            error-message "must be a percentage";
+            error-app-tag "not-a-percentage";
+          }
+        }
+      }
+      typedef half {
+        type percent {
+          range "0..50";
+        }
+      }
+      typedef small-half {
+        type percent {
+          range "0..10" {
+            error-message "must be at most 10";
+          }
+        }
+      }
+
+      leaf inherited {
+        type half;
+      }
+      leaf overridden {
+        type small-half;
+      }
+      leaf name {
+        type string {
+          length "1..8" {
+            error-app-tag "bad-length";
+          }
+          pattern "[a-z]+" {
+            error-message "lower case only";
+          }
+          pattern "x.*" {
+            modifier invert-match;
+            error-app-tag "starts-with-x";
+          }
+        }
+      }
+    }
+"#;
+
+#[test]
+fn a_narrowing_range_without_its_own_error_info_keeps_the_inherited_one() {
+    let schema = build(&[ERROR_INFO.to_string()], &[], &[], &[], &[]).unwrap();
+    let ty = node(&schema, "/emsg:inherited").ty().unwrap();
+    assert_eq!(ty.ranges, vec![(0, 50)]);
+    assert_eq!(
+        ty.range_error.error_message.as_deref(),
+        Some("must be a percentage")
+    );
+    assert_eq!(
+        ty.range_error.error_app_tag.as_deref(),
+        Some("not-a-percentage")
+    );
+}
+
+#[test]
+fn a_narrowing_range_replaces_only_the_error_info_it_declares() {
+    // Matches libyang, which rewrites each of error-message and
+    // error-app-tag as the type chain is processed, only where the
+    // narrowing statement declares it.
+    let schema = build(&[ERROR_INFO.to_string()], &[], &[], &[], &[]).unwrap();
+    let ty = node(&schema, "/emsg:overridden").ty().unwrap();
+    assert_eq!(
+        ty.range_error.error_message.as_deref(),
+        Some("must be at most 10")
+    );
+    assert_eq!(
+        ty.range_error.error_app_tag.as_deref(),
+        Some("not-a-percentage")
+    );
+}
+
+#[test]
+fn each_pattern_and_a_length_carry_their_own_error_info() {
+    let schema = build(&[ERROR_INFO.to_string()], &[], &[], &[], &[]).unwrap();
+    let ty = node(&schema, "/emsg:name").ty().unwrap();
+    assert_eq!(ty.range_error.error_message, None);
+    assert_eq!(ty.range_error.error_app_tag.as_deref(), Some("bad-length"));
+    let errors: Vec<(Option<&str>, Option<&str>)> = ty
+        .patterns
+        .iter()
+        .map(|p| {
+            (
+                p.error.error_message.as_deref(),
+                p.error.error_app_tag.as_deref(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        errors,
+        vec![
+            (Some("lower case only"), None),
+            (None, Some("starts-with-x"))
+        ]
+    );
+}
+
 #[test]
 fn a_yang_data_template_not_on_the_accept_list_is_absent_entirely() {
     // schema.rs must not distinguish between "implemented

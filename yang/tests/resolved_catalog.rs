@@ -442,6 +442,49 @@ fn every_modules_identities_are_exactly_the_values_the_device_implements() {
 }
 
 #[test]
+fn the_bundled_catalogs_type_defaults_units_and_require_instance_reach_their_leaves() {
+    // From this catalog's own YANG text: ieee802-ethernet-interface's
+    // duplex-type declares "default full" and mchp-velocitysp-system's
+    // access-rights "default no-access", and every leaf using them has
+    // no default of its own and isn't mandatory, so they take the type's
+    // (RFC 7950 7.6.1). ietf-hardware's component/parent is the
+    // catalog's only "require-instance false".
+    let d = doc();
+    assert_eq!(
+        d["typedefs"]["ieee802-ethernet-interface:duplex-type"]["default"],
+        "full"
+    );
+    assert_eq!(
+        d["typedefs"]["mchp-velocitysp-system:access-rights"]["default"],
+        "no-access"
+    );
+    assert_eq!(
+        d["typedefs"]["ieee802-ethernet-interface:eth-if-speed-type"]["units"],
+        "Gb/s"
+    );
+    let nodes = d["schema-nodes"].as_object().unwrap();
+    let via = |typedef: &str| -> Vec<&Json> {
+        nodes
+            .values()
+            .filter(|n| {
+                n.get("type").and_then(|t| t.get("derived-from")) == Some(&Json::from(typedef))
+            })
+            .collect()
+    };
+    let duplex = via("ieee802-ethernet-interface:duplex-type");
+    assert_eq!(duplex.len(), 2);
+    assert!(duplex.iter().all(|n| n["default"] == "full"));
+    let rights = via("mchp-velocitysp-system:access-rights");
+    assert_eq!(rights.len(), 10);
+    assert!(rights.iter().all(|n| n["default"] == "no-access"));
+    let last_member = &nodes["/ietf-routing:routing/control-plane-protocols/control-plane-protocol/ietf-igmp-mld-snooping:igmp-snooping-instance/last-member-query-interval"];
+    assert_eq!(last_member["units"], "deciseconds");
+    assert_eq!(last_member["default"], "10");
+    let parent = &nodes["/ietf-hardware:hardware/component/parent"]["type"];
+    assert_eq!(parent["require-instance"], false);
+}
+
+#[test]
 fn every_modules_deviations_match_the_hand_derived_deviation_statements() {
     // Derived by hand from every `deviation` statement in this catalog's
     // own .yang files: each target node's defining module, resolved

@@ -455,8 +455,14 @@ fn type2schema(t: TypeRef<'_>) -> Json {
                             .iter()
                             .map(|p| {
                                 let mut r = Map::new();
-                                r.insert("pattern".into(), Json::String(p.clone()));
-                                Json::Object(r)
+                                r.insert("pattern".into(), Json::String(p.regex.clone()));
+                                if p.invert_match {
+                                    let mut not = Map::new();
+                                    not.insert("not".into(), Json::Object(r));
+                                    Json::Object(not)
+                                } else {
+                                    Json::Object(r)
+                                }
                             })
                             .collect(),
                     ),
@@ -474,5 +480,39 @@ fn type2schema(t: TypeRef<'_>) -> Json {
             m.insert("type".into(), Json::String("string".into()));
             Json::Object(m)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_inverted_pattern_is_a_negated_json_schema_pattern() {
+        let src = r#"
+            module pat {
+              namespace "urn:pat";
+              prefix p;
+
+              leaf name {
+                type string {
+                  pattern "[a-z]+";
+                  pattern "x.*" {
+                    modifier invert-match;
+                  }
+                }
+              }
+            }
+        "#;
+        let schema = crate::schema::build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
+        let ty = schema
+            .node_by_schema_path("/pat:name")
+            .unwrap()
+            .ty()
+            .unwrap();
+        assert_eq!(
+            type2schema(ty)["allOf"],
+            serde_json::json!([{"pattern": "[a-z]+"}, {"not": {"pattern": "x.*"}}])
+        );
     }
 }

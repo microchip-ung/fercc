@@ -5,8 +5,8 @@ use serde_json::{Map, Value as Json};
 
 use crate::json_schema::num;
 use crate::schema::{
-    default_ranges, Builtin, IdentityRef, ImportOnlyModule, ModuleRef, NodeRef, Schema, Status,
-    TypeRef, TypedefRef,
+    default_ranges, Builtin, ErrorInfo, IdentityRef, ImportOnlyModule, ModuleRef, NodeRef, Schema,
+    Status, TypeRef, TypedefRef,
 };
 
 pub const SCHEMA_VERSION: &str = "1.0.0";
@@ -123,12 +123,22 @@ fn range64_bounds(ranges: &[(i128, i128)]) -> Json {
         .collect())
 }
 
-fn range_object(ranges: &[(i128, i128)]) -> Json {
-    obj(vec![("bounds", range_bounds(ranges))])
+fn with_error_info(mut m: Map<String, Json>, error: &ErrorInfo) -> Json {
+    opt_insert(&mut m, "error-message", error.error_message.clone().map(s));
+    opt_insert(&mut m, "error-app-tag", error.error_app_tag.clone().map(s));
+    Json::Object(m)
 }
 
-fn range64_object(ranges: &[(i128, i128)]) -> Json {
-    obj(vec![("bounds", range64_bounds(ranges))])
+fn range_object(ty: TypeRef<'_>) -> Json {
+    let mut m = Map::new();
+    m.insert("bounds".to_string(), range_bounds(&ty.ranges));
+    with_error_info(m, &ty.range_error)
+}
+
+fn range64_object(ty: TypeRef<'_>) -> Json {
+    let mut m = Map::new();
+    m.insert("bounds".to_string(), range64_bounds(&ty.ranges));
+    with_error_info(m, &ty.range_error)
 }
 
 fn is_explicitly_restricted(ty: TypeRef<'_>) -> bool {
@@ -148,7 +158,7 @@ fn type_descriptor(ty: TypeRef<'_>) -> R<Json> {
     match ty.builtin {
         Builtin::Binary => {
             if is_explicitly_restricted(ty) {
-                m.insert("length".to_string(), range_object(&ty.ranges));
+                m.insert("length".to_string(), range_object(ty));
             }
         }
         Builtin::Bits => {
@@ -173,7 +183,7 @@ fn type_descriptor(ty: TypeRef<'_>) -> R<Json> {
             )?;
             m.insert("fraction-digit".to_string(), Json::Number(fd.into()));
             if is_explicitly_restricted(ty) {
-                m.insert("range".to_string(), range64_object(&ty.ranges));
+                m.insert("range".to_string(), range64_object(ty));
             }
         }
         Builtin::Empty => {}
@@ -213,7 +223,12 @@ fn type_descriptor(ty: TypeRef<'_>) -> R<Json> {
                 }),
             );
         }
-        Builtin::InstanceIdentifier => {}
+        Builtin::InstanceIdentifier => {
+            m.insert(
+                "require-instance".to_string(),
+                Json::Bool(ty.require_instance),
+            );
+        }
         Builtin::Int8
         | Builtin::Int16
         | Builtin::Int32
@@ -221,12 +236,12 @@ fn type_descriptor(ty: TypeRef<'_>) -> R<Json> {
         | Builtin::Uint16
         | Builtin::Uint32 => {
             if is_explicitly_restricted(ty) {
-                m.insert("range".to_string(), range_object(&ty.ranges));
+                m.insert("range".to_string(), range_object(ty));
             }
         }
         Builtin::Int64 | Builtin::Uint64 => {
             if is_explicitly_restricted(ty) {
-                m.insert("range".to_string(), range64_object(&ty.ranges));
+                m.insert("range".to_string(), range64_object(ty));
             }
         }
         Builtin::Leafref => {
@@ -240,10 +255,14 @@ fn type_descriptor(ty: TypeRef<'_>) -> R<Json> {
                 "target",
                 ty.leafref_target().map(|target| s(target.path())),
             );
+            m.insert(
+                "require-instance".to_string(),
+                Json::Bool(ty.require_instance),
+            );
         }
         Builtin::String => {
             if is_explicitly_restricted(ty) {
-                m.insert("length".to_string(), range_object(&ty.ranges));
+                m.insert("length".to_string(), range_object(ty));
             }
             if !ty.patterns.is_empty() {
                 m.insert(
@@ -251,7 +270,12 @@ fn type_descriptor(ty: TypeRef<'_>) -> R<Json> {
                     arr(ty
                         .patterns
                         .iter()
-                        .map(|p| obj(vec![("pattern", s(p.clone()))]))
+                        .map(|p| {
+                            let mut m = Map::new();
+                            m.insert("pattern".to_string(), s(p.regex.clone()));
+                            m.insert("invert-match".to_string(), Json::Bool(p.invert_match));
+                            with_error_info(m, &p.error)
+                        })
                         .collect()),
                 );
             }
@@ -274,6 +298,8 @@ fn typedef_entry(t: TypedefRef<'_>) -> R<Json> {
     m.insert("name".to_string(), s(t.name.clone()));
     opt_insert(&mut m, "description", t.description.clone().map(s));
     m.insert("type".to_string(), type_descriptor(t.ty())?);
+    opt_insert(&mut m, "default", t.default().map(|d| s(d.to_string())));
+    opt_insert(&mut m, "units", t.units().map(|u| s(u.to_string())));
     Ok(Json::Object(m))
 }
 
@@ -346,7 +372,8 @@ fn schema_node_entry(node: NodeRef<'_>) -> R<Json> {
                 .ok_or_else(|| format!("leaf {} has no type", node.path()))?;
             m.insert("type".to_string(), type_descriptor(ty)?);
             m.insert("mandatory".to_string(), Json::Bool(node.mandatory));
-            opt_insert(&mut m, "default", node.default.clone().map(s));
+            opt_insert(&mut m, "default", node.defaults.first().cloned().map(s));
+            opt_insert(&mut m, "units", node.units.clone().map(s));
         }
         "leaf-list" => {
             m.insert("config".to_string(), Json::Bool(node.config));
@@ -354,11 +381,13 @@ fn schema_node_entry(node: NodeRef<'_>) -> R<Json> {
                 .ty()
                 .ok_or_else(|| format!("leaf-list {} has no type", node.path()))?;
             m.insert("type".to_string(), type_descriptor(ty)?);
-            opt_insert(
-                &mut m,
-                "default",
-                node.default.clone().map(|d| arr(vec![s(d)])),
-            );
+            if !node.defaults.is_empty() {
+                m.insert(
+                    "default".to_string(),
+                    arr(node.defaults.iter().cloned().map(s).collect()),
+                );
+            }
+            opt_insert(&mut m, "units", node.units.clone().map(s));
         }
         "list" => {
             m.insert("config".to_string(), Json::Bool(node.config));
@@ -1990,6 +2019,147 @@ mod tests {
         assert!(
             e.contains("typedefs[\"foo:animal-ref\"]'s own type descriptor must never carry identityref values"),
             "{e}"
+        );
+    }
+
+    #[test]
+    fn defaults_units_require_instance_and_invert_match_reach_the_document() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              typedef seconds {
+                type uint8;
+                default 5;
+                units "seconds";
+              }
+
+              leaf timeout {
+                type seconds;
+              }
+              leaf-list retries {
+                type seconds;
+              }
+              leaf target {
+                type string {
+                  pattern "x.*" {
+                    modifier invert-match;
+                  }
+                }
+              }
+              leaf ref {
+                type leafref {
+                  path "/f:target";
+                  require-instance false;
+                }
+              }
+              leaf node {
+                type instance-identifier;
+              }
+            }
+        "#;
+        let sid_src = r#"{
+            "module-name": "foo",
+            "module-revision": "2026-01-01",
+            "items": [
+                {"namespace": "module", "identifier": "foo", "sid": 1000},
+                {"namespace": "data", "identifier": "/foo:timeout", "sid": 1001},
+                {"namespace": "data", "identifier": "/foo:retries", "sid": 1002},
+                {"namespace": "data", "identifier": "/foo:target", "sid": 1003},
+                {"namespace": "data", "identifier": "/foo:ref", "sid": 1004},
+                {"namespace": "data", "identifier": "/foo:node", "sid": 1005}
+            ]
+        }"#;
+        let schema =
+            crate::schema::build(&[src.to_string()], &[sid_src.to_string()], &[], &[], &[])
+                .unwrap();
+        let doc = to_resolved_catalog(&schema, "deadbeef").unwrap();
+        let typedef = &doc["typedefs"]["foo:seconds"];
+        assert_eq!(typedef["default"], "5");
+        assert_eq!(typedef["units"], "seconds");
+        let nodes = &doc["schema-nodes"];
+        assert_eq!(nodes["/foo:timeout"]["default"], "5");
+        assert_eq!(nodes["/foo:timeout"]["units"], "seconds");
+        assert_eq!(nodes["/foo:retries"]["default"], serde_json::json!(["5"]));
+        assert_eq!(nodes["/foo:retries"]["units"], "seconds");
+        assert_eq!(
+            nodes["/foo:target"]["type"]["pattern"],
+            serde_json::json!([{"pattern": "x.*", "invert-match": true}])
+        );
+        assert_eq!(nodes["/foo:ref"]["type"]["require-instance"], false);
+        assert_eq!(nodes["/foo:node"]["type"]["require-instance"], true);
+    }
+
+    #[test]
+    fn range_length_and_pattern_error_info_reach_the_document() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              leaf level {
+                type uint8 {
+                  range "0..100" {
+                    error-message "must be a percentage";
+                  }
+                }
+              }
+              leaf big {
+                type uint64 {
+                  range "1..max" {
+                    error-app-tag "too-small";
+                  }
+                }
+              }
+              leaf name {
+                type string {
+                  length "1..8" {
+                    error-message "1 to 8 characters";
+                  }
+                  pattern "[a-z]+" {
+                    error-message "lower case only";
+                    error-app-tag "bad-case";
+                  }
+                }
+              }
+            }
+        "#;
+        let sid_src = r#"{
+            "module-name": "foo",
+            "module-revision": "2026-01-01",
+            "items": [
+                {"namespace": "module", "identifier": "foo", "sid": 1000},
+                {"namespace": "data", "identifier": "/foo:level", "sid": 1001},
+                {"namespace": "data", "identifier": "/foo:big", "sid": 1002},
+                {"namespace": "data", "identifier": "/foo:name", "sid": 1003}
+            ]
+        }"#;
+        let schema =
+            crate::schema::build(&[src.to_string()], &[sid_src.to_string()], &[], &[], &[])
+                .unwrap();
+        let doc = to_resolved_catalog(&schema, "deadbeef").unwrap();
+        let nodes = &doc["schema-nodes"];
+        assert_eq!(
+            nodes["/foo:level"]["type"]["range"],
+            serde_json::json!({"bounds": [[0, 100]], "error-message": "must be a percentage"})
+        );
+        assert_eq!(
+            nodes["/foo:big"]["type"]["range"]["error-app-tag"],
+            "too-small"
+        );
+        assert_eq!(
+            nodes["/foo:name"]["type"]["length"]["error-message"],
+            "1 to 8 characters"
+        );
+        assert_eq!(
+            nodes["/foo:name"]["type"]["pattern"],
+            serde_json::json!([{
+                "pattern": "[a-z]+",
+                "invert-match": false,
+                "error-message": "lower case only",
+                "error-app-tag": "bad-case"
+            }])
         );
     }
 }

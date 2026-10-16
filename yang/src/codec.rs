@@ -10,7 +10,7 @@
 use cbor::Value as Cbor;
 use serde_json::Value as Json;
 
-use crate::schema::{Builtin, Node, NodeRef, Schema, TypeDescriptor, TypeRef};
+use crate::schema::{Builtin, ErrorInfo, Node, NodeRef, Pattern, Schema, TypeDescriptor, TypeRef};
 
 #[derive(Debug)]
 pub struct CodecError(pub String);
@@ -194,15 +194,38 @@ fn range_description(ranges: &[(i128, i128)]) -> String {
     parts.join(", or ")
 }
 
-fn matches_all_patterns(s: &str, patterns: &[String]) -> R<bool> {
+fn first_failed_pattern<'p>(s: &str, patterns: &'p [Pattern]) -> R<Option<&'p Pattern>> {
     for p in patterns {
-        let re = regex_lite::Regex::new(p)
-            .map_err(|e| err(format!("invalid pattern {p:?} in schema: {e}")))?;
-        if !re.is_match(s) {
-            return Ok(false);
+        let re = regex_lite::Regex::new(&p.regex)
+            .map_err(|e| err(format!("invalid pattern {:?} in schema: {e}", p.regex)))?;
+        if re.is_match(s) == p.invert_match {
+            return Ok(Some(p));
         }
     }
-    Ok(true)
+    Ok(None)
+}
+
+fn describe_patterns(patterns: &[Pattern]) -> String {
+    patterns
+        .iter()
+        .map(|p| {
+            if p.invert_match {
+                format!("not {}", p.regex)
+            } else {
+                p.regex.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" and ")
+}
+
+fn restriction_error(error: &ErrorInfo, generic: String) -> CodecError {
+    match (&error.error_message, &error.error_app_tag) {
+        (Some(message), Some(tag)) => err(format!("{message} ({tag})")),
+        (Some(message), None) => err(message.clone()),
+        (None, Some(tag)) => err(format!("{generic} ({tag})")),
+        (None, None) => err(generic),
+    }
 }
 
 /// Encode a JSON value as CBOR for `type_id`. `in_union` tracks whether
@@ -243,7 +266,7 @@ fn type_to_cbor_checked(schema: &Schema, ty: TypeRef<'_>, value: &Json, in_union
         Builtin::Int8 | Builtin::Int16 | Builtin::Int32 | Builtin::Uint8 | Builtin::Uint16 | Builtin::Uint32 => {
             let n = json_number_to_i128(value).ok_or_else(|| err(format!("expected a whole number here, got {value}")))? as i64;
             if !in_ranges(n, &ty.ranges) {
-                return Err(err(format!("{n} is not allowed here -- the value must be {}", range_description(&ty.ranges))));
+                return Err(restriction_error(&ty.range_error, format!("{n} is not allowed here -- the value must be {}", range_description(&ty.ranges))));
             }
             Ok(Cbor::from(n))
         }
@@ -265,10 +288,10 @@ fn type_to_cbor_checked(schema: &Schema, ty: TypeRef<'_>, value: &Json, in_union
             let s = value.as_str().ok_or_else(|| err(format!("expected text here, got {value}")))?;
             let len = s.chars().count() as i64;
             if !in_ranges(len, &ty.ranges) {
-                return Err(err(format!("{s:?} is {len} character(s) long, but must be {}", range_description(&ty.ranges))));
+                return Err(restriction_error(&ty.range_error, format!("{s:?} is {len} character(s) long, but must be {}", range_description(&ty.ranges))));
             }
-            if !matches_all_patterns(s, &ty.patterns)? {
-                return Err(err(format!("{s:?} is not in the expected format -- it must match: {}", ty.patterns.join(" and "))));
+            if let Some(failed) = first_failed_pattern(s, &ty.patterns)? {
+                return Err(restriction_error(&failed.error, format!("{s:?} is not in the expected format -- it must match: {}", describe_patterns(&ty.patterns))));
             }
             Ok(Cbor::Text(s.to_string()))
         }
@@ -277,7 +300,7 @@ fn type_to_cbor_checked(schema: &Schema, ty: TypeRef<'_>, value: &Json, in_union
             let bytes = base64_decode(s)?;
             let len = bytes.len() as i64;
             if !in_ranges(len, &ty.ranges) {
-                return Err(err(format!("this value is {len} byte(s) long once decoded, but must be {}", range_description(&ty.ranges))));
+                return Err(restriction_error(&ty.range_error, format!("this value is {len} byte(s) long once decoded, but must be {}", range_description(&ty.ranges))));
             }
             Ok(Cbor::Bytes(bytes))
         }
@@ -2619,5 +2642,89 @@ mod tests {
         )
         .is_err());
         assert!(type_to_cbor(&schema, ty, &serde_json::json!("rt:direct"), false, false).is_err());
+    }
+
+    #[test]
+    fn a_string_must_not_match_an_inverted_pattern() {
+        // RFC 7950 9.4.6: with "modifier invert-match" the type is
+        // restricted to values that do not match the pattern.
+        let src = r#"
+            module pat {
+              namespace "urn:pat";
+              prefix p;
+
+              leaf name {
+                type string {
+                  pattern "[a-z]+";
+                  pattern "x.*" {
+                    modifier invert-match;
+                  }
+                }
+              }
+            }
+        "#;
+        let schema = crate::schema::build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
+        let ty = schema
+            .node_by_schema_path("/pat:name")
+            .unwrap()
+            .ty()
+            .unwrap();
+        assert!(type_to_cbor(&schema, ty, &serde_json::json!("abc"), false, false).is_ok());
+        let e = type_to_cbor(&schema, ty, &serde_json::json!("xyz"), false, false)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("not x.*"), "{e}");
+        assert!(type_to_cbor(&schema, ty, &serde_json::json!("ABC"), false, false).is_err());
+    }
+
+    #[test]
+    fn a_violated_restriction_reports_the_yang_authors_error_message() {
+        let src = r#"
+            module emsg {
+              namespace "urn:emsg";
+              prefix e;
+
+              leaf level {
+                type uint8 {
+                  range "0..100" {
+                    error-message "must be a percentage";
+                    error-app-tag "not-a-percentage";
+                  }
+                }
+              }
+              leaf name {
+                type string {
+                  length "1..8";
+                  pattern "[a-z]+" {
+                    error-message "lower case only";
+                  }
+                  pattern "x.*" {
+                    modifier invert-match;
+                    error-app-tag "starts-with-x";
+                  }
+                }
+              }
+            }
+        "#;
+        let schema = crate::schema::build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
+        let encode_err = |path: &str, value: serde_json::Value| -> String {
+            let ty = schema.node_by_schema_path(path).unwrap().ty().unwrap();
+            type_to_cbor(&schema, ty, &value, false, false)
+                .unwrap_err()
+                .to_string()
+        };
+        assert_eq!(
+            encode_err("/emsg:level", serde_json::json!(101)),
+            "must be a percentage (not-a-percentage)"
+        );
+        assert_eq!(
+            encode_err("/emsg:name", serde_json::json!("ABC")),
+            "lower case only"
+        );
+        let e = encode_err("/emsg:name", serde_json::json!("xyz"));
+        assert!(e.ends_with("(starts-with-x)"), "{e}");
+        assert!(e.contains("not x.*"), "{e}");
+        let e = encode_err("/emsg:name", serde_json::json!("abcdefghij"));
+        assert!(e.contains("10 character(s) long"), "{e}");
     }
 }
