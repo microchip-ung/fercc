@@ -40,7 +40,6 @@
 
 use serde_json::{Map, Value as Json};
 
-use crate::codec::all_identity_bases;
 use crate::schema::{Builtin, NodeRef, Schema, TypeRef};
 
 fn dedup_preserve_order(items: Vec<String>) -> Vec<String> {
@@ -410,12 +409,13 @@ fn type2schema(t: TypeRef<'_>) -> Json {
         // identities derived from each base identity. See RFC 7950
         // section 9.10.2 and 7.18.2 (derivation is irreflexive, so a
         // base identity is never among its own derived set) --
-        // `all_identity_bases`/`IdentityRef::derived_from` already
-        // excludes each base identity itself, matching the real
-        // reference tool's own `Identity#derived_from` ("@derived +
-        // @derived.flat_map(&:derived_from)").
+        // `TypeRef::identity_values` already excludes each base
+        // identity itself, matching the real reference tool's own
+        // `Identity#derived_from` ("@derived +
+        // @derived.flat_map(&:derived_from)"), narrowed by an identity
+        // or identityref accept-list where one applies.
         Builtin::Identityref => {
-            let candidates = all_identity_bases(t).unwrap_or_default();
+            let candidates = t.identity_values().unwrap_or_default();
             let source_module = t.source_module.as_deref();
             let mut enums = Vec::new();
             for identity in candidates {

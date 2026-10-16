@@ -200,6 +200,18 @@ fn type_descriptor(ty: TypeRef<'_>) -> R<Json> {
                     .map(|b| s(qualified_name(&b.module, &b.name)))
                     .collect()),
             );
+            opt_insert(
+                &mut m,
+                "values",
+                ty.identity_values().map(|values| {
+                    arr(sorted_strs(
+                        values
+                            .into_iter()
+                            .map(|v| s(qualified_name(&v.module, &v.name)))
+                            .collect(),
+                    ))
+                }),
+            );
         }
         Builtin::InstanceIdentifier => {}
         Builtin::Int8
@@ -283,16 +295,6 @@ fn identity_entry(identity: IdentityRef<'_>) -> R<Json> {
             .base()
             .map(|b| s(qualified_name(&b.module, &b.name)))
             .collect()),
-    );
-    m.insert(
-        "derived".to_string(),
-        arr(sorted_strs(
-            identity
-                .derived()
-                .filter(|d| d.sid.is_some())
-                .map(|d| s(qualified_name(&d.module, &d.name)))
-                .collect(),
-        )),
     );
     Ok(Json::Object(m))
 }
@@ -409,7 +411,7 @@ fn module_entry(module: ModuleRef<'_>, schema: &Schema) -> R<Json> {
         "identities".to_string(),
         arr(schema
             .identities()
-            .filter(|i| i.module == module.name)
+            .filter(|i| i.module == module.name && i.is_implemented())
             .map(|i| s(qualified_name(&i.module, &i.name)))
             .collect()),
     );
@@ -632,6 +634,81 @@ fn collect_identityref_bases(ty: &Json, out: &mut std::collections::HashSet<Stri
     }
 }
 
+fn collect_identityref_values(ty: &Json, out: &mut std::collections::HashSet<String>) {
+    if let Some(values) = ty.get("values").and_then(Json::as_array) {
+        for v in values {
+            out.insert(v.as_str().unwrap().to_string());
+        }
+    }
+    if let Some(members) = ty.get("type").and_then(Json::as_array) {
+        for member in members {
+            collect_identityref_values(member, out);
+        }
+    }
+}
+
+fn check_identityref_values(
+    ty: &Json,
+    identities: &Map<String, Json>,
+    from: &str,
+    errors: &mut Vec<String>,
+) {
+    if ty.get("builtin").and_then(Json::as_str) == Some("identityref") {
+        match ty.get("values").and_then(Json::as_array) {
+            None => errors.push(format!("{from}.type: an identityref has no \"values\"")),
+            Some(values) => {
+                let names: Vec<&str> = values.iter().map(|v| v.as_str().unwrap()).collect();
+                if !names.windows(2).all(|w| w[0] < w[1]) {
+                    errors.push(format!(
+                        "{from}.type.values is not sorted alphabetically without duplicates"
+                    ));
+                }
+                let bases: Vec<&str> = ty["base"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|b| b.as_str().unwrap())
+                    .collect();
+                for name in names {
+                    if !identities.contains_key(name) {
+                        errors.push(format!(
+                            "{from}.type.values: {name:?} not found in identities"
+                        ));
+                    } else if !bases.iter().all(|b| derives_from(identities, name, b)) {
+                        errors.push(format!(
+                            "{from}.type.values: {name:?} is not derived from every base in {bases:?}"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(members) = ty.get("type").and_then(Json::as_array) {
+        for member in members {
+            check_identityref_values(member, identities, from, errors);
+        }
+    }
+}
+
+fn derives_from(identities: &Map<String, Json>, identity: &str, base: &str) -> bool {
+    let mut stack: Vec<&str> = vec![identity];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(id) = stack.pop() {
+        if let Some(entry) = identities.get(id) {
+            for b in entry["base"].as_array().unwrap() {
+                let b = b.as_str().unwrap();
+                if b == base {
+                    return true;
+                }
+                if seen.insert(b) {
+                    stack.push(b);
+                }
+            }
+        }
+    }
+    false
+}
+
 fn check_type_descriptor(
     ty: &Json,
     typedefs: &Map<String, Json>,
@@ -707,6 +784,7 @@ fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
         }
         if let Some(t) = node.get("type") {
             check_type_descriptor(t, typedefs, schema_nodes, &from, &mut errors);
+            check_identityref_values(t, identities, &from, &mut errors);
         }
     }
 
@@ -717,12 +795,10 @@ fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
 
     for (key, identity) in identities {
         let from = format!("identities[{key:?}]");
-        for field in ["base", "derived"] {
-            for item in identity[field].as_array().unwrap() {
-                let name = item.as_str().unwrap();
-                if !identities.contains_key(name) {
-                    errors.push(format!("{from}.{field}: {name:?} not found in identities"));
-                }
+        for item in identity["base"].as_array().unwrap() {
+            let name = item.as_str().unwrap();
+            if !identities.contains_key(name) {
+                errors.push(format!("{from}.base: {name:?} not found in identities"));
             }
         }
     }
@@ -833,6 +909,63 @@ fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
         if key_name != module_name {
             errors.push(format!(
                 "import-only-modules[{key:?}]'s key name doesn't match its own \"name\" field"
+            ));
+        }
+    }
+
+    let mut identity_listings: std::collections::HashMap<&str, Vec<String>> =
+        std::collections::HashMap::new();
+    for (mod_name, module) in modules {
+        for item in module["identities"].as_array().unwrap() {
+            identity_listings
+                .entry(item.as_str().unwrap())
+                .or_default()
+                .push(format!("modules[{mod_name:?}]"));
+        }
+    }
+    let mut import_only_listings: std::collections::HashMap<&str, std::collections::HashSet<&str>> =
+        std::collections::HashMap::new();
+    for module in import_only_modules.values() {
+        let name = module["name"].as_str().unwrap();
+        for item in module["identities"].as_array().unwrap() {
+            import_only_listings
+                .entry(item.as_str().unwrap())
+                .or_default()
+                .insert(name);
+        }
+    }
+    for (key, names) in import_only_listings {
+        for name in names {
+            identity_listings
+                .entry(key)
+                .or_default()
+                .push(format!("import-only-modules[{name:?}]"));
+        }
+    }
+    for (key, identity) in identities {
+        let listings = identity_listings
+            .get(key.as_str())
+            .cloned()
+            .unwrap_or_default();
+        let module = identity["module"].as_str().unwrap();
+        if listings.len() > 1 {
+            errors.push(format!(
+                "identities[{key:?}] is listed by more than one module: {}",
+                listings.join(", ")
+            ));
+        }
+        for listing in &listings {
+            if *listing != format!("modules[{module:?}]")
+                && *listing != format!("import-only-modules[{module:?}]")
+            {
+                errors.push(format!(
+                    "identities[{key:?}] is listed by {listing}, but is declared in {module:?}"
+                ));
+            }
+        }
+        if listings.is_empty() && !modules.contains_key(module) {
+            errors.push(format!(
+                "identities[{key:?}] is listed by no module, but only an implemented module's base identities may be unlisted"
             ));
         }
     }
@@ -989,22 +1122,47 @@ fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
             ));
         }
     }
-    let mut reachable_identities = std::collections::HashSet::new();
-    let mut stack: Vec<String> = identityref_base_refs.into_iter().collect();
+    let implemented_identities: std::collections::HashSet<&str> = modules
+        .values()
+        .flat_map(|m| m["identities"].as_array().unwrap())
+        .map(|i| i.as_str().unwrap())
+        .collect();
+    let mut bases_of_implemented = std::collections::HashSet::new();
+    let mut stack: Vec<&str> = implemented_identities
+        .iter()
+        .copied()
+        .chain(identityref_base_refs.iter().map(String::as_str))
+        .collect();
     while let Some(key) = stack.pop() {
-        if reachable_identities.insert(key.clone()) {
-            if let Some(identity) = identities.get(&key) {
-                for d in identity["derived"].as_array().unwrap() {
-                    stack.push(d.as_str().unwrap().to_string());
+        if let Some(identity) = identities.get(key) {
+            for b in identity["base"].as_array().unwrap() {
+                let b = b.as_str().unwrap();
+                if bases_of_implemented.insert(b) {
+                    stack.push(b);
                 }
             }
         }
     }
     for key in identities.keys() {
-        if !reachable_identities.contains(key) {
+        let key = key.as_str();
+        if !implemented_identities.contains(key)
+            && !bases_of_implemented.contains(key)
+            && !identityref_base_refs.contains(key)
+        {
             errors.push(format!(
-                "identities[{key:?}] is never named as a base (directly or via derivation) by any identityref in the document"
+                "identities[{key:?}] is neither implemented nor referred to as a base by anything implemented"
             ));
+        }
+    }
+    for module in import_only_modules.values() {
+        for item in module["identities"].as_array().unwrap() {
+            let key = item.as_str().unwrap();
+            if !bases_of_implemented.contains(key) && !identityref_base_refs.contains(key) {
+                errors.push(format!(
+                    "import-only-modules[{:?}].identities lists {key:?}, which nothing implemented refers to as a base",
+                    module["name"].as_str().unwrap()
+                ));
+            }
         }
     }
 
@@ -1073,6 +1231,35 @@ fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
                 "typedefs[{key:?}]'s own type descriptor must never carry a resolved leafref target"
             ));
         }
+        let mut values = std::collections::HashSet::new();
+        collect_identityref_values(&t["type"], &mut values);
+        if !values.is_empty() {
+            errors.push(format!(
+                "typedefs[{key:?}]'s own type descriptor must never carry identityref values"
+            ));
+        }
+    }
+
+    let mut all_values = std::collections::HashSet::new();
+    for node in schema_nodes.values() {
+        if let Some(t) = node.get("type") {
+            collect_identityref_values(t, &mut all_values);
+        }
+    }
+    let listed_implemented: std::collections::HashSet<String> = modules
+        .values()
+        .flat_map(|m| m["identities"].as_array().unwrap())
+        .map(|i| i.as_str().unwrap().to_string())
+        .collect();
+    for name in all_values.difference(&listed_implemented) {
+        errors.push(format!(
+            "{name:?} is a value of an identityref but no module lists it as implemented"
+        ));
+    }
+    for name in listed_implemented.difference(&all_values) {
+        errors.push(format!(
+            "{name:?} is listed as implemented but is no identityref's value"
+        ));
     }
 
     if errors.is_empty() {
@@ -1129,7 +1316,8 @@ mod tests {
             ]
         }"#;
         let schema =
-            crate::schema::build(&[src.to_string()], &[sid_src.to_string()], &[], &[]).unwrap();
+            crate::schema::build(&[src.to_string()], &[sid_src.to_string()], &[], &[], &[])
+                .unwrap();
         let doc = to_resolved_catalog(&schema, "deadbeef").unwrap();
 
         assert!(doc["typedefs"].get("foo:percent").is_some());
@@ -1181,6 +1369,7 @@ mod tests {
             &[src.to_string()],
             &[sid_src.to_string()],
             &["foo:error-template"],
+            &[],
             &[],
         )
         .unwrap();
@@ -1363,6 +1552,7 @@ mod tests {
             &[sid_src.to_string()],
             &[],
             &[],
+            &[],
         )
         .unwrap();
         let Json::Object(doc) = to_resolved_catalog(&schema, "deadbeef").unwrap() else {
@@ -1427,6 +1617,378 @@ mod tests {
         let e = verify_error(&doc);
         assert!(
             e.contains("is not sorted alphabetically without duplicates"),
+            "{e}"
+        );
+    }
+
+    fn identity_doc() -> Map<String, Json> {
+        let lib = r#"
+            module lib {
+              namespace "urn:lib";
+              prefix l;
+
+              identity animal;
+            }
+        "#;
+        let foo = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              import lib {
+                prefix l;
+              }
+
+              identity pet {
+                base l:animal;
+              }
+              identity dog {
+                base pet;
+              }
+              identity cat {
+                base pet;
+              }
+
+              leaf kind {
+                type identityref {
+                  base l:animal;
+                }
+              }
+            }
+        "#;
+        let sid_src = r#"{
+            "module-name": "foo",
+            "module-revision": "2026-01-01",
+            "items": [
+                {"namespace": "module", "identifier": "foo", "sid": 1000},
+                {"namespace": "data", "identifier": "/foo:kind", "sid": 1001},
+                {"namespace": "identity", "identifier": "pet", "sid": 1010},
+                {"namespace": "identity", "identifier": "dog", "sid": 1011},
+                {"namespace": "identity", "identifier": "cat", "sid": 1012}
+            ]
+        }"#;
+        let lib_sid = r#"{
+            "module-name": "lib",
+            "module-revision": "2026-01-01",
+            "items": [
+                {"namespace": "module", "identifier": "lib", "sid": 2000},
+                {"namespace": "identity", "identifier": "animal", "sid": 2010}
+            ]
+        }"#;
+        let accepted: &[&str] = &["foo:dog"];
+        let schema = crate::schema::build(
+            &[lib.to_string(), foo.to_string()],
+            &[sid_src.to_string(), lib_sid.to_string()],
+            &[],
+            &[("lib:animal", accepted)],
+            &[],
+        )
+        .unwrap();
+        let Json::Object(doc) = to_resolved_catalog(&schema, "deadbeef").unwrap() else {
+            unreachable!()
+        };
+        doc
+    }
+
+    #[test]
+    fn identities_split_into_implemented_values_and_bases_by_module_kind() {
+        // "pet" is kept as dog's base but isn't accepted, "cat" isn't
+        // accepted or a base of anything accepted, and "animal" is the
+        // leaf's own base, declared in import-only "lib".
+        let doc = identity_doc();
+        let mut keys: Vec<&String> = doc["identities"].as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(keys, vec!["foo:dog", "foo:pet", "lib:animal"]);
+        assert_eq!(
+            doc["modules"]["foo"]["identities"],
+            serde_json::json!(["foo:dog"])
+        );
+        assert_eq!(
+            doc["import-only-modules"]["lib"]["identities"],
+            serde_json::json!(["lib:animal"])
+        );
+    }
+
+    #[test]
+    fn verify_rejects_an_identity_neither_implemented_nor_referred_to_as_a_base() {
+        let mut doc = identity_doc();
+        doc["modules"]["foo"]["identities"] = serde_json::json!([]);
+        let e = verify_error(&doc);
+        assert!(
+            e.contains("identities[\"foo:dog\"] is neither implemented nor referred to as a base by anything implemented"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_an_import_only_identity_nothing_implemented_refers_to() {
+        // A synthetic "lib:plant" listed by "lib" although nothing
+        // implemented refers to it: it's neither a leaf's base nor
+        // reachable from "dog" through base statements.
+        let mut doc = identity_doc();
+        let mut plant = doc["identities"]["lib:animal"].clone();
+        plant["name"] = serde_json::json!("plant");
+        plant["sid"] = serde_json::json!("2011");
+        doc["identities"]
+            .as_object_mut()
+            .unwrap()
+            .insert("lib:plant".to_string(), plant);
+        doc["sid-index"].as_object_mut().unwrap().insert(
+            "2011".to_string(),
+            serde_json::json!({"namespace": "identity", "identifier": "lib:plant"}),
+        );
+        doc["import-only-modules"]["lib"]["identities"] =
+            serde_json::json!(["lib:animal", "lib:plant"]);
+        let e = verify_error(&doc);
+        assert!(
+            e.contains("import-only-modules[\"lib\"].identities lists \"lib:plant\", which nothing implemented refers to as a base"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_an_identity_listed_by_two_modules() {
+        let mut doc = identity_doc();
+        doc["import-only-modules"]["lib"]["identities"] =
+            serde_json::json!(["lib:animal", "foo:dog"]);
+        let e = verify_error(&doc);
+        assert!(
+            e.contains("identities[\"foo:dog\"] is listed by more than one module"),
+            "{e}"
+        );
+        assert!(
+            e.contains("is listed by import-only-modules[\"lib\"], but is declared in \"foo\""),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_an_import_only_modules_identity_listed_by_no_module() {
+        let mut doc = identity_doc();
+        doc["import-only-modules"]["lib"]["identities"] = serde_json::json!([]);
+        let e = verify_error(&doc);
+        assert!(
+            e.contains("identities[\"lib:animal\"] is listed by no module"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn a_leaf_bases_own_base_is_listed_as_a_base_only() {
+        // "pet" is the leaf's base and has a base of its own, "animal",
+        // which no leaf names. The implemented "dog" still refers to
+        // "animal" through base statements, so it's listed, and the
+        // verifier must accept that.
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              identity animal;
+              identity pet {
+                base animal;
+              }
+              identity dog {
+                base pet;
+              }
+
+              leaf kind {
+                type identityref {
+                  base pet;
+                }
+              }
+            }
+        "#;
+        let sid_src = r#"{
+            "module-name": "foo",
+            "module-revision": "2026-01-01",
+            "items": [
+                {"namespace": "module", "identifier": "foo", "sid": 1000},
+                {"namespace": "data", "identifier": "/foo:kind", "sid": 1001},
+                {"namespace": "identity", "identifier": "animal", "sid": 1010},
+                {"namespace": "identity", "identifier": "pet", "sid": 1011},
+                {"namespace": "identity", "identifier": "dog", "sid": 1012}
+            ]
+        }"#;
+        let schema =
+            crate::schema::build(&[src.to_string()], &[sid_src.to_string()], &[], &[], &[])
+                .unwrap();
+        let doc = to_resolved_catalog(&schema, "deadbeef").unwrap();
+        let mut keys: Vec<&String> = doc["identities"].as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(keys, vec!["foo:animal", "foo:dog", "foo:pet"]);
+        assert_eq!(
+            doc["modules"]["foo"]["identities"],
+            serde_json::json!(["foo:dog"])
+        );
+    }
+
+    #[test]
+    fn a_leaf_base_without_values_still_lists_its_own_base() {
+        // Nothing derives from "pet", so the leaf has no valid values and
+        // nothing is implemented, but the implemented leaf still refers
+        // to "pet" as its base, and through it to "pet"'s own base
+        // "animal".
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              identity animal;
+              identity pet {
+                base animal;
+              }
+
+              leaf kind {
+                type identityref {
+                  base pet;
+                }
+              }
+            }
+        "#;
+        let sid_src = r#"{
+            "module-name": "foo",
+            "module-revision": "2026-01-01",
+            "items": [
+                {"namespace": "module", "identifier": "foo", "sid": 1000},
+                {"namespace": "data", "identifier": "/foo:kind", "sid": 1001},
+                {"namespace": "identity", "identifier": "animal", "sid": 1010},
+                {"namespace": "identity", "identifier": "pet", "sid": 1011}
+            ]
+        }"#;
+        let schema =
+            crate::schema::build(&[src.to_string()], &[sid_src.to_string()], &[], &[], &[])
+                .unwrap();
+        let doc = to_resolved_catalog(&schema, "deadbeef").unwrap();
+        let mut keys: Vec<&String> = doc["identities"].as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(keys, vec!["foo:animal", "foo:pet"]);
+        assert_eq!(doc["modules"]["foo"]["identities"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn an_identityref_carries_its_own_sorted_values() {
+        let doc = identity_doc();
+        assert_eq!(
+            doc["schema-nodes"]["/foo:kind"]["type"]["values"],
+            serde_json::json!(["foo:dog"])
+        );
+    }
+
+    #[test]
+    fn verify_rejects_an_identityref_without_values() {
+        let mut doc = identity_doc();
+        doc["schema-nodes"]["/foo:kind"]["type"]
+            .as_object_mut()
+            .unwrap()
+            .remove("values");
+        let e = verify_error(&doc);
+        assert!(e.contains("an identityref has no \"values\""), "{e}");
+    }
+
+    #[test]
+    fn verify_rejects_an_identityref_value_not_derived_from_its_base() {
+        let mut doc = identity_doc();
+        doc["schema-nodes"]["/foo:kind"]["type"]["values"] = serde_json::json!(["lib:animal"]);
+        let e = verify_error(&doc);
+        assert!(
+            e.contains("\"lib:animal\" is not derived from every base"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_an_identityref_value_missing_from_identities() {
+        let mut doc = identity_doc();
+        doc["schema-nodes"]["/foo:kind"]["type"]["values"] =
+            serde_json::json!(["foo:dog", "foo:wolf"]);
+        let e = verify_error(&doc);
+        assert!(e.contains("\"foo:wolf\" not found in identities"), "{e}");
+    }
+
+    #[test]
+    fn verify_rejects_unsorted_identityref_values() {
+        let mut doc = identity_doc();
+        doc["schema-nodes"]["/foo:kind"]["type"]["values"] =
+            serde_json::json!(["foo:pet", "foo:dog"]);
+        let e = verify_error(&doc);
+        assert!(
+            e.contains("values is not sorted alphabetically without duplicates"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_a_value_its_module_does_not_list_as_implemented() {
+        let mut doc = identity_doc();
+        doc["schema-nodes"]["/foo:kind"]["type"]["values"] =
+            serde_json::json!(["foo:dog", "foo:pet"]);
+        let e = verify_error(&doc);
+        assert!(
+            e.contains(
+                "\"foo:pet\" is a value of an identityref but no module lists it as implemented"
+            ),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_an_implemented_identity_that_is_no_identityrefs_value() {
+        let mut doc = identity_doc();
+        doc["schema-nodes"]["/foo:kind"]["type"]["values"] = serde_json::json!([]);
+        let e = verify_error(&doc);
+        assert!(
+            e.contains("\"foo:dog\" is listed as implemented but is no identityref's value"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_values_on_a_typedefs_own_descriptor() {
+        let src = r#"
+            module foo {
+              namespace "urn:foo";
+              prefix f;
+
+              identity animal;
+              identity dog {
+                base animal;
+              }
+
+              typedef animal-ref {
+                type identityref {
+                  base animal;
+                }
+              }
+
+              leaf kind {
+                type animal-ref;
+              }
+            }
+        "#;
+        let sid_src = r#"{
+            "module-name": "foo",
+            "module-revision": "2026-01-01",
+            "items": [
+                {"namespace": "module", "identifier": "foo", "sid": 1000},
+                {"namespace": "data", "identifier": "/foo:kind", "sid": 1001},
+                {"namespace": "identity", "identifier": "animal", "sid": 1010},
+                {"namespace": "identity", "identifier": "dog", "sid": 1011}
+            ]
+        }"#;
+        let schema =
+            crate::schema::build(&[src.to_string()], &[sid_src.to_string()], &[], &[], &[])
+                .unwrap();
+        let Json::Object(mut doc) = to_resolved_catalog(&schema, "deadbeef").unwrap() else {
+            unreachable!()
+        };
+        assert!(doc["typedefs"]["foo:animal-ref"]["type"]
+            .get("values")
+            .is_none());
+        doc["typedefs"]["foo:animal-ref"]["type"]["values"] = serde_json::json!(["foo:dog"]);
+        let e = verify_error(&doc);
+        assert!(
+            e.contains("typedefs[\"foo:animal-ref\"]'s own type descriptor must never carry identityref values"),
             "{e}"
         );
     }

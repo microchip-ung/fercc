@@ -39,7 +39,7 @@ fn test_data_dir() -> PathBuf {
 fn schema() -> &'static Schema {
     static SCHEMA: OnceLock<Schema> = OnceLock::new();
     SCHEMA.get_or_init(|| {
-        let tarball = test_data_dir().join("b8ab4b046249f34f7f5d669a17600bd4.tar.gz");
+        let tarball = test_data_dir().join("9a836fc0bdf2b7b77ba49ea26c94261e.tar.gz");
         let bytes = fs::read(&tarball).expect("read bundled catalog tarball");
         yang::catalog::load_from_tarball(&bytes)
             .expect("load bundled catalog tarball")

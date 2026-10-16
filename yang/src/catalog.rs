@@ -46,6 +46,8 @@ struct UiTailoringFile {
 struct UiTailoringBody {
     #[serde(rename = "identity-accept-list")]
     identity_accept_list: Vec<UiTailoringAcceptListEntry>,
+    #[serde(rename = "identityref-accept-list", default)]
+    identityref_accept_list: Vec<UiTailoringIdentityrefAcceptListEntry>,
     #[serde(rename = "yang-data-accept-list", default)]
     yang_data_accept_list: Vec<UiTailoringYangData>,
 }
@@ -53,6 +55,13 @@ struct UiTailoringBody {
 #[derive(Deserialize)]
 struct UiTailoringAcceptListEntry {
     base: String,
+    #[serde(rename = "accept-list")]
+    accept_list: Vec<UiTailoringIdentity>,
+}
+
+#[derive(Deserialize)]
+struct UiTailoringIdentityrefAcceptListEntry {
+    leaf: String,
     #[serde(rename = "accept-list")]
     accept_list: Vec<UiTailoringIdentity>,
 }
@@ -70,7 +79,30 @@ struct UiTailoringYangData {
 #[derive(Debug, Default, PartialEq)]
 struct UiTailoring {
     identity_accept_lists: Vec<(String, Vec<String>)>,
+    identityref_accept_lists: Vec<(String, Vec<String>)>,
     implemented_yang_data: Vec<String>,
+}
+
+fn accepted_names(accept_list: Vec<UiTailoringIdentity>) -> Vec<String> {
+    accept_list.into_iter().map(|i| i.identity).collect()
+}
+
+fn as_slices<'a>(
+    lists: &'a [(String, Vec<String>)],
+    slices: &'a [Vec<&'a str>],
+) -> Vec<(&'a str, &'a [&'a str])> {
+    lists
+        .iter()
+        .zip(slices)
+        .map(|((key, _), accepted)| (key.as_str(), accepted.as_slice()))
+        .collect()
+}
+
+fn accepted_slices(lists: &[(String, Vec<String>)]) -> Vec<Vec<&str>> {
+    lists
+        .iter()
+        .map(|(_, accepted)| accepted.iter().map(String::as_str).collect())
+        .collect()
 }
 
 fn parse_ui_tailoring(text: &str) -> R<UiTailoring> {
@@ -80,12 +112,13 @@ fn parse_ui_tailoring(text: &str) -> R<UiTailoring> {
         .ui_tailoring
         .identity_accept_list
         .into_iter()
-        .map(|entry| {
-            (
-                entry.base,
-                entry.accept_list.into_iter().map(|i| i.identity).collect(),
-            )
-        })
+        .map(|entry| (entry.base, accepted_names(entry.accept_list)))
+        .collect();
+    let identityref_accept_lists = file
+        .ui_tailoring
+        .identityref_accept_list
+        .into_iter()
+        .map(|entry| (entry.leaf, accepted_names(entry.accept_list)))
         .collect();
     let implemented_yang_data = file
         .ui_tailoring
@@ -95,6 +128,7 @@ fn parse_ui_tailoring(text: &str) -> R<UiTailoring> {
         .collect();
     Ok(UiTailoring {
         identity_accept_lists,
+        identityref_accept_lists,
         implemented_yang_data,
     })
 }
@@ -109,17 +143,11 @@ impl CatalogFiles {
 
     pub fn build_schema(&self) -> R<Schema> {
         let ui_tailoring = self.ui_tailoring()?;
-        let accepted_slices: Vec<Vec<&str>> = ui_tailoring
-            .identity_accept_lists
-            .iter()
-            .map(|(_, accepted)| accepted.iter().map(String::as_str).collect())
-            .collect();
-        let identity_accept_lists: Vec<(&str, &[&str])> = ui_tailoring
-            .identity_accept_lists
-            .iter()
-            .zip(&accepted_slices)
-            .map(|((base, _), accepted)| (base.as_str(), accepted.as_slice()))
-            .collect();
+        let by_base_slices = accepted_slices(&ui_tailoring.identity_accept_lists);
+        let identity_accept_lists = as_slices(&ui_tailoring.identity_accept_lists, &by_base_slices);
+        let by_leaf_slices = accepted_slices(&ui_tailoring.identityref_accept_lists);
+        let identityref_accept_lists =
+            as_slices(&ui_tailoring.identityref_accept_lists, &by_leaf_slices);
         let implemented_yang_data: Vec<&str> = ui_tailoring
             .implemented_yang_data
             .iter()
@@ -130,6 +158,7 @@ impl CatalogFiles {
             &self.sid,
             &implemented_yang_data,
             &identity_accept_lists,
+            &identityref_accept_lists,
         )
         .map_err(|e| err(e.to_string()))
     }
@@ -484,6 +513,7 @@ ui-tailoring:
                         "iana-if-type:l3ipvlan".to_string(),
                     ]
                 )],
+                identityref_accept_lists: Vec::new(),
                 implemented_yang_data: vec!["ietf-coreconf:coreconf-error".to_string()],
             }
         );
@@ -496,6 +526,25 @@ ui-tailoring:
   identity-accept-list: []
 "#;
         assert_eq!(parse_ui_tailoring(text).unwrap(), UiTailoring::default());
+    }
+
+    #[test]
+    fn parse_ui_tailoring_reads_the_identityref_accept_list() {
+        let text = r#"
+ui-tailoring:
+  identity-accept-list: []
+  identityref-accept-list:
+  - leaf: "/ietf-routing:routing/ribs/rib/address-family"
+    accept-list:
+    - identity: "ietf-routing:ipv4"
+"#;
+        assert_eq!(
+            parse_ui_tailoring(text).unwrap().identityref_accept_lists,
+            vec![(
+                "/ietf-routing:routing/ribs/rib/address-family".to_string(),
+                vec!["ietf-routing:ipv4".to_string()]
+            )]
+        );
     }
 
     #[test]

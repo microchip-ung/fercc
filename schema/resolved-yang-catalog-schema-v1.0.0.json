@@ -54,7 +54,7 @@
 
     "identities": {
       "type": "object",
-      "description": "Every YANG identity used in this catalog, keyed by \"module:identity-name\".",
+      "description": "Every identity the server implements, and every base identity an implemented identity or an implemented identityref refers to, directly or through base statements, keyed by \"module:identity-name\".",
       "patternProperties": {
         "^[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*$": { "$ref": "#/$defs/identity" }
       }
@@ -280,6 +280,11 @@
                   "items": { "$ref": "#/$defs/qualified-name" },
                   "minItems": 1,
                   "description": "Base identities, into `identities`."
+                },
+                "values": {
+                  "type": "array",
+                  "items": { "$ref": "#/$defs/qualified-name" },
+                  "description": "The identities the server implements as values of this identityref, into `identities`, sorted. Present on a schema node's own resolved type. Absent on a typedef's own declaration -- a typedef can be used in multiple places, each with its own values."
                 }
               }
             },
@@ -387,7 +392,7 @@
 
     "identity": {
       "type": "object",
-      "required": ["module", "name", "sid", "base", "derived"],
+      "required": ["module", "name", "sid", "base"],
       "properties": {
         "module": { "$ref": "#/$defs/module-name" },
         "name": { "type": "string" },
@@ -398,12 +403,6 @@
           "type": "array",
           "items": { "$ref": "#/$defs/qualified-name" },
           "description": "This identity's own declared base identities."
-        },
-
-        "derived": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/qualified-name" },
-          "description": "Every identity that declares this one as a base."
         }
       }
     },
@@ -465,7 +464,7 @@
         "identities": {
           "type": "array",
           "items": { "$ref": "#/$defs/qualified-name" },
-          "description": "Identities this module declares."
+          "description": "Identities this module declares that the server implements, i.e. that are valid values of an identityref the server implements."
         },
 
         "yang-data": {
@@ -513,7 +512,7 @@
         "identities": {
           "type": "array",
           "items": { "$ref": "#/$defs/qualified-name" },
-          "description": "Identities this module declares."
+          "description": "Base identities this module declares that the server's implemented identities and identityrefs refer to, directly or through base statements. The server doesn't implement them as values."
         }
       }
     },

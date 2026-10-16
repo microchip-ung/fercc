@@ -17,7 +17,7 @@ fn status_defaults_to_current_when_unstated() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     let bar = schema.node_by_data_path("/foo:bar").unwrap();
     assert_eq!(bar.status, Some(Status::Current));
     let baz = bar.find_child("baz").unwrap();
@@ -50,6 +50,7 @@ fn a_yang_data_roots_status_defaults_to_current_too() {
         &[src.to_string()],
         &[],
         &["ietf-coreconf:error-template"],
+        &[],
         &[],
     )
     .unwrap();
@@ -89,6 +90,7 @@ fn a_yang_data_roots_config_is_always_false_even_with_an_explicit_config_true() 
         &[],
         &["ietf-coreconf:error-template"],
         &[],
+        &[],
     )
     .unwrap();
     let error_root = schema
@@ -117,7 +119,7 @@ fn status_is_read_from_an_explicit_statement() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     let bar = schema.node_by_data_path("/foo:bar").unwrap();
     assert_eq!(bar.status, Some(Status::Deprecated));
     let baz = bar.find_child("baz").unwrap();
@@ -137,7 +139,7 @@ fn an_unrecognized_status_value_is_a_schema_error() {
           }
         }
     "#;
-    let err = build(&[src.to_string()], &[], &[], &[]).err().unwrap();
+    let err = build(&[src.to_string()], &[], &[], &[], &[]).err().unwrap();
     assert!(err.0.contains("future-proofed"), "{}", err.0);
 }
 
@@ -161,7 +163,7 @@ fn an_implicit_case_copies_its_wrapped_childs_status() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     // choice/case are spliced out of the flattened data-node-path
     // tree, so resolve via schema-node-path to see the synthesized
     // case node.
@@ -195,7 +197,7 @@ fn input_and_output_have_no_status_at_all() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     let input = schema.node_by_schema_path("/foo:bar/input").unwrap();
     let output = schema.node_by_schema_path("/foo:bar/output").unwrap();
     assert_eq!(input.status, None);
@@ -246,7 +248,7 @@ fn synthetic_marks_only_nodes_absent_from_the_source_text() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
 
     let bar_input = schema.node_by_schema_path("/foo:bar/input").unwrap();
     let bar_output = schema.node_by_schema_path("/foo:bar/output").unwrap();
@@ -294,7 +296,7 @@ fn top_level_uses_with_augment_reaches_module_root_nodes() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     assert!(schema.node_by_data_path("/foo:c/x").is_some());
 }
 
@@ -331,7 +333,7 @@ fn nested_uses_with_augment_resolves_relative_to_the_use_site() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     let outer = schema.node_by_data_path("/foo:outer").unwrap();
     let c = outer.find_child("c").unwrap();
     let x = c.find_child("x");
@@ -362,7 +364,7 @@ fn identity_by_name_finds_a_declared_identity() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     let animal = schema.identity_by_name("foo", "animal").unwrap();
     assert_eq!(animal.name, "animal");
     let dog = schema.identity_by_name("foo", "dog").unwrap();
@@ -401,7 +403,7 @@ fn identities_only_lists_ones_reachable_from_an_identityref_usage() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     let mut names: Vec<String> = schema.identities().map(|i| i.name.clone()).collect();
     names.sort();
     assert_eq!(names, vec!["animal", "dog"]);
@@ -432,7 +434,7 @@ fn an_identitys_description_is_read_from_its_own_statement() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     let animal = schema.identity_by_name("foo", "animal").unwrap();
     assert_eq!(animal.description.as_deref(), Some("a living creature"));
     let rock = schema.identity_by_name("foo", "rock").unwrap();
@@ -458,7 +460,7 @@ fn module_by_sid_finds_a_module_with_an_attached_sid() {
             {"namespace": "module", "identifier": "foo", "sid": 5000}
         ]
     }"#;
-    let schema = build(&[src.to_string()], &[sid.to_string()], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[sid.to_string()], &[], &[], &[]).unwrap();
     let module = schema.module_by_sid(5000).unwrap();
     assert_eq!(module.name, "foo");
     assert!(schema.module_by_sid(9999).is_none());
@@ -490,7 +492,7 @@ fn a_sid_files_data_identifier_that_resolves_to_no_node_is_a_schema_error() {
             {"namespace": "data", "identifier": "/foo:top/missing", "sid": 1002}
         ]
     }"#;
-    let err = build(&[src.to_string()], &[sid.to_string()], &[], &[])
+    let err = build(&[src.to_string()], &[sid.to_string()], &[], &[], &[])
         .err()
         .expect("an unresolvable .sid data identifier must fail");
     assert!(err.0.contains("/foo:top/missing"), "{}", err.0);
@@ -545,6 +547,7 @@ fn a_sid_files_data_identifier_for_a_since_deviated_away_node_is_not_an_error() 
         &[sid.to_string()],
         &[],
         &[],
+        &[],
     )
     .unwrap();
     let top = schema.node_by_schema_path("/foo:top").unwrap();
@@ -588,6 +591,7 @@ fn a_sid_files_data_identifier_can_attach_a_sid_to_a_yang_data_root() {
         &[src.to_string()],
         &[sid.to_string()],
         &["ietf-coreconf:coreconf-error"],
+        &[],
         &[],
     )
     .unwrap();
@@ -666,6 +670,7 @@ fn two_modules_augmenting_the_same_target_with_identically_named_children_resolv
         &[sid.to_string(), sid2.to_string()],
         &[],
         &[],
+        &[],
     )
     .unwrap();
 
@@ -695,7 +700,7 @@ fn module_root_nodes_lists_its_own_top_level_nodes_in_order() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     let module = schema.module_by_name("foo").unwrap();
     let names: Vec<String> = module
         .root_nodes()
@@ -733,7 +738,7 @@ fn typedef_by_name_finds_the_canonical_unrestricted_resolution() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     let percent = schema.typedef_by_name("foo", "percent").unwrap();
     assert_eq!(percent.ty().ranges, vec![(0, 100)]);
 
@@ -761,7 +766,7 @@ fn typedef_by_name_is_none_for_an_inline_type_or_unknown_name() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     assert!(schema.typedef_by_name("foo", "string").is_none());
     assert!(schema.typedef_by_name("foo", "no-such-typedef").is_none());
 }
@@ -794,7 +799,7 @@ fn an_inline_type_has_no_base_but_a_typedef_use_site_does() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     let bar = schema.node_by_data_path("/foo:bar").unwrap();
 
     let inline = bar.find_child("inline").unwrap().ty().unwrap();
@@ -834,7 +839,7 @@ fn a_leaf_using_a_typedef_derived_from_another_typedef_has_both_base_hops() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
 
     let bar = schema.node_by_data_path("/foo:bar").unwrap();
     let bar_ty = bar.ty().unwrap();
@@ -878,7 +883,7 @@ fn typedefs_lists_every_named_typedef_exactly_once_with_its_description() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     let names: Vec<String> = schema.typedefs().map(|t| t.name.clone()).collect();
     assert_eq!(names, vec!["percent"]);
     let percent = schema.typedef_by_name("foo", "percent").unwrap();
@@ -915,7 +920,7 @@ fn typedefs_are_listed_in_true_source_declaration_order_not_first_use_order() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     let names: Vec<String> = schema.typedefs().map(|t| t.name.clone()).collect();
     assert_eq!(names, vec!["z", "a"]);
 }
@@ -944,7 +949,7 @@ fn typedefs_nested_in_a_container_keep_their_own_declaration_order() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     let names: Vec<String> = schema.typedefs().map(|t| t.name.clone()).collect();
     assert_eq!(names, vec!["z", "a"]);
 }
@@ -993,7 +998,7 @@ fn typedefs_declared_in_a_grouping_keep_source_order_independently_per_use_site(
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     let names_and_scopes: Vec<(String, String)> = schema
         .typedefs()
         .map(|t| (t.name.clone(), t.scope.clone()))
@@ -1035,7 +1040,7 @@ fn a_plain_unreferenced_typedef_is_unreachable() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     assert_eq!(schema.typedefs().count(), 0);
     assert!(schema.typedef_by_name("foo", "percent").is_none());
 }
@@ -1062,7 +1067,7 @@ fn a_malformed_unreferenced_typedef_is_a_schema_error() {
           }
         }
     "#;
-    let err = build(&[src.to_string()], &[], &[], &[]).err().unwrap();
+    let err = build(&[src.to_string()], &[], &[], &[], &[]).err().unwrap();
     assert!(err.0.contains("no-such-type"), "{}", err.0);
 }
 
@@ -1084,7 +1089,7 @@ fn a_plain_unreferenced_identity_is_unreachable() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     assert_eq!(schema.identities().count(), 0);
     assert!(schema.identity_by_name("foo", "animal").is_none());
 }
@@ -1117,7 +1122,7 @@ fn typedefs_excludes_one_whose_only_use_site_is_deviated_away() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     assert_eq!(schema.typedefs().count(), 0);
     assert!(schema.typedef_by_name("foo", "percent").is_none());
 }
@@ -1162,7 +1167,7 @@ fn typedefs_and_identities_exclude_ones_severed_by_a_deviate_replace_type() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     assert_eq!(schema.typedefs().count(), 0);
     assert!(schema.typedef_by_name("foo", "percent").is_none());
     assert_eq!(schema.identities().count(), 0);
@@ -1193,7 +1198,7 @@ fn a_typedef_nested_in_a_container_resolves_from_within_it() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     let x = schema.node_by_data_path("/foo:bar/x").unwrap();
     let ty = x.ty().unwrap();
     assert_eq!(ty.ranges, vec![(0, 100)]);
@@ -1234,7 +1239,7 @@ fn a_typedef_nested_in_a_container_is_invisible_outside_it() {
           }
         }
     "#;
-    let err = build(&[src.to_string()], &[], &[], &[]).err().unwrap();
+    let err = build(&[src.to_string()], &[], &[], &[], &[]).err().unwrap();
     assert!(err.0.contains("percent"), "{}", err.0);
 }
 
@@ -1285,7 +1290,7 @@ fn a_typedef_nested_in_a_list_rpc_input_and_notification_all_resolve() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
 
     let list_x = schema.node_by_data_path("/foo:entry/x").unwrap();
     assert_eq!(list_x.ty().unwrap().ranges, vec![(0, 100)]);
@@ -1317,7 +1322,7 @@ fn a_grouping_nested_in_a_container_resolves_from_a_deeper_use_site() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     assert!(schema.node_by_data_path("/foo:bar/inner/x").is_some());
 }
 
@@ -1341,7 +1346,7 @@ fn a_grouping_nested_in_a_container_is_invisible_outside_it() {
           }
         }
     "#;
-    let err = build(&[src.to_string()], &[], &[], &[]).err().unwrap();
+    let err = build(&[src.to_string()], &[], &[], &[], &[]).err().unwrap();
     assert!(err.0.contains("g"), "{}", err.0);
 }
 
@@ -1372,7 +1377,7 @@ fn a_grouping_nested_directly_in_another_grouping_resolves_when_spliced() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     assert!(schema.node_by_data_path("/foo:bar/x").is_some());
 }
 
@@ -1409,7 +1414,7 @@ fn a_typedef_declared_directly_in_a_grouping_gets_an_independent_identity_per_us
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
 
     let bar_x = schema.node_by_data_path("/foo:bar/x").unwrap();
     let bar_base = bar_x.ty().unwrap().base().unwrap();
@@ -1467,7 +1472,7 @@ fn leafref_resolves_through_a_typedef_to_its_concrete_target() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     let pick = schema.node_by_data_path("/foo:pick").unwrap();
     let target = pick.ty().unwrap().leafref_target().unwrap();
     assert_eq!(target.kw, "leaf");
@@ -1510,7 +1515,7 @@ fn a_typedefs_own_canonical_entry_never_gets_a_leafref_target() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     let bar_ref = schema.typedef_by_name("foo", "bar-ref").unwrap();
     assert!(bar_ref.ty().leafref_target().is_none());
 }
@@ -1552,7 +1557,7 @@ fn a_dangling_leafref_reached_through_a_typedef_is_an_error() {
           }
         }
     "#;
-    let err = build(&[src.to_string()], &[], &[], &[]).err().unwrap();
+    let err = build(&[src.to_string()], &[], &[], &[], &[]).err().unwrap();
     assert!(err.0.contains("removed"), "{}", err.0);
 }
 
@@ -1570,7 +1575,7 @@ fn an_unresolvable_leafref_path_is_a_schema_error() {
           }
         }
     "#;
-    let err = build(&[src.to_string()], &[], &[], &[]).err().unwrap();
+    let err = build(&[src.to_string()], &[], &[], &[], &[]).err().unwrap();
     assert!(err.0.contains("no-such-node"), "{}", err.0);
 }
 
@@ -1594,7 +1599,7 @@ fn a_leafref_path_targeting_a_non_leaf_is_a_schema_error() {
           }
         }
     "#;
-    let err = build(&[src.to_string()], &[], &[], &[]).err().unwrap();
+    let err = build(&[src.to_string()], &[], &[], &[], &[]).err().unwrap();
     assert!(err.0.contains("container"), "{}", err.0);
 }
 
@@ -1632,7 +1637,7 @@ fn a_dangling_leafref_on_a_deviated_away_node_is_not_an_error() {
           }
         }
     "#;
-    assert!(build(&[src.to_string()], &[], &[], &[]).is_ok());
+    assert!(build(&[src.to_string()], &[], &[], &[], &[]).is_ok());
 }
 
 #[test]
@@ -1660,7 +1665,7 @@ fn a_deviated_away_node_is_unreachable_through_every_lookup() {
             {"namespace": "data", "identifier": "/foo:gone", "sid": 5000}
         ]
     }"#;
-    let present = build(&[src.to_string()], &[sid.to_string()], &[], &[]).unwrap();
+    let present = build(&[src.to_string()], &[sid.to_string()], &[], &[], &[]).unwrap();
     assert!(present.node_by_sid(5000).is_some());
     assert!(present.node_by_schema_path("/foo:gone").is_some());
     assert!(present.node_by_data_path("/foo:gone").is_some());
@@ -1681,7 +1686,14 @@ fn a_deviated_away_node_is_unreachable_through_every_lookup() {
           }
         }
     "#;
-    let deviated = build(&[src_deviated.to_string()], &[sid.to_string()], &[], &[]).unwrap();
+    let deviated = build(
+        &[src_deviated.to_string()],
+        &[sid.to_string()],
+        &[],
+        &[],
+        &[],
+    )
+    .unwrap();
     assert!(deviated.node_by_sid(5000).is_none());
     assert!(deviated.node_by_schema_path("/foo:gone").is_none());
     assert!(deviated.node_by_data_path("/foo:gone").is_none());
@@ -1705,7 +1717,7 @@ fn node_by_schema_path_sees_choice_case_but_node_by_data_path_does_not() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
 
     let via_schema_path = schema
         .node_by_schema_path("/foo:bar/pick/picked/sub")
@@ -1765,7 +1777,7 @@ fn node_by_schema_path_disambiguates_the_first_segment_by_module() {
           }
         }
     "#;
-    let schema = build(&[src.to_string(), src2.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string(), src2.to_string()], &[], &[], &[], &[]).unwrap();
 
     let foo_shared = schema.node_by_schema_path("/foo:shared").unwrap();
     assert!(foo_shared.find_child("x").is_some());
@@ -1807,6 +1819,7 @@ fn yang_data_finds_it_but_node_by_schema_path_and_data_path_do_not() {
         &[],
         &["ietf-coreconf:coreconf-error"],
         &[],
+        &[],
     )
     .unwrap();
     let error_root = schema
@@ -1833,7 +1846,7 @@ fn node_by_schema_path_and_node_by_data_path_return_none_for_unknown_paths() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     assert!(schema.node_by_schema_path("/foo:no-such-node").is_none());
     assert!(schema.node_by_schema_path("/no-such-module:bar").is_none());
     assert!(schema.node_by_data_path("/foo:no-such-node").is_none());
@@ -1854,7 +1867,7 @@ fn module_tracks_its_own_namespace_and_revision() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     let module = schema.module_by_name("foo").unwrap();
     assert_eq!(module.namespace, "urn:foo");
     assert_eq!(module.revision.as_deref(), Some("2026-01-01"));
@@ -1872,7 +1885,7 @@ fn module_revision_is_none_when_unstated() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     let module = schema.module_by_name("foo").unwrap();
     assert_eq!(module.revision, None);
 }
@@ -1914,7 +1927,7 @@ fn a_module_whose_only_content_is_fully_deviated_away_is_still_implemented() {
           }
         }
     "#;
-    let schema = build(&[foo.to_string(), foo_dev.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[foo.to_string(), foo_dev.to_string()], &[], &[], &[], &[]).unwrap();
     assert!(schema.module_by_name("foo").is_some());
     assert!(schema.module_by_name("foo-dev").is_some());
     assert!(schema.import_only_modules().all(|m| m.name != "foo"));
@@ -1983,6 +1996,7 @@ fn deviating_an_augmented_node_keeps_the_augmenting_module_implemented() {
     "#;
     let schema = build(
         &[host.to_string(), aug.to_string(), aug_dev.to_string()],
+        &[],
         &[],
         &[],
         &[],
@@ -2063,6 +2077,7 @@ fn a_deviation_is_recorded_on_the_module_defining_the_deviated_node() {
         &[],
         &[],
         &[],
+        &[],
     )
     .unwrap();
     assert_eq!(deviated_by_of(&schema, "aug"), vec!["dev"]);
@@ -2126,6 +2141,7 @@ fn a_module_deviated_by_two_modules_lists_both_once() {
         &[],
         &[],
         &[],
+        &[],
     )
     .unwrap();
     assert_eq!(deviated_by_of(&schema, "host"), vec!["dev-a", "dev-b"]);
@@ -2154,7 +2170,7 @@ fn a_module_deviating_its_own_node_is_not_listed_as_deviating_itself() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     assert!(schema.node_by_schema_path("/foo:gone").is_none());
     assert!(deviated_by_of(&schema, "foo").is_empty());
 }
@@ -2192,7 +2208,7 @@ fn an_augmenting_modules_own_live_nodes_make_it_implemented_even_with_empty_root
           }
         }
     "#;
-    let schema = build(&[foo.to_string(), bar.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[foo.to_string(), bar.to_string()], &[], &[], &[], &[]).unwrap();
     assert!(schema.module_by_name("bar").is_some());
     assert!(schema.import_only_modules().all(|m| m.name != "bar"));
 }
@@ -2232,7 +2248,7 @@ fn a_module_whose_only_top_level_content_is_a_uses_is_implemented() {
           uses l:g;
         }
     "#;
-    let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[], &[]).unwrap();
     assert!(schema.module_by_name("foo").is_some());
     assert!(schema.import_only_modules().all(|m| m.name != "foo"));
     // And "lib" itself (declares only the grouping, never used
@@ -2271,7 +2287,7 @@ fn a_module_whose_only_content_is_an_accept_listed_yang_data_template_is_impleme
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &["ietf-coreconf:error"], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &["ietf-coreconf:error"], &[], &[]).unwrap();
     assert!(schema.module_by_name("ietf-coreconf").is_some());
     assert!(schema
         .import_only_modules()
@@ -2323,7 +2339,7 @@ fn a_module_whose_only_content_is_a_built_but_not_accept_listed_yang_data_templa
           }
         }
     "#;
-    let schema = build(&[foo.to_string(), bar.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[foo.to_string(), bar.to_string()], &[], &[], &[], &[]).unwrap();
     assert!(schema.module_by_name("foo").is_none());
     assert!(schema.import_only_modules().all(|m| m.name != "foo"));
 }
@@ -2369,7 +2385,7 @@ fn a_module_declaring_only_a_live_identityrefs_base_identity_is_import_only() {
           }
         }
     "#;
-    let schema = build(&[bases.to_string(), foo.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[bases.to_string(), foo.to_string()], &[], &[], &[], &[]).unwrap();
     assert!(schema.module_by_name("bases").is_none());
     assert!(schema.import_only_modules().any(|m| m.name == "bases"));
 }
@@ -2432,12 +2448,454 @@ fn a_module_whose_identity_is_reached_only_through_another_identitys_derivation_
         &[],
         &[],
         &[],
+        &[],
     )
     .unwrap();
     assert!(schema.module_by_name("derived").is_some());
     assert!(schema.import_only_modules().all(|m| m.name != "derived"));
     assert!(schema.module_by_name("bases").is_none());
     assert!(schema.import_only_modules().any(|m| m.name == "bases"));
+}
+
+const ROUTING_LIKE: &str = r#"
+    module rt {
+      namespace "urn:rt";
+      prefix rt;
+
+      identity protocol;
+      identity routing-protocol {
+        base protocol;
+      }
+      identity direct {
+        base routing-protocol;
+      }
+      identity static {
+        base routing-protocol;
+      }
+      identity snooping {
+        base protocol;
+      }
+
+      leaf protocol-type {
+        type identityref {
+          base protocol;
+        }
+      }
+      leaf source-protocol {
+        type identityref {
+          base routing-protocol;
+        }
+      }
+    }
+"#;
+
+fn value_names(schema: &Schema, leaf: &str) -> Vec<String> {
+    let mut names: Vec<String> = schema
+        .node_by_schema_path(leaf)
+        .unwrap()
+        .ty()
+        .unwrap()
+        .identity_values()
+        .unwrap()
+        .into_iter()
+        .map(|i| i.name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn an_accept_list_is_exactly_its_bases_value_set_and_intermediates_are_bases_only() {
+    // "routing-protocol" sits between the leaf's base "protocol" and the
+    // accepted "static", so "static" refers to it as a base, but it
+    // isn't itself a value.
+    let accepted: &[&str] = &["rt:static", "rt:snooping"];
+    let schema = build(
+        &[ROUTING_LIKE.to_string()],
+        &[],
+        &[],
+        &[("rt:protocol", accepted)],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        value_names(&schema, "/rt:protocol-type"),
+        vec!["snooping", "static"]
+    );
+    let routing_protocol = schema.identity_by_name("rt", "routing-protocol").unwrap();
+    assert!(!routing_protocol.is_implemented());
+    assert!(!schema
+        .identity_by_name("rt", "protocol")
+        .unwrap()
+        .is_implemented());
+}
+
+#[test]
+fn two_accept_lists_overlapping_on_an_intermediate_do_not_prune_each_other() {
+    // "protocol-type" doesn't accept "direct", but "source-protocol"
+    // does, and both leaves' value sets share the "routing-protocol"
+    // intermediate. Each base's accept-list applies to that base alone.
+    let protocol: &[&str] = &["rt:static", "rt:snooping"];
+    let routing_protocol: &[&str] = &["rt:direct", "rt:static"];
+    let schema = build(
+        &[ROUTING_LIKE.to_string()],
+        &[],
+        &[],
+        &[
+            ("rt:protocol", protocol),
+            ("rt:routing-protocol", routing_protocol),
+        ],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(
+        value_names(&schema, "/rt:protocol-type"),
+        vec!["snooping", "static"]
+    );
+    assert_eq!(
+        value_names(&schema, "/rt:source-protocol"),
+        vec!["direct", "static"]
+    );
+    assert!(schema
+        .identity_by_name("rt", "direct")
+        .unwrap()
+        .is_implemented());
+}
+
+#[test]
+fn without_an_accept_list_every_identity_derived_from_the_base_is_a_value() {
+    let schema = build(&[ROUTING_LIKE.to_string()], &[], &[], &[], &[]).unwrap();
+    assert_eq!(
+        value_names(&schema, "/rt:protocol-type"),
+        vec!["direct", "routing-protocol", "snooping", "static"]
+    );
+    assert!(schema
+        .identity_by_name("rt", "routing-protocol")
+        .unwrap()
+        .is_implemented());
+}
+
+#[test]
+fn an_identity_neither_implemented_nor_referred_to_as_a_base_is_dropped() {
+    // Accepting only "snooping" leaves "routing-protocol" and its
+    // children with nothing implemented beneath them, so they're
+    // neither values nor referred to as a base by anything implemented.
+    let accepted: &[&str] = &["rt:snooping"];
+    let src = ROUTING_LIKE.replace(
+        r#"      leaf source-protocol {
+        type identityref {
+          base routing-protocol;
+        }
+      }
+"#,
+        "",
+    );
+    let schema = build(&[src], &[], &[], &[("rt:protocol", accepted)], &[]).unwrap();
+    let mut names: Vec<String> = schema.identities().map(|i| i.name.clone()).collect();
+    names.sort();
+    assert_eq!(names, vec!["protocol", "snooping"]);
+}
+
+#[test]
+fn an_accept_list_entry_not_derived_from_its_base_is_a_schema_error() {
+    let accepted: &[&str] = &["rt:snooping"];
+    let err = build(
+        &[ROUTING_LIKE.to_string()],
+        &[],
+        &[],
+        &[("rt:routing-protocol", accepted)],
+        &[],
+    )
+    .err()
+    .expect("an accepted identity outside its base must fail");
+    assert!(err.0.contains("not actually derived"), "{}", err.0);
+}
+
+const TWO_LEAVES_ONE_BASE: &str = r#"
+    module af {
+      namespace "urn:af";
+      prefix af;
+
+      identity address-family;
+      identity ipv4 {
+        base address-family;
+      }
+      identity ipv6 {
+        base address-family;
+      }
+      identity mpls {
+        base address-family;
+      }
+
+      container rib {
+        leaf family {
+          type identityref {
+            base address-family;
+          }
+        }
+      }
+      container lldp {
+        leaf subtype {
+          type identityref {
+            base address-family;
+          }
+        }
+        leaf either {
+          type union {
+            type identityref {
+              base address-family;
+            }
+            type string;
+          }
+        }
+        leaf count {
+          type uint8;
+        }
+      }
+    }
+"#;
+
+fn identityref_values(schema: &Schema, leaf: &str) -> Vec<String> {
+    let mut names: Vec<String> = schema
+        .node_by_schema_path(leaf)
+        .unwrap()
+        .ty()
+        .unwrap()
+        .identity_values()
+        .unwrap()
+        .into_iter()
+        .map(|i| i.name.clone())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn an_identityref_accept_list_narrows_only_the_leaf_it_names() {
+    // Both leaves share the base, but only "rib/family" is listed, so
+    // "lldp/subtype" keeps every derived identity.
+    let accepted: &[&str] = &["af:ipv4"];
+    let schema = build(
+        &[TWO_LEAVES_ONE_BASE.to_string()],
+        &[],
+        &[],
+        &[],
+        &[("/af:rib/family", accepted)],
+    )
+    .unwrap();
+    assert_eq!(identityref_values(&schema, "/af:rib/family"), vec!["ipv4"]);
+    assert_eq!(
+        identityref_values(&schema, "/af:lldp/subtype"),
+        vec!["ipv4", "ipv6", "mpls"]
+    );
+}
+
+#[test]
+fn an_identityref_accept_list_replaces_the_bases_accept_list_for_its_leaf() {
+    // The per-leaf entry decides alone: "ipv6" is outside the base's
+    // list but still accepted for "rib/family", while every other leaf
+    // with that base keeps the base's list.
+    let by_base: &[&str] = &["af:ipv4", "af:mpls"];
+    let by_leaf: &[&str] = &["af:ipv4", "af:ipv6"];
+    let schema = build(
+        &[TWO_LEAVES_ONE_BASE.to_string()],
+        &[],
+        &[],
+        &[("af:address-family", by_base)],
+        &[("/af:rib/family", by_leaf)],
+    )
+    .unwrap();
+    assert_eq!(
+        identityref_values(&schema, "/af:rib/family"),
+        vec!["ipv4", "ipv6"]
+    );
+    assert_eq!(
+        identityref_values(&schema, "/af:lldp/subtype"),
+        vec!["ipv4", "mpls"]
+    );
+    let ipv6 = schema.identity_by_name("af", "ipv6").unwrap();
+    assert!(ipv6.is_implemented());
+}
+
+#[test]
+fn a_bases_accept_list_still_narrows_a_union_members_identityref() {
+    let by_base: &[&str] = &["af:ipv4"];
+    let schema = build(
+        &[TWO_LEAVES_ONE_BASE.to_string()],
+        &[],
+        &[],
+        &[("af:address-family", by_base)],
+        &[],
+    )
+    .unwrap();
+    let ty = schema
+        .node_by_schema_path("/af:lldp/either")
+        .unwrap()
+        .ty()
+        .unwrap();
+    let member = ty.union_members().next().unwrap();
+    let names: Vec<String> = member
+        .identity_values()
+        .unwrap()
+        .into_iter()
+        .map(|i| i.name.clone())
+        .collect();
+    assert_eq!(names, vec!["ipv4"]);
+}
+
+fn identityref_accept_list_error(leaf: &str, accepted: &[&str]) -> String {
+    build(
+        &[TWO_LEAVES_ONE_BASE.to_string()],
+        &[],
+        &[],
+        &[],
+        &[(leaf, accepted)],
+    )
+    .err()
+    .expect("the identityref accept-list entry must be rejected")
+    .0
+}
+
+#[test]
+fn an_identityref_accept_list_narrows_a_leaf_list_typed_through_a_typedef() {
+    // Like the device's mchp-vlan-port-type: the identityref comes from
+    // a typedef, which another leaf also uses, and only the named
+    // leaf-list is narrowed.
+    let src = r#"
+        module tdf {
+          namespace "urn:tdf";
+          prefix t;
+
+          identity kind;
+          identity a {
+            base kind;
+          }
+          identity b {
+            base kind;
+          }
+
+          typedef kind-ref {
+            type identityref {
+              base kind;
+            }
+          }
+
+          leaf-list kinds {
+            type kind-ref;
+          }
+          leaf other {
+            type kind-ref;
+          }
+        }
+    "#;
+    let accepted: &[&str] = &["tdf:a"];
+    let schema = build(
+        &[src.to_string()],
+        &[],
+        &[],
+        &[],
+        &[("/tdf:kinds", accepted)],
+    )
+    .unwrap();
+    let values = |leaf: &str| -> Vec<String> {
+        let mut names: Vec<String> = schema
+            .node_by_schema_path(leaf)
+            .unwrap()
+            .ty()
+            .unwrap()
+            .identity_values()
+            .unwrap()
+            .into_iter()
+            .map(|i| i.name.clone())
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(values("/tdf:kinds"), vec!["a"]);
+    assert_eq!(values("/tdf:other"), vec!["a", "b"]);
+}
+
+#[test]
+fn an_identityref_accept_list_entry_for_a_union_is_a_schema_error() {
+    // The format can't say which union member an accepted identity
+    // narrows, so a union isn't accepted at all.
+    let e = identityref_accept_list_error("/af:lldp/either", &["af:ipv4"]);
+    assert!(e.contains("is not an identityref"), "{e}");
+}
+
+#[test]
+fn an_identityref_accept_list_entry_for_a_non_identityref_leaf_is_a_schema_error() {
+    let e = identityref_accept_list_error("/af:lldp/count", &["af:ipv4"]);
+    assert!(e.contains("is not an identityref"), "{e}");
+}
+
+#[test]
+fn an_identityref_accept_list_entry_for_a_container_is_a_schema_error() {
+    let e = identityref_accept_list_error("/af:lldp", &["af:ipv4"]);
+    assert!(e.contains("not a leaf or leaf-list"), "{e}");
+}
+
+#[test]
+fn an_identityref_accept_list_entry_for_an_unknown_path_is_a_schema_error() {
+    let e = identityref_accept_list_error("/af:rib/nowhere", &["af:ipv4"]);
+    assert!(
+        e.contains("does not name an implemented schema node"),
+        "{e}"
+    );
+}
+
+#[test]
+fn an_identityref_accept_list_entry_outside_the_leafs_base_is_a_schema_error() {
+    let e = identityref_accept_list_error("/af:rib/family", &["af:address-family"]);
+    assert!(e.contains("not actually derived"), "{e}");
+}
+
+#[test]
+fn an_identityref_accept_list_entry_listed_twice_is_a_schema_error() {
+    let accepted: &[&str] = &["af:ipv4"];
+    let err = build(
+        &[TWO_LEAVES_ONE_BASE.to_string()],
+        &[],
+        &[],
+        &[],
+        &[("/af:rib/family", accepted), ("/af:rib/family", accepted)],
+    )
+    .err()
+    .expect("a leaf listed twice must be rejected");
+    assert!(err.0.contains("listed more than once"), "{}", err.0);
+}
+
+#[test]
+fn an_identityref_accept_list_entry_for_a_deviated_away_leaf_is_a_schema_error() {
+    let dev = r#"
+        module af-dev {
+          namespace "urn:af-dev";
+          prefix afd;
+
+          import af {
+            prefix af;
+          }
+
+          deviation "/af:rib/af:family" {
+            deviate not-supported;
+          }
+        }
+    "#;
+    let accepted: &[&str] = &["af:ipv4"];
+    let err = build(
+        &[TWO_LEAVES_ONE_BASE.to_string(), dev.to_string()],
+        &[],
+        &[],
+        &[],
+        &[("/af:rib/family", accepted)],
+    )
+    .err()
+    .expect("a deviated-away leaf must be rejected");
+    assert!(
+        err.0.contains("does not name an implemented schema node"),
+        "{}",
+        err.0
+    );
 }
 
 #[test]
@@ -2463,7 +2921,7 @@ fn a_yang_data_template_not_on_the_accept_list_is_absent_entirely() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     assert_eq!(schema.yang_data().count(), 0);
 }
 
@@ -2495,7 +2953,7 @@ fn a_yang_data_bodys_uses_is_spliced_just_like_a_direct_container() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &["ietf-coreconf:error"], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &["ietf-coreconf:error"], &[], &[]).unwrap();
     let root = schema
         .yang_data()
         .find(|y| y.name == "error")
@@ -2525,7 +2983,7 @@ fn a_yang_data_body_with_more_than_one_data_node_is_rejected() {
           }
         }
     "#;
-    assert!(build(&[src.to_string()], &[], &[], &[]).is_err());
+    assert!(build(&[src.to_string()], &[], &[], &[], &[]).is_err());
 }
 
 #[test]
@@ -2545,7 +3003,7 @@ fn a_yang_data_body_whose_one_node_is_not_a_container_is_rejected() {
           }
         }
     "#;
-    assert!(build(&[src.to_string()], &[], &[], &[]).is_err());
+    assert!(build(&[src.to_string()], &[], &[], &[], &[]).is_err());
 }
 
 #[test]
@@ -2566,7 +3024,7 @@ fn an_accept_listed_yang_data_name_that_names_no_template_is_a_schema_error() {
           }
         }
     "#;
-    let err = build(&[src.to_string()], &[], &["foo:no-such-template"], &[])
+    let err = build(&[src.to_string()], &[], &["foo:no-such-template"], &[], &[])
         .err()
         .expect("an accept-listed name with no matching template must fail");
     assert!(err.0.contains("\"foo:no-such-template\""), "{}", err.0);
@@ -2591,8 +3049,8 @@ fn the_yang_data_accept_list_names_a_template_not_its_container() {
           }
         }
     "#;
-    assert!(build(&[src.to_string()], &[], &["foo:error"], &[]).is_err());
-    let schema = build(&[src.to_string()], &[], &["foo:error-template"], &[]).unwrap();
+    assert!(build(&[src.to_string()], &[], &["foo:error"], &[], &[]).is_err());
+    let schema = build(&[src.to_string()], &[], &["foo:error-template"], &[], &[]).unwrap();
     let template = schema.yang_data().next().unwrap();
     assert_eq!(template.module, "foo");
     assert_eq!(template.name, "error-template");
@@ -2616,7 +3074,7 @@ fn a_yang_data_template_defined_twice_in_one_module_is_a_schema_error() {
           }
         }
     "#;
-    let err = build(&[src.to_string()], &[], &[], &[])
+    let err = build(&[src.to_string()], &[], &[], &[], &[])
         .err()
         .expect("a duplicate template name must fail");
     assert!(err.0.contains("\"error-template\""), "{}", err.0);
@@ -2642,7 +3100,7 @@ fn two_yang_data_templates_with_the_same_container_name_in_one_module_are_a_sche
           }
         }
     "#;
-    let err = build(&[src.to_string()], &[], &[], &[])
+    let err = build(&[src.to_string()], &[], &[], &[], &[])
         .err()
         .expect("two same-named yang-data containers must fail");
     assert!(err.0.contains("\"second-template\""), "{}", err.0);
@@ -2667,7 +3125,7 @@ fn a_yang_data_container_colliding_with_a_top_level_data_node_is_a_schema_error(
           }
         }
     "#;
-    let err = build(&[src.to_string()], &[], &[], &[])
+    let err = build(&[src.to_string()], &[], &[], &[], &[])
         .err()
         .expect("a yang-data container colliding with a data node must fail");
     assert!(err.0.contains("\"error\""), "{}", err.0);
@@ -2702,6 +3160,7 @@ fn same_named_yang_data_containers_in_different_modules_are_independent() {
         &[foo.to_string(), bar.to_string()],
         &[],
         &["foo:error-template", "bar:error-template"],
+        &[],
         &[],
     )
     .unwrap();
@@ -2757,6 +3216,7 @@ fn no_module_name_is_ever_listed_in_both_modules_and_import_only_modules() {
     "#;
     let schema = build(
         &[lib.to_string(), mid.to_string(), foo.to_string()],
+        &[],
         &[],
         &[],
         &[],
@@ -2818,7 +3278,7 @@ fn an_import_only_module_needed_by_an_implemented_one_is_listed_separately() {
           }
         }
     "#;
-    let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[], &[]).unwrap();
     assert!(schema.module_by_name("lib").is_none());
     assert!(schema.module_by_name("foo").is_some());
 
@@ -2850,7 +3310,7 @@ fn a_standalone_module_shaped_like_import_only_and_imported_by_nothing_is_in_nei
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     assert!(schema.module_by_name("lib").is_none());
     assert_eq!(schema.import_only_modules().count(), 0);
 }
@@ -2892,7 +3352,7 @@ fn a_chain_of_import_only_modules_nobody_implemented_imports_is_listed_nowhere()
           }
         }
     "#;
-    let schema = build(&[lib.to_string(), mid.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[lib.to_string(), mid.to_string()], &[], &[], &[], &[]).unwrap();
     assert!(schema.module_by_name("lib").is_none());
     assert!(schema.module_by_name("mid").is_none());
     assert_eq!(schema.import_only_modules().count(), 0);
@@ -2949,6 +3409,7 @@ fn an_import_only_module_reached_through_a_chain_of_import_only_modules_is_still
         &[],
         &[],
         &[],
+        &[],
     )
     .unwrap();
     let names: std::collections::HashSet<String> = schema
@@ -2994,7 +3455,7 @@ fn an_import_only_modules_revision_date_comes_from_the_importers_own_import_stat
           }
         }
     "#;
-    let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[], &[]).unwrap();
     let import_only: Vec<&ImportOnlyModule> = schema.import_only_modules().collect();
     assert_eq!(import_only.len(), 1);
     assert_eq!(
@@ -3056,6 +3517,7 @@ fn two_importers_with_different_revision_dates_produce_two_distinct_entries() {
         &[],
         &[],
         &[],
+        &[],
     )
     .unwrap();
     let mut dates: Vec<Option<String>> = schema
@@ -3104,7 +3566,7 @@ fn a_module_imported_only_for_an_unused_grouping_is_listed_nowhere() {
           }
         }
     "#;
-    let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[], &[]).unwrap();
     assert!(schema.module_by_name("lib").is_none());
     assert!(schema.import_only_modules().all(|m| m.name != "lib"));
 }
@@ -3139,7 +3601,7 @@ fn a_module_whose_grouping_is_actually_spliced_in_by_a_live_uses_is_import_only(
           }
         }
     "#;
-    let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[], &[]).unwrap();
     assert!(schema.module_by_name("lib").is_none());
     assert!(schema.import_only_modules().any(|m| m.name == "lib"));
 }
@@ -3197,6 +3659,7 @@ fn a_grouping_spliced_in_by_a_since_deviated_away_uses_is_listed_nowhere() {
         &[],
         &[],
         &[],
+        &[],
     )
     .unwrap();
     assert!(schema.import_only_modules().all(|m| m.name != "lib"));
@@ -3231,7 +3694,7 @@ fn a_module_imported_only_for_an_unused_extension_is_listed_nowhere() {
           }
         }
     "#;
-    let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[], &[]).unwrap();
     assert!(schema.module_by_name("lib").is_none());
     assert!(schema.import_only_modules().all(|m| m.name != "lib"));
 }
@@ -3265,7 +3728,7 @@ fn a_module_whose_extension_is_actually_invoked_on_a_live_node_is_import_only() 
           }
         }
     "#;
-    let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[lib.to_string(), foo.to_string()], &[], &[], &[], &[]).unwrap();
     assert!(schema.module_by_name("lib").is_none());
     assert!(schema.import_only_modules().any(|m| m.name == "lib"));
 }
@@ -3322,6 +3785,7 @@ fn an_extension_invoked_on_a_since_deviated_away_node_is_listed_nowhere() {
         &[],
         &[],
         &[],
+        &[],
     )
     .unwrap();
     assert!(schema.import_only_modules().all(|m| m.name != "lib"));
@@ -3334,7 +3798,7 @@ fn a_missing_namespace_statement_is_a_schema_error() {
           prefix f;
         }
     "#;
-    let err = build(&[src.to_string()], &[], &[], &[]).err().unwrap();
+    let err = build(&[src.to_string()], &[], &[], &[], &[]).err().unwrap();
     assert!(err.0.contains("namespace"), "{}", err.0);
 }
 
@@ -3359,7 +3823,7 @@ fn list_keys_resolve_against_their_own_direct_children() {
           }
         }
     "#;
-    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
     let entry = schema.node_by_data_path("/foo:entry").unwrap();
     let key_names: Vec<String> = entry.keys().map(|k| k.local_name().to_string()).collect();
     assert_eq!(key_names, vec!["name", "index"]);
@@ -3380,7 +3844,7 @@ fn a_key_naming_something_other_than_a_direct_child_is_a_schema_error() {
           }
         }
     "#;
-    let err = build(&[src.to_string()], &[], &[], &[]).err().unwrap();
+    let err = build(&[src.to_string()], &[], &[], &[], &[]).err().unwrap();
     assert!(err.0.contains("missing"), "{}", err.0);
     assert!(err.0.contains("entry"), "{}", err.0);
 }
@@ -3431,7 +3895,7 @@ fn a_structures_own_typedefs_and_groupings_resolve_from_inside_it() {
           }
         }
     "#;
-    let schema = build(&[sx.to_string(), src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(&[sx.to_string(), src.to_string()], &[], &[], &[], &[]).unwrap();
     let doc = schema
         .structure_roots()
         .find(|r| r.name == "foo:doc")
@@ -3477,9 +3941,15 @@ fn a_structure_colliding_with_a_yang_data_container_is_a_schema_error() {
           }
         }
     "#;
-    let err = build(&[STRUCTURE_EXT.to_string(), src.to_string()], &[], &[], &[])
-        .err()
-        .expect("a structure colliding with a yang-data container must fail");
+    let err = build(
+        &[STRUCTURE_EXT.to_string(), src.to_string()],
+        &[],
+        &[],
+        &[],
+        &[],
+    )
+    .err()
+    .expect("a structure colliding with a yang-data container must fail");
     assert!(err.0.contains("\"doc\""), "{}", err.0);
     assert!(err.0.contains("collides"), "{}", err.0);
 }
@@ -3506,9 +3976,15 @@ fn a_yang_data_container_colliding_with_a_structure_is_a_schema_error() {
           }
         }
     "#;
-    let err = build(&[STRUCTURE_EXT.to_string(), src.to_string()], &[], &[], &[])
-        .err()
-        .expect("a yang-data container colliding with a structure must fail");
+    let err = build(
+        &[STRUCTURE_EXT.to_string(), src.to_string()],
+        &[],
+        &[],
+        &[],
+        &[],
+    )
+    .err()
+    .expect("a yang-data container colliding with a structure must fail");
     assert!(err.0.contains("\"doc-template\""), "{}", err.0);
     assert!(err.0.contains("collides"), "{}", err.0);
 }
@@ -3539,7 +4015,14 @@ fn a_structures_root_carries_its_own_status_and_description() {
           }
         }
     "#;
-    let schema = build(&[STRUCTURE_EXT.to_string(), src.to_string()], &[], &[], &[]).unwrap();
+    let schema = build(
+        &[STRUCTURE_EXT.to_string(), src.to_string()],
+        &[],
+        &[],
+        &[],
+        &[],
+    )
+    .unwrap();
     let mut names: Vec<String> = schema.structure_roots().map(|r| r.name.clone()).collect();
     names.sort();
     assert_eq!(names, vec!["foo:doc", "foo:old-doc"]);
@@ -3580,9 +4063,15 @@ fn a_structure_that_isnt_a_top_level_statement_is_a_schema_error() {
           }
         }
     "#;
-    let err = build(&[STRUCTURE_EXT.to_string(), src.to_string()], &[], &[], &[])
-        .err()
-        .unwrap();
+    let err = build(
+        &[STRUCTURE_EXT.to_string(), src.to_string()],
+        &[],
+        &[],
+        &[],
+        &[],
+    )
+    .err()
+    .unwrap();
     assert!(err.0.contains("\"doc\""), "{}", err.0);
     assert!(err.0.contains("top-level"), "{}", err.0);
 }
@@ -3611,9 +4100,15 @@ fn a_structure_defined_twice_in_one_module_is_a_schema_error() {
           }
         }
     "#;
-    let err = build(&[STRUCTURE_EXT.to_string(), src.to_string()], &[], &[], &[])
-        .err()
-        .unwrap();
+    let err = build(
+        &[STRUCTURE_EXT.to_string(), src.to_string()],
+        &[],
+        &[],
+        &[],
+        &[],
+    )
+    .err()
+    .unwrap();
     assert!(err.0.contains("\"doc\""), "{}", err.0);
     assert!(err.0.contains("more than once"), "{}", err.0);
 }
@@ -3646,9 +4141,15 @@ fn a_structure_colliding_with_a_top_level_data_node_is_a_schema_error() {
           }
         }
     "#;
-    let err = build(&[STRUCTURE_EXT.to_string(), src.to_string()], &[], &[], &[])
-        .err()
-        .unwrap();
+    let err = build(
+        &[STRUCTURE_EXT.to_string(), src.to_string()],
+        &[],
+        &[],
+        &[],
+        &[],
+    )
+    .err()
+    .unwrap();
     assert!(err.0.contains("\"doc\""), "{}", err.0);
     assert!(err.0.contains("collides"), "{}", err.0);
 }
@@ -3715,6 +4216,7 @@ fn same_named_structures_in_different_modules_are_independent() {
             bar.to_string(),
             baz.to_string(),
         ],
+        &[],
         &[],
         &[],
         &[],

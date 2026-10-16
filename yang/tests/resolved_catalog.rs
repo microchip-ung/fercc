@@ -33,7 +33,7 @@ fn validator() -> Validator {
 fn schema() -> &'static Schema {
     static SCHEMA: OnceLock<Schema> = OnceLock::new();
     SCHEMA.get_or_init(|| {
-        let tarball = test_data_dir().join("b8ab4b046249f34f7f5d669a17600bd4.tar.gz");
+        let tarball = test_data_dir().join("9a836fc0bdf2b7b77ba49ea26c94261e.tar.gz");
         let bytes = fs::read(&tarball).expect("read bundled catalog tarball");
         yang::catalog::load_from_tarball(&bytes)
             .expect("load bundled catalog tarball")
@@ -43,7 +43,7 @@ fn schema() -> &'static Schema {
 }
 
 fn doc() -> Json {
-    to_resolved_catalog(schema(), "b8ab4b046249f34f7f5d669a17600bd4")
+    to_resolved_catalog(schema(), "9a836fc0bdf2b7b77ba49ea26c94261e")
         .expect("serialize resolved yang catalog")
 }
 
@@ -62,12 +62,6 @@ fn maps_and_arrays_without_source_order_semantics_are_sorted() {
         let mut sorted = keys.clone();
         sorted.sort();
         assert_eq!(keys, sorted, "{name}'s keys aren't numerically sorted");
-    };
-    let assert_strs_sorted = |array: &[Json], name: &str| {
-        let items: Vec<&str> = array.iter().map(|v| v.as_str().unwrap()).collect();
-        let mut sorted = items.clone();
-        sorted.sort();
-        assert_eq!(items, sorted, "{name} isn't alphabetically sorted");
     };
 
     assert_keys_sorted(d["modules"].as_object().unwrap(), "modules");
@@ -89,12 +83,6 @@ fn maps_and_arrays_without_source_order_semantics_are_sorted() {
     // depth-first; identities are registered per-module, in source
     // order, in ensure_module), so they must NOT be alphabetically
     // sorted in general.
-    for (name, identity) in d["identities"].as_object().unwrap() {
-        assert_strs_sorted(
-            identity["derived"].as_array().unwrap(),
-            &format!("identities[{name:?}].derived"),
-        );
-    }
 }
 
 #[test]
@@ -205,7 +193,7 @@ fn module_entry_carries_real_sid_and_namespace() {
 }
 
 #[test]
-fn identity_entries_carry_real_base_and_derived() {
+fn identity_entries_carry_real_base() {
     let d = doc();
     let ethernet = &d["identities"]["iana-if-type:ethernetCsmacd"];
     assert!(ethernet["sid"].is_string());
@@ -304,6 +292,153 @@ fn the_coreconf_error_template_names_its_root_in_schema_nodes_but_no_module_root
         d["schema-nodes"]["/ietf-coreconf:error/error-tag"]["parent"],
         "/ietf-coreconf:error"
     );
+}
+
+#[test]
+fn every_modules_identities_are_exactly_the_values_the_device_implements() {
+    // Derived by hand, independently of fercc: each live identityref's
+    // value set is the bundled ui-tailoring.yaml's accept-list for its
+    // base, or every identity derived from the base when it has none.
+    // ieee1588-ptp's clock-class/clock-accuracy and ietf-coreconf's
+    // error-tag/error-app-tag have no accept-list and every derived
+    // identity is a value, so those are counted rather than listed.
+    // Abstract bases are only referred to as bases, never implemented
+    // as values, so no implemented module lists them;
+    // ieee802-dot1q-types:type-of-operation is the only one whose
+    // module is import-only, so it's the only one listed at all.
+    const EXPECTED: &[(&str, &[&str])] = &[
+        (
+            "iana-hardware",
+            &[
+                "iana-hardware:chassis",
+                "iana-hardware:container",
+                "iana-hardware:module",
+                "iana-hardware:port",
+                "iana-hardware:sensor",
+            ],
+        ),
+        (
+            "iana-if-type",
+            &[
+                "iana-if-type:ethernetCsmacd",
+                "iana-if-type:ieee8023adLag",
+                "iana-if-type:l3ipvlan",
+            ],
+        ),
+        (
+            "ieee802-dot1q-bridge",
+            &[
+                "ieee802-dot1q-bridge:c-vlan-bridge-port",
+                "ieee802-dot1q-bridge:d-bridge-port",
+                "ieee802-dot1q-bridge:provider-network-port",
+            ],
+        ),
+        (
+            "ieee802-dot1q-sched",
+            &[
+                "ieee802-dot1q-sched:set-and-hold-mac",
+                "ieee802-dot1q-sched:set-and-release-mac",
+                "ieee802-dot1q-sched:set-gate-states",
+            ],
+        ),
+        (
+            "ietf-datastores",
+            &[
+                "ietf-datastores:operational",
+                "ietf-datastores:running",
+                "ietf-datastores:startup",
+            ],
+        ),
+        (
+            "ietf-igmp-mld-snooping",
+            &[
+                "ietf-igmp-mld-snooping:igmp-snooping",
+                "ietf-igmp-mld-snooping:mld-snooping",
+            ],
+        ),
+        (
+            "ietf-ipv4-unicast-routing",
+            &["ietf-ipv4-unicast-routing:ipv4-unicast"],
+        ),
+        (
+            "ietf-routing",
+            &[
+                "ietf-routing:direct",
+                "ietf-routing:ipv4",
+                "ietf-routing:ipv6",
+                "ietf-routing:static",
+            ],
+        ),
+        (
+            "mchp-velocitysp-bridge",
+            &["mchp-velocitysp-bridge:provider-custom-network-port"],
+        ),
+        (
+            "mchp-velocitysp-ptp",
+            &["mchp-velocitysp-ptp:ca-time-accurate-unknown"],
+        ),
+    ];
+    const COUNTED: &[(&str, usize)] = &[("ieee1588-ptp", 37), ("ietf-coreconf", 21)];
+    const BASE_ONLY: &[&str] = &[
+        "iana-hardware:hardware-class",
+        "iana-if-type:iana-interface-type",
+        "ieee1588-ptp:clock-accuracy",
+        "ieee1588-ptp:clock-class",
+        "ieee802-dot1q-bridge:type-of-port",
+        "ieee802-dot1q-types:type-of-operation",
+        "ietf-coreconf:error-app-tag",
+        "ietf-coreconf:error-tag",
+        "ietf-datastores:conventional",
+        "ietf-datastores:datastore",
+        "ietf-interfaces:interface-type",
+        "ietf-routing:address-family",
+        "ietf-routing:control-plane-protocol",
+        "ietf-routing:routing-protocol",
+    ];
+    let d = doc();
+    let mut implemented = std::collections::HashSet::new();
+    for (name, module) in d["modules"].as_object().unwrap() {
+        let listed: Vec<&str> = module["identities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i.as_str().unwrap())
+            .collect();
+        implemented.extend(listed.iter().map(|i| i.to_string()));
+        if let Some((_, expected)) = EXPECTED.iter().find(|(m, _)| m == name) {
+            let mut listed = listed.clone();
+            listed.sort();
+            assert_eq!(listed, expected.to_vec(), "modules[{name:?}].identities");
+        } else if let Some((_, count)) = COUNTED.iter().find(|(m, _)| m == name) {
+            assert_eq!(listed.len(), *count, "modules[{name:?}].identities");
+            assert!(listed.iter().all(|i| !BASE_ONLY.contains(i)));
+        } else {
+            assert!(
+                listed.is_empty(),
+                "modules[{name:?}].identities: {listed:?}"
+            );
+        }
+    }
+    let import_only_listed: Vec<&str> = d["import-only-modules"]
+        .as_object()
+        .unwrap()
+        .values()
+        .flat_map(|m| m["identities"].as_array().unwrap())
+        .map(|i| i.as_str().unwrap())
+        .collect();
+    assert_eq!(
+        import_only_listed,
+        vec!["ieee802-dot1q-types:type-of-operation"]
+    );
+    let mut base_only: Vec<&str> = d["identities"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(|k| k.as_str())
+        .filter(|k| !implemented.contains(*k))
+        .collect();
+    base_only.sort();
+    assert_eq!(base_only, BASE_ONLY.to_vec());
 }
 
 #[test]
@@ -697,21 +832,22 @@ fn a_modules_own_typedefs_and_identities_follow_source_declaration_order_not_alp
     // regression back to alphabetical or first-use order would still
     // pass a bare "is this sorted" check but fail this one.
     //
-    // ieee802-dot1q-bridge's own identities only lists 4 of its 7 real
-    // "type-of-port"-derived identities here: "customer-network-port"/
-    // "customer-edge-port"/"remote-customer-access-port" are pruned by
-    // ui-tailoring.yaml's own "ieee802-dot1q-bridge:type-of-port"
-    // entry (the real device deviates its "port-type" leaf's own type
-    // to a narrower identityref, "mchp-vlan-port-type", that excludes
-    // them -- see mchp-velocitysp-bridge.yang's own doc comment on that
-    // typedef and ietf-interfaces-dev.yang's deviation), so they're
-    // unreachable identities entirely, not merely out of declaration
-    // order.
+    // ieee802-dot1q-bridge's own identities only lists 3 of its 7 real
+    // "type-of-port"-derived identities here:
+    // "customer-network-port"/"customer-edge-port"/
+    // "remote-customer-access-port" aren't on ui-tailoring.yaml's
+    // "ieee802-dot1q-bridge:type-of-port" accept-list (the device's
+    // "mchp-vlan-port-type" typedef names the same base, so it can only
+    // describe that narrowing, not express it: RFC 7950 9.10.1 says an
+    // identityref cannot be restricted), so they're unreachable
+    // identities entirely, not merely out of declaration order. The
+    // abstract base "type-of-port" itself is only referred to as the
+    // leaf's base, not a value the device implements, so isn't listed
+    // either.
     let d = doc();
     assert_eq!(
         d["modules"]["ieee802-dot1q-bridge"]["identities"],
         serde_json::json!([
-            "ieee802-dot1q-bridge:type-of-port",
             "ieee802-dot1q-bridge:c-vlan-bridge-port",
             "ieee802-dot1q-bridge:provider-network-port",
             "ieee802-dot1q-bridge:d-bridge-port",

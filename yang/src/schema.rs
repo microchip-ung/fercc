@@ -150,6 +150,7 @@ pub struct TypeDescriptor {
     /// inherited or local, are all ANDed together).
     pub patterns: Vec<String>,
     base: Option<TypedefId>,
+    identity_values: Option<std::collections::HashSet<IdentityId>>,
 }
 
 impl TypeDescriptor {
@@ -167,6 +168,7 @@ impl TypeDescriptor {
             ranges: Vec::new(),
             patterns: Vec::new(),
             base: None,
+            identity_values: None,
         }
     }
 }
@@ -250,6 +252,31 @@ fn transitive_derived_excluding_self(
         }
     }
     out
+}
+
+fn derived_from_all(
+    identities: &[Identity],
+    bases: &[IdentityId],
+) -> std::collections::HashSet<IdentityId> {
+    let mut iter = bases.iter();
+    let Some(&first) = iter.next() else {
+        return std::collections::HashSet::new();
+    };
+    let mut out = transitive_derived_excluding_self(identities, first);
+    for &base in iter {
+        let other = transitive_derived_excluding_self(identities, base);
+        out.retain(|id| other.contains(id));
+    }
+    out
+}
+
+fn collect_identity_values(ty: &TypeDescriptor, out: &mut std::collections::HashSet<IdentityId>) {
+    if let Some(values) = &ty.identity_values {
+        out.extend(values.iter().copied());
+    }
+    for member in &ty.union_members {
+        collect_identity_values(member, out);
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -376,6 +403,7 @@ pub struct Schema {
     sid_index: HashMap<i64, NodeId>,
     reachable_typedefs: std::collections::HashSet<TypedefId>,
     reachable_identities: std::collections::HashSet<IdentityId>,
+    implemented_identities: std::collections::HashSet<IdentityId>,
 }
 
 #[derive(Clone, Copy)]
@@ -481,6 +509,16 @@ impl<'a> TypeRef<'a> {
         self.ty.leafref_target.map(|id| NodeRef { schema, id })
     }
 
+    pub fn identity_values(&self) -> Option<std::collections::HashSet<IdentityRef<'a>>> {
+        let schema = self.schema;
+        self.ty.identity_values.as_ref().map(|values| {
+            values
+                .iter()
+                .map(|&id| IdentityRef { schema, id })
+                .collect()
+        })
+    }
+
     pub fn base(&self) -> Option<TypedefRef<'a>> {
         let schema = self.schema;
         self.ty.base.map(|id| TypedefRef { schema, id })
@@ -547,22 +585,8 @@ impl<'a> IdentityRef<'a> {
             .map(move |&id| IdentityRef { schema, id })
     }
 
-    pub fn derived(&self) -> impl Iterator<Item = IdentityRef<'a>> + 'a {
-        let schema = self.schema;
-        schema.identities[self.id]
-            .derived
-            .iter()
-            .map(move |&id| IdentityRef { schema, id })
-    }
-
-    /// All identities transitively derived from this one, never
-    /// including itself, mirroring `Identity#derived_from`.
-    pub fn derived_from(&self) -> std::collections::HashSet<IdentityRef<'a>> {
-        let schema = self.schema;
-        transitive_derived_excluding_self(&schema.identities, self.id)
-            .into_iter()
-            .map(|id| IdentityRef { schema, id })
-            .collect()
+    pub fn is_implemented(&self) -> bool {
+        self.schema.implemented_identities.contains(&self.id)
     }
 }
 
@@ -842,6 +866,7 @@ struct Builder<'a> {
     structure_roots: HashMap<String, NodeId>,
     implemented_yang_data: std::collections::HashSet<String>,
     identity_accept_lists: HashMap<String, Vec<String>>,
+    identityref_accept_lists: Vec<(String, Vec<String>)>,
     reachable_typedefs: std::collections::HashSet<TypedefId>,
     reachable_identities: std::collections::HashSet<IdentityId>,
     implemented_identities: std::collections::HashSet<IdentityId>,
@@ -863,6 +888,7 @@ pub fn build(
     sid_sources: &[String],
     implemented_yang_data: &[&str],
     identity_accept_lists: &[(&str, &[&str])],
+    identityref_accept_lists: &[(&str, &[&str])],
 ) -> R<Schema> {
     let parsed: Vec<Stmt> = yang_sources
         .iter()
@@ -911,6 +937,15 @@ pub fn build(
             .map(|&(base, accepted)| {
                 (
                     base.to_string(),
+                    accepted.iter().map(|s| s.to_string()).collect(),
+                )
+            })
+            .collect(),
+        identityref_accept_lists: identityref_accept_lists
+            .iter()
+            .map(|&(leaf, accepted)| {
+                (
+                    leaf.to_string(),
                     accepted.iter().map(|s| s.to_string()).collect(),
                 )
             })
@@ -2081,70 +2116,138 @@ impl<'a> Builder<'a> {
         Ok(())
     }
 
-    fn restrict_identity_accept_lists(&mut self) -> R<()> {
+    fn identity_by_qualified_name(&self, name: &str, what: &str) -> R<Option<IdentityId>> {
+        let (module, local) = name.split_once(':').ok_or_else(|| {
+            err(format!(
+                "{what} {name:?} must be a qualified \"module:name\""
+            ))
+        })?;
+        Ok(self
+            .identity_by_module_name
+            .get(&(module.to_string(), local.to_string()))
+            .copied())
+    }
+
+    fn accepted_identities(
+        &self,
+        accepted_names: &[String],
+        bases: &[IdentityId],
+        owner: &str,
+    ) -> R<std::collections::HashSet<IdentityId>> {
+        let derived = derived_from_all(&self.identities, bases);
+        let mut accepted = std::collections::HashSet::new();
+        for accepted_name in accepted_names {
+            let id = self
+                .identity_by_qualified_name(accepted_name, "identity accept-list entry")?
+                .ok_or_else(|| {
+                    err(format!(
+                        "identity accept-list entry {accepted_name:?} (accepted by {owner}) does not name a real identity"
+                    ))
+                })?;
+            if !derived.contains(&id) {
+                return Err(err(format!(
+                    "identity accept-list entry {accepted_name:?} is not actually derived from {owner}"
+                )));
+            }
+            accepted.insert(id);
+        }
+        Ok(accepted)
+    }
+
+    fn accept_lists_by_base(
+        &self,
+    ) -> R<HashMap<IdentityId, std::collections::HashSet<IdentityId>>> {
+        let mut out = HashMap::new();
         for (base_name, accepted_names) in &self.identity_accept_lists {
-            let (base_module, base_local) = base_name.split_once(':').ok_or_else(|| {
-                err(format!(
-                    "identity accept-list base {base_name:?} must be a qualified \"module:name\""
-                ))
-            })?;
-            let Some(&base_id) = self
-                .identity_by_module_name
-                .get(&(base_module.to_string(), base_local.to_string()))
+            let Some(base_id) =
+                self.identity_by_qualified_name(base_name, "identity accept-list base")?
             else {
                 continue;
             };
-            let mut accepted_ids = Vec::new();
-            for accepted_name in accepted_names {
-                let (module, local) = accepted_name.split_once(':').ok_or_else(|| {
+            let accepted = self.accepted_identities(
+                accepted_names,
+                &[base_id],
+                &format!("base {base_name:?}"),
+            )?;
+            out.insert(base_id, accepted);
+        }
+        Ok(out)
+    }
+
+    fn accept_lists_by_leaf(&self) -> R<HashMap<NodeId, std::collections::HashSet<IdentityId>>> {
+        let mut out = HashMap::new();
+        for (leaf, accepted_names) in &self.identityref_accept_lists {
+            let node = resolve_schema_path(&self.nodes, &self.module_root, leaf)
+                .or_else(|| {
+                    resolve_yang_data_path(&self.nodes, self.yang_data.iter().map(|y| y.root), leaf)
+                })
+                .ok_or_else(|| {
                     err(format!(
-                        "identity accept-list entry {accepted_name:?} must be a qualified \"module:name\""
+                        "identityref accept-list leaf {leaf:?} does not name an implemented schema node"
                     ))
                 })?;
-                let id = *self
-                    .identity_by_module_name
-                    .get(&(module.to_string(), local.to_string()))
-                    .ok_or_else(|| {
-                        err(format!(
-                            "identity accept-list entry {accepted_name:?} (accepted by base {base_name:?}) does not name a real identity"
-                        ))
-                    })?;
-                accepted_ids.push(id);
+            let kw = &self.nodes[node].kw;
+            if kw != "leaf" && kw != "leaf-list" {
+                return Err(err(format!(
+                    "identityref accept-list leaf {leaf:?} names a {kw}, not a leaf or leaf-list"
+                )));
             }
-
-            let mut allowed: std::collections::HashSet<IdentityId> =
-                accepted_ids.iter().copied().collect();
-            for (accepted_id, accepted_name) in accepted_ids.iter().zip(accepted_names.iter()) {
-                let mut ancestors = std::collections::HashSet::new();
-                let mut stack = vec![*accepted_id];
-                while let Some(id) = stack.pop() {
-                    for &parent in &self.identities[id].base {
-                        if ancestors.insert(parent) {
-                            stack.push(parent);
-                        }
-                    }
-                }
-                if !ancestors.contains(&base_id) {
-                    return Err(err(format!(
-                        "identity accept-list entry {accepted_name:?} is not actually derived from base {base_name:?}"
-                    )));
-                }
-                ancestors.remove(&base_id);
-                allowed.extend(ancestors);
+            let ty = self.nodes[node]
+                .ty
+                .as_ref()
+                .expect("a leaf or leaf-list always has a type");
+            if ty.builtin != Builtin::Identityref {
+                return Err(err(format!(
+                    "identityref accept-list leaf {leaf:?} is not an identityref, so its values can't be narrowed per leaf"
+                )));
             }
-
-            self.identities[base_id]
-                .derived
-                .retain(|d| allowed.contains(d));
-            for &id in &allowed {
-                self.identities[id].derived.retain(|d| allowed.contains(d));
+            let accepted = self.accepted_identities(
+                accepted_names,
+                &ty.identity_bases,
+                &format!("leaf {leaf:?}'s base"),
+            )?;
+            if out.insert(node, accepted).is_some() {
+                return Err(err(format!(
+                    "identityref accept-list leaf {leaf:?} is listed more than once"
+                )));
             }
         }
-        Ok(())
+        Ok(out)
+    }
+
+    fn assign_identity_values(
+        &self,
+        ty: &mut TypeDescriptor,
+        by_leaf: Option<&std::collections::HashSet<IdentityId>>,
+        by_base: &HashMap<IdentityId, std::collections::HashSet<IdentityId>>,
+    ) {
+        if ty.builtin == Builtin::Identityref {
+            let values = match by_leaf {
+                Some(accepted) => accepted.clone(),
+                None => {
+                    let mut values: Option<std::collections::HashSet<IdentityId>> = None;
+                    for base in &ty.identity_bases {
+                        let for_base = match by_base.get(base) {
+                            Some(accepted) => accepted.clone(),
+                            None => transitive_derived_excluding_self(&self.identities, *base),
+                        };
+                        values = Some(match values {
+                            Some(v) => v.intersection(&for_base).copied().collect(),
+                            None => for_base,
+                        });
+                    }
+                    values.unwrap_or_default()
+                }
+            };
+            ty.identity_values = Some(values);
+        }
+        for member in &mut ty.union_members {
+            self.assign_identity_values(member, None, by_base);
+        }
     }
 
     fn compute_reachable_typedefs(&mut self) -> R<()> {
-        self.restrict_identity_accept_lists()?;
+        let by_base = self.accept_lists_by_base()?;
 
         for name in &self.implemented_yang_data {
             if !self.yang_data.iter().any(|y| y.qualified_name() == *name) {
@@ -2155,6 +2258,7 @@ impl<'a> Builder<'a> {
         }
         self.yang_data
             .retain(|y| self.implemented_yang_data.contains(&y.qualified_name()));
+        let by_leaf = self.accept_lists_by_leaf()?;
 
         let mut reachable_typedefs = std::collections::HashSet::new();
         let mut identity_base_seeds = std::collections::HashSet::new();
@@ -2176,21 +2280,40 @@ impl<'a> Builder<'a> {
         self.reachable_typedefs = reachable_typedefs;
         self.referenced_modules = referenced_modules;
 
-        let mut reachable_identities = std::collections::HashSet::new();
-        let mut stack: Vec<IdentityId> = identity_base_seeds.iter().copied().collect();
+        let mut live_nodes = Vec::new();
+        let mut stack: Vec<NodeId> = self
+            .module_root
+            .values()
+            .flat_map(|m| m.root_nodes.iter().copied())
+            .chain(self.yang_data.iter().map(|y| y.root))
+            .collect();
         while let Some(id) = stack.pop() {
-            if reachable_identities.insert(id) {
-                stack.extend(self.identities[id].derived.iter().copied());
+            live_nodes.push(id);
+            stack.extend(self.nodes[id].children.iter().copied());
+        }
+        let mut implemented_identities = std::collections::HashSet::new();
+        for id in live_nodes {
+            if let Some(mut ty) = self.nodes[id].ty.take() {
+                self.assign_identity_values(&mut ty, by_leaf.get(&id), &by_base);
+                collect_identity_values(&ty, &mut implemented_identities);
+                self.nodes[id].ty = Some(ty);
             }
         }
-        self.reachable_identities = reachable_identities;
 
-        let mut implemented_identities = std::collections::HashSet::new();
-        for &seed in &identity_base_seeds {
-            implemented_identities
-                .extend(transitive_derived_excluding_self(&self.identities, seed));
+        let mut reachable_identities = std::collections::HashSet::new();
+        let mut stack: Vec<IdentityId> = implemented_identities
+            .iter()
+            .chain(identity_base_seeds.iter())
+            .copied()
+            .collect();
+        while let Some(id) = stack.pop() {
+            if reachable_identities.insert(id) {
+                stack.extend(self.identities[id].base.iter().copied());
+            }
         }
+
         self.implemented_identities = implemented_identities;
+        self.reachable_identities = reachable_identities;
         Ok(())
     }
 
@@ -2305,6 +2428,7 @@ impl<'a> Builder<'a> {
             sid_index,
             reachable_typedefs: self.reachable_typedefs,
             reachable_identities: self.reachable_identities,
+            implemented_identities: self.implemented_identities,
         })
     }
 

@@ -10,7 +10,7 @@
 use cbor::Value as Cbor;
 use serde_json::Value as Json;
 
-use crate::schema::{Builtin, IdentityRef, Node, NodeRef, Schema, TypeDescriptor, TypeRef};
+use crate::schema::{Builtin, Node, NodeRef, Schema, TypeDescriptor, TypeRef};
 
 #[derive(Debug)]
 pub struct CodecError(pub String);
@@ -698,26 +698,13 @@ fn decode_bits(ty: &TypeDescriptor, value: &Cbor, in_union: bool) -> R<Json> {
 
 // -- identityref (RFC 9254 6.10 / RFC 9595) ------------------------------
 
-pub(crate) fn all_identity_bases(
-    ty: TypeRef<'_>,
-) -> Option<std::collections::HashSet<IdentityRef<'_>>> {
-    let mut iter = ty.identity_bases();
-    let first = iter.next()?;
-    let mut set = first.derived_from();
-    for b in iter {
-        let other = b.derived_from();
-        set.retain(|id| other.contains(id));
-    }
-    Some(set)
-}
-
 fn encode_identityref(ty: TypeRef<'_>, value: &Json, in_union: bool) -> R<Cbor> {
     let s = value.as_str().ok_or_else(|| {
         err(format!(
             "expected the name of one of this field's allowed values (as text), got {value}"
         ))
     })?;
-    let candidates = all_identity_bases(ty).ok_or_else(|| err("this field's schema doesn't declare any allowed values at all -- this looks like a catalog problem"))?;
+    let candidates = ty.identity_values().ok_or_else(|| err("this field's schema doesn't declare any allowed values at all -- this looks like a catalog problem"))?;
     let source_module = ty.source_module.as_deref().unwrap_or("");
 
     let found = candidates
@@ -774,7 +761,7 @@ fn pick_union_member_for_json<'a>(ty: TypeRef<'a>, value: &Json) -> Option<TypeR
         if resolved_type(m).builtin == Builtin::Identityref {
             if let Json::String(s) = value {
                 let mt = resolved_type(m);
-                if let Some(candidates) = all_identity_bases(mt) {
+                if let Some(candidates) = mt.identity_values() {
                     let source_module = mt.source_module.as_deref().unwrap_or("");
                     let matches = candidates
                         .into_iter()
@@ -1879,7 +1866,7 @@ mod tests {
     // exercises (see yang/tests/fixtures.rs).
 
     fn empty_schema() -> Schema {
-        crate::schema::build(&[], &[], &[], &[]).expect("empty schema builds")
+        crate::schema::build(&[], &[], &[], &[], &[]).expect("empty schema builds")
     }
 
     #[test]
@@ -2187,7 +2174,7 @@ mod tests {
                 {"namespace": "data", "identifier": "/test:box/setting", "sid": 1009}
             ]
         }"#;
-        crate::schema::build(&[yang.to_string()], &[sid.to_string()], &[], &[])
+        crate::schema::build(&[yang.to_string()], &[sid.to_string()], &[], &[], &[])
             .expect("validation test schema builds")
     }
 
@@ -2550,5 +2537,87 @@ mod tests {
             true
         )
         .is_ok());
+    }
+
+    const ROUTING_LIKE: &str = r#"
+        module rt {
+          namespace "urn:rt";
+          prefix rt;
+
+          identity protocol;
+          identity routing-protocol {
+            base protocol;
+          }
+          identity direct {
+            base routing-protocol;
+          }
+          identity static {
+            base routing-protocol;
+          }
+          identity snooping {
+            base protocol;
+          }
+
+          leaf protocol-type {
+            type identityref {
+              base protocol;
+            }
+          }
+          leaf source-protocol {
+            type identityref {
+              base routing-protocol;
+            }
+          }
+        }
+    "#;
+
+    #[test]
+    fn an_identityref_rejects_an_intermediate_identity_its_accept_list_leaves_out() {
+        // The codec's set of encodable values is the base's value set, so
+        // an intermediate kept only as a base must be rejected, while an
+        // accepted identity still encodes and decodes.
+        let accepted: &[&str] = &["rt:static", "rt:snooping"];
+        let sid = r#"{
+            "module-name": "rt",
+            "module-revision": "2026-01-01",
+            "items": [
+                {"namespace": "module", "identifier": "rt", "sid": 1000},
+                {"namespace": "data", "identifier": "/rt:protocol-type", "sid": 1001},
+                {"namespace": "data", "identifier": "/rt:source-protocol", "sid": 1002},
+                {"namespace": "identity", "identifier": "protocol", "sid": 1010},
+                {"namespace": "identity", "identifier": "routing-protocol", "sid": 1011},
+                {"namespace": "identity", "identifier": "direct", "sid": 1012},
+                {"namespace": "identity", "identifier": "static", "sid": 1013},
+                {"namespace": "identity", "identifier": "snooping", "sid": 1014}
+            ]
+        }"#;
+        let schema = crate::schema::build(
+            &[ROUTING_LIKE.to_string()],
+            &[sid.to_string()],
+            &[],
+            &[("rt:protocol", accepted)],
+            &[],
+        )
+        .unwrap();
+        let ty = schema
+            .node_by_schema_path("/rt:protocol-type")
+            .unwrap()
+            .ty()
+            .unwrap();
+        let encoded =
+            type_to_cbor(&schema, ty, &serde_json::json!("rt:static"), false, false).unwrap();
+        assert_eq!(
+            type_to_json(&schema, ty, &encoded, false).unwrap(),
+            serde_json::json!("rt:static")
+        );
+        assert!(type_to_cbor(
+            &schema,
+            ty,
+            &serde_json::json!("rt:routing-protocol"),
+            false,
+            false
+        )
+        .is_err());
+        assert!(type_to_cbor(&schema, ty, &serde_json::json!("rt:direct"), false, false).is_err());
     }
 }
