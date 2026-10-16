@@ -307,6 +307,69 @@ fn the_coreconf_error_template_names_its_root_in_schema_nodes_but_no_module_root
 }
 
 #[test]
+fn every_modules_deviations_match_the_hand_derived_deviation_statements() {
+    // Derived by hand from every `deviation` statement in this catalog's
+    // own .yang files: each target node's defining module, resolved
+    // from the prefix of the path's last segment, not the first --
+    // e.g. ietf-interfaces-dev's
+    // "/if:interfaces/if:interface/ip:ipv4/ip:neighbor" deviates
+    // ietf-ip, not ietf-interfaces. Every implemented module not
+    // listed here has no deviations.
+    const EXPECTED: &[(&str, &[&str])] = &[
+        ("ieee1588-ptp", &["ieee1588-ptp-dev"]),
+        ("ieee802-dot1ab-lldp", &["ieee802-dot1ab-lldp-dev"]),
+        ("ieee802-dot1as-ptp", &["ieee1588-ptp-dev"]),
+        (
+            "ieee802-dot1cb-stream-identification",
+            &[
+                "ieee802-dot1cb-stream-identification-dev",
+                "ietf-interfaces-dev",
+            ],
+        ),
+        (
+            "ieee802-dot1q-bridge",
+            &["ieee802-dot1q-bridge-dev", "ietf-interfaces-dev"],
+        ),
+        ("ieee802-dot1q-preemption-bridge", &["ietf-interfaces-dev"]),
+        ("ieee802-dot1q-psfp-bridge", &["ieee802-dot1q-bridge-dev"]),
+        ("ieee802-dot1q-sched-bridge", &["ietf-interfaces-dev"]),
+        ("ieee802-ethernet-interface", &["ietf-interfaces-dev"]),
+        (
+            "ietf-constrained-yang-library",
+            &["ietf-constrained-yang-library-dev"],
+        ),
+        ("ietf-hardware", &["ietf-hardware-dev"]),
+        ("ietf-igmp-mld-snooping", &["ietf-igmp-mld-snooping-dev"]),
+        ("ietf-interfaces", &["ietf-interfaces-dev"]),
+        ("ietf-ip", &["ietf-interfaces-dev"]),
+        ("ietf-ipv4-unicast-routing", &["ietf-routing-dev"]),
+        ("ietf-netconf-acm", &["ietf-netconf-acm-dev"]),
+        ("ietf-routing", &["ietf-routing-dev"]),
+        ("ietf-system", &["ietf-system-dev"]),
+        ("mchp-velocitysp-port", &["ietf-interfaces-dev"]),
+    ];
+    let d = doc();
+    for (name, module) in d["modules"].as_object().unwrap() {
+        let expected = EXPECTED
+            .iter()
+            .find(|(m, _)| m == name)
+            .map(|(_, devs)| *devs)
+            .unwrap_or(&[]);
+        assert_eq!(
+            module["deviations"],
+            serde_json::json!(expected),
+            "modules[{name:?}].deviations"
+        );
+    }
+    for (name, _) in EXPECTED {
+        assert!(
+            d["modules"].get(*name).is_some(),
+            "{name} must be implemented"
+        );
+    }
+}
+
+#[test]
 fn every_module_lists_no_yang_data_except_ietf_coreconf() {
     // ietf-restconf also declares yang-data templates (yang-errors,
     // yang-api), but this device isn't a RESTCONF server, so they are

@@ -429,7 +429,7 @@
 
     "module": {
       "type": "object",
-      "required": ["namespace", "sid", "root-nodes", "data-root-nodes", "typedefs", "identities", "yang-data"],
+      "required": ["namespace", "sid", "root-nodes", "data-root-nodes", "typedefs", "identities", "yang-data", "deviations"],
       "properties": {
         "namespace": {
           "type": "string",
@@ -472,6 +472,12 @@
           "type": "array",
           "items": { "$ref": "#/$defs/qualified-name" },
           "description": "Yang-data templates this module declares."
+        },
+
+        "deviations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/module-name" },
+          "description": "Every module that declares a deviation on a node in this module. Never includes itself."
         }
       }
     },

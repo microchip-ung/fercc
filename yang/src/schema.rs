@@ -294,6 +294,7 @@ pub struct Module {
     pub revision: Option<String>,
     pub sid: Option<i64>,
     root_nodes: Vec<NodeId>,
+    pub deviated_by: std::collections::HashSet<String>,
 }
 
 pub struct YangData {
@@ -845,7 +846,6 @@ struct Builder<'a> {
     reachable_identities: std::collections::HashSet<IdentityId>,
     implemented_identities: std::collections::HashSet<IdentityId>,
     referenced_modules: std::collections::HashSet<String>,
-    deviated_modules: std::collections::HashSet<String>,
 }
 
 /// Parse `.yang` sources and build the full schema, including flattening
@@ -919,7 +919,6 @@ pub fn build(
         reachable_identities: Default::default(),
         implemented_identities: Default::default(),
         referenced_modules: Default::default(),
-        deviated_modules: Default::default(),
     };
 
     let module_names: Vec<String> = parsed.iter().map(|m| m.arg_str().to_string()).collect();
@@ -1047,6 +1046,7 @@ impl<'a> Builder<'a> {
             revision,
             sid: None,
             root_nodes: Vec::new(),
+            deviated_by: Default::default(),
         };
         self.module_root.insert(name.to_string(), module);
 
@@ -1912,8 +1912,14 @@ impl<'a> Builder<'a> {
             let module = m.arg_str();
             for dev in m.subs_of("deviation") {
                 let target = self.resolve_absolute_schema_node_id(module, dev.arg_str())?;
-                self.deviated_modules
-                    .insert(self.nodes[target].owner_module.clone());
+                let target_module_name = self.nodes[target].owner_module.clone();
+                if target_module_name != module {
+                    let target_module = self
+                        .module_root
+                        .get_mut(&target_module_name)
+                        .expect("module exists if its target node does");
+                    target_module.deviated_by.insert(module.to_string());
+                }
                 for d in dev.subs_of("deviate") {
                     match d.arg_str() {
                         "not-supported" => self.remove_node(target),
@@ -2209,7 +2215,7 @@ impl<'a> Builder<'a> {
                         .is_ok()
                 });
                 let has_deviation = raw.sub("deviation").is_some();
-                let is_deviated = self.deviated_modules.contains(name.as_str());
+                let is_deviated = !module.deviated_by.is_empty();
                 let has_yang_data = yang_data_owners.contains(name.as_str());
                 let has_implemented_identity = implemented_identity_owners.contains(name.as_str());
                 has_root_nodes

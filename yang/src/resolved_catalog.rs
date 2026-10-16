@@ -421,6 +421,12 @@ fn module_entry(module: ModuleRef<'_>, schema: &Schema) -> R<Json> {
             .map(|y| s(qualified_name(&y.module, &y.name)))
             .collect()),
     );
+    m.insert(
+        "deviations".to_string(),
+        arr(sorted_strs(
+            module.deviated_by.iter().map(|d| s(d.clone())).collect(),
+        )),
+    );
     Ok(Json::Object(m))
 }
 
@@ -744,6 +750,22 @@ fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
                     "{from}.identities: {key:?} not found in identities"
                 ));
             }
+        }
+        let deviations = module["deviations"].as_array().unwrap();
+        for item in deviations {
+            let name = item.as_str().unwrap();
+            if !modules.contains_key(name) {
+                errors.push(format!("{from}.deviations: {name:?} not found in modules"));
+            }
+            if name == mod_name {
+                errors.push(format!("{from}.deviations lists the module itself"));
+            }
+        }
+        let deviation_names: Vec<&str> = deviations.iter().map(|d| d.as_str().unwrap()).collect();
+        if !deviation_names.windows(2).all(|w| w[0] < w[1]) {
+            errors.push(format!(
+                "{from}.deviations is not sorted alphabetically without duplicates"
+            ));
         }
         for item in module["yang-data"].as_array().unwrap() {
             let key = item.as_str().unwrap();
@@ -1281,5 +1303,131 @@ mod tests {
         let e = verify_error(&doc);
         assert!(e.contains("but its module is \"bar\""), "{e}");
         assert!(e.contains("is not defined in \"bar\""), "{e}");
+    }
+
+    fn deviation_doc() -> Map<String, Json> {
+        let host = r#"
+            module host {
+              namespace "urn:host";
+              prefix h;
+
+              leaf a {
+                type string;
+              }
+              leaf b {
+                type string;
+              }
+            }
+        "#;
+        let zed_dev = r#"
+            module zed-dev {
+              namespace "urn:zed-dev";
+              prefix z;
+
+              import host {
+                prefix h;
+              }
+
+              deviation "/h:a" {
+                deviate not-supported;
+              }
+            }
+        "#;
+        let abc_dev = r#"
+            module abc-dev {
+              namespace "urn:abc-dev";
+              prefix ab;
+
+              import host {
+                prefix h;
+              }
+
+              deviation "/h:b" {
+                deviate not-supported;
+              }
+            }
+        "#;
+        let sid_src = r#"{
+            "module-name": "host",
+            "module-revision": "2026-01-01",
+            "items": [
+                {"namespace": "module", "identifier": "host", "sid": 1000},
+                {"namespace": "module", "identifier": "zed-dev", "sid": 1100},
+                {"namespace": "module", "identifier": "abc-dev", "sid": 1200},
+                {"namespace": "data", "identifier": "/host:a", "sid": 1001},
+                {"namespace": "data", "identifier": "/host:b", "sid": 1002}
+            ]
+        }"#;
+        let schema = crate::schema::build(
+            &[host.to_string(), zed_dev.to_string(), abc_dev.to_string()],
+            &[sid_src.to_string()],
+            &[],
+            &[],
+        )
+        .unwrap();
+        let Json::Object(doc) = to_resolved_catalog(&schema, "deadbeef").unwrap() else {
+            unreachable!()
+        };
+        doc
+    }
+
+    #[test]
+    fn a_modules_deviations_list_every_deviating_module_sorted() {
+        // zed-dev is declared before abc-dev, so this also checks the
+        // list is sorted rather than in declaration order.
+        let doc = deviation_doc();
+        assert_eq!(
+            doc["modules"]["host"]["deviations"],
+            serde_json::json!(["abc-dev", "zed-dev"])
+        );
+        assert_eq!(
+            doc["modules"]["abc-dev"]["deviations"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            doc["modules"]["zed-dev"]["deviations"],
+            serde_json::json!([])
+        );
+    }
+
+    #[test]
+    fn verify_rejects_a_deviation_that_is_not_an_implemented_module() {
+        let mut doc = deviation_doc();
+        doc["modules"]["host"]["deviations"] = serde_json::json!(["abc-dev", "nowhere"]);
+        let e = verify_error(&doc);
+        assert!(
+            e.contains("modules[\"host\"].deviations: \"nowhere\" not found in modules"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_a_module_listed_as_deviating_itself() {
+        let mut doc = deviation_doc();
+        doc["modules"]["host"]["deviations"] = serde_json::json!(["abc-dev", "host", "zed-dev"]);
+        let e = verify_error(&doc);
+        assert!(
+            e.contains("modules[\"host\"].deviations lists the module itself"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn verify_rejects_unsorted_or_duplicate_deviations() {
+        let mut doc = deviation_doc();
+        doc["modules"]["host"]["deviations"] = serde_json::json!(["zed-dev", "abc-dev"]);
+        let e = verify_error(&doc);
+        assert!(
+            e.contains("is not sorted alphabetically without duplicates"),
+            "{e}"
+        );
+
+        let mut doc = deviation_doc();
+        doc["modules"]["host"]["deviations"] = serde_json::json!(["abc-dev", "abc-dev"]);
+        let e = verify_error(&doc);
+        assert!(
+            e.contains("is not sorted alphabetically without duplicates"),
+            "{e}"
+        );
     }
 }

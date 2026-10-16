@@ -1993,6 +1993,172 @@ fn deviating_an_augmented_node_keeps_the_augmenting_module_implemented() {
     assert!(schema.node_by_schema_path("/host:top/aug:extra").is_none());
 }
 
+fn deviated_by_of(schema: &Schema, module: &str) -> Vec<String> {
+    let mut names: Vec<String> = schema
+        .module_by_name(module)
+        .unwrap()
+        .deviated_by
+        .iter()
+        .cloned()
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn a_deviation_is_recorded_on_the_module_defining_the_deviated_node() {
+    // "dev"'s deviation path starts in "host" but its target leaf is
+    // defined by "aug"'s augment, so "aug" is the module "dev"
+    // deviates -- "host" isn't deviated at all.
+    let host = r#"
+        module host {
+          namespace "urn:host";
+          prefix h;
+
+          container top {
+            leaf own {
+              type string;
+            }
+          }
+        }
+    "#;
+    let aug = r#"
+        module aug {
+          namespace "urn:aug";
+          prefix a;
+
+          import host {
+            prefix h;
+          }
+
+          augment "/h:top" {
+            leaf extra {
+              type string;
+            }
+            leaf other {
+              type string;
+            }
+          }
+        }
+    "#;
+    let dev = r#"
+        module dev {
+          namespace "urn:dev";
+          prefix d;
+
+          import host {
+            prefix h;
+          }
+          import aug {
+            prefix a;
+          }
+
+          deviation "/h:top/a:extra" {
+            deviate not-supported;
+          }
+        }
+    "#;
+    let schema = build(
+        &[host.to_string(), aug.to_string(), dev.to_string()],
+        &[],
+        &[],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(deviated_by_of(&schema, "aug"), vec!["dev"]);
+    assert!(deviated_by_of(&schema, "host").is_empty());
+    assert!(deviated_by_of(&schema, "dev").is_empty());
+}
+
+#[test]
+fn a_module_deviated_by_two_modules_lists_both_once() {
+    // "dev-a" deviates two of "host"'s nodes, so it must be listed
+    // once, not once per deviation statement.
+    let host = r#"
+        module host {
+          namespace "urn:host";
+          prefix h;
+
+          leaf a {
+            type string;
+          }
+          leaf b {
+            type string;
+          }
+          leaf c {
+            type string;
+          }
+        }
+    "#;
+    let dev_a = r#"
+        module dev-a {
+          namespace "urn:dev-a";
+          prefix da;
+
+          import host {
+            prefix h;
+          }
+
+          deviation "/h:a" {
+            deviate not-supported;
+          }
+          deviation "/h:b" {
+            deviate not-supported;
+          }
+        }
+    "#;
+    let dev_b = r#"
+        module dev-b {
+          namespace "urn:dev-b";
+          prefix db;
+
+          import host {
+            prefix h;
+          }
+
+          deviation "/h:c" {
+            deviate not-supported;
+          }
+        }
+    "#;
+    let schema = build(
+        &[host.to_string(), dev_b.to_string(), dev_a.to_string()],
+        &[],
+        &[],
+        &[],
+    )
+    .unwrap();
+    assert_eq!(deviated_by_of(&schema, "host"), vec!["dev-a", "dev-b"]);
+}
+
+#[test]
+fn a_module_deviating_its_own_node_is_not_listed_as_deviating_itself() {
+    // ietf-constrained-yang-library's module/deviation "MUST NOT
+    // (directly or indirectly) refer to the module being deviated",
+    // so the deviation is applied but not reported against the
+    // module itself.
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          leaf keep {
+            type string;
+          }
+          leaf gone {
+            type string;
+          }
+
+          deviation /f:gone {
+            deviate not-supported;
+          }
+        }
+    "#;
+    let schema = build(&[src.to_string()], &[], &[], &[]).unwrap();
+    assert!(schema.node_by_schema_path("/foo:gone").is_none());
+    assert!(deviated_by_of(&schema, "foo").is_empty());
+}
+
 #[test]
 fn an_augmenting_modules_own_live_nodes_make_it_implemented_even_with_empty_root_nodes() {
     // RFC 7950 4.2.8/7.17: a node placed into another module's tree
