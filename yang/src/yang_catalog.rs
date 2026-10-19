@@ -9,8 +9,7 @@ use crate::schema::{
     Status, TypeRef, TypedefRef,
 };
 
-pub const SCHEMA_VERSION: &str = "1.0.0";
-const SCHEMA_URL: &str = "urn:fercc:resolved-yang-catalog-schema:1.0.0";
+const SCHEMA_URL: &str = "urn:fercc:yang-catalog-schema:1.0.0";
 
 type R<T> = Result<T, String>;
 
@@ -150,7 +149,7 @@ fn type_descriptor(ty: TypeRef<'_>) -> R<Json> {
     m.insert("builtin".to_string(), s(builtin_str(ty.builtin)));
     opt_insert(
         &mut m,
-        "derived-from",
+        "base-type",
         ty.base()
             .map(|base| s(typedef_key(&base.scope, &base.name))),
     );
@@ -336,7 +335,7 @@ fn schema_node_entry(node: NodeRef<'_>) -> R<Json> {
         "leaf" | "leaf-list" | "anydata" | "anyxml"
     ) {
         m.insert(
-            "children".to_string(),
+            "schema-children".to_string(),
             arr(node.children().map(|c| s(c.path())).collect()),
         );
         m.insert(
@@ -421,7 +420,7 @@ fn module_entry(module: ModuleRef<'_>, schema: &Schema) -> R<Json> {
     );
     opt_insert(&mut m, "revision", module.revision.clone().map(s));
     m.insert(
-        "root-nodes".to_string(),
+        "schema-root-nodes".to_string(),
         arr(module.root_nodes().map(|n| s(n.path())).collect()),
     );
     m.insert(
@@ -519,7 +518,7 @@ fn index_node_sids(node: NodeRef<'_>, out: &mut Map<String, Json>) {
     }
 }
 
-pub fn to_resolved_catalog(schema: &Schema, yang_catalog: &str) -> R<Json> {
+pub fn to_yang_catalog(schema: &Schema) -> R<Json> {
     let mut modules = Map::new();
     for module in schema.modules() {
         modules.insert(module.name.clone(), module_entry(module, schema)?);
@@ -612,8 +611,6 @@ pub fn to_resolved_catalog(schema: &Schema, yang_catalog: &str) -> R<Json> {
 
     let mut doc = Map::new();
     doc.insert("$schema".to_string(), s(SCHEMA_URL));
-    doc.insert("schema-version".to_string(), s(SCHEMA_VERSION));
-    doc.insert("yang-catalog".to_string(), s(yang_catalog));
     doc.insert("modules".to_string(), Json::Object(sorted_map(modules)));
     doc.insert(
         "import-only-modules".to_string(),
@@ -633,17 +630,17 @@ pub fn to_resolved_catalog(schema: &Schema, yang_catalog: &str) -> R<Json> {
         "sid-index".to_string(),
         Json::Object(sorted_map_numeric(sid_index)),
     );
-    verify_resolved_catalog(&doc)?;
+    verify_yang_catalog(&doc)?;
     Ok(Json::Object(doc))
 }
 
-fn collect_derived_from(ty: &Json, out: &mut std::collections::HashSet<String>) {
-    if let Some(key) = ty.get("derived-from").and_then(Json::as_str) {
+fn collect_base_types(ty: &Json, out: &mut std::collections::HashSet<String>) {
+    if let Some(key) = ty.get("base-type").and_then(Json::as_str) {
         out.insert(key.to_string());
     }
     if let Some(members) = ty.get("type").and_then(Json::as_array) {
         for member in members {
-            collect_derived_from(member, out);
+            collect_base_types(member, out);
         }
     }
 }
@@ -745,10 +742,10 @@ fn check_type_descriptor(
     from: &str,
     errors: &mut Vec<String>,
 ) {
-    if let Some(key) = ty.get("derived-from").and_then(Json::as_str) {
+    if let Some(key) = ty.get("base-type").and_then(Json::as_str) {
         if !typedefs.contains_key(key) {
             errors.push(format!(
-                "{from}.type.derived-from: {key:?} not found in typedefs"
+                "{from}.type.base-type: {key:?} not found in typedefs"
             ));
         }
     }
@@ -766,7 +763,7 @@ fn check_type_descriptor(
     }
 }
 
-fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
+fn verify_yang_catalog(doc: &Map<String, Json>) -> R<()> {
     let mut errors = Vec::new();
 
     let schema_nodes = doc["schema-nodes"].as_object().unwrap();
@@ -785,27 +782,27 @@ fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
                     "{from}.parent: {parent:?} not found in schema-nodes"
                 ));
             } else if !schema_nodes[parent]
-                .get("children")
+                .get("schema-children")
                 .and_then(Json::as_array)
                 .is_some_and(|children| children.iter().any(|c| c.as_str() == Some(path.as_str())))
             {
                 errors.push(format!(
-                    "{from}.parent is {parent:?}, but {parent:?}.children does not list {path:?} back"
+                    "{from}.parent is {parent:?}, but {parent:?}.schema-children does not list {path:?} back"
                 ));
             }
         }
-        for field in ["children", "data-children", "keys"] {
+        for field in ["schema-children", "data-children", "keys"] {
             if let Some(items) = node.get(field).and_then(Json::as_array) {
                 for item in items {
                     let p = item.as_str().unwrap();
                     if !schema_nodes.contains_key(p) {
                         errors.push(format!("{from}.{field}: {p:?} not found in schema-nodes"));
-                    } else if field == "children"
+                    } else if field == "schema-children"
                         && schema_nodes[p].get("parent").and_then(Json::as_str)
                             != Some(path.as_str())
                     {
                         errors.push(format!(
-                            "{from}.children lists {p:?}, but {p:?}.parent is not {path:?}"
+                            "{from}.schema-children lists {p:?}, but {p:?}.parent is not {path:?}"
                         ));
                     }
                 }
@@ -834,7 +831,7 @@ fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
 
     for (mod_name, module) in modules {
         let from = format!("modules[{mod_name:?}]");
-        for field in ["root-nodes", "data-root-nodes"] {
+        for field in ["schema-root-nodes", "data-root-nodes"] {
             for item in module[field].as_array().unwrap() {
                 let p = item.as_str().unwrap();
                 if !schema_nodes.contains_key(p) {
@@ -1091,7 +1088,10 @@ fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
         .collect();
     while let Some(path) = stack.pop() {
         if visited.insert(path.to_string()) {
-            if let Some(children) = schema_nodes[path].get("children").and_then(Json::as_array) {
+            if let Some(children) = schema_nodes[path]
+                .get("schema-children")
+                .and_then(Json::as_array)
+            {
                 for child in children {
                     stack.push(child.as_str().unwrap());
                 }
@@ -1109,7 +1109,7 @@ fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
     let mut root_listings: std::collections::HashMap<&str, usize> =
         std::collections::HashMap::new();
     for module in modules.values() {
-        for item in module["root-nodes"].as_array().unwrap() {
+        for item in module["schema-root-nodes"].as_array().unwrap() {
             *root_listings.entry(item.as_str().unwrap()).or_default() += 1;
         }
     }
@@ -1123,31 +1123,31 @@ fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
         let has_parent = node.get("parent").is_some();
         if has_parent && listings != 0 {
             errors.push(format!(
-                "schema-nodes[{path:?}] carries a parent but is listed as a module root-node or a yang-data root"
+                "schema-nodes[{path:?}] carries a parent but is listed as a module schema-root-node or a yang-data root"
             ));
         }
         if !has_parent && listings != 1 {
             errors.push(format!(
-                "schema-nodes[{path:?}] carries no parent, so must be listed exactly once as a module root-node or a yang-data root, but is listed {listings} times"
+                "schema-nodes[{path:?}] carries no parent, so must be listed exactly once as a module schema-root-node or a yang-data root, but is listed {listings} times"
             ));
         }
     }
 
-    let mut derived_from_refs = std::collections::HashSet::new();
+    let mut base_type_refs = std::collections::HashSet::new();
     let mut identityref_base_refs = std::collections::HashSet::new();
     for node in schema_nodes.values() {
         if let Some(ty) = node.get("type") {
-            collect_derived_from(ty, &mut derived_from_refs);
+            collect_base_types(ty, &mut base_type_refs);
             collect_identityref_bases(ty, &mut identityref_base_refs);
         }
     }
     for t in typedefs.values() {
-        collect_derived_from(&t["type"], &mut derived_from_refs);
+        collect_base_types(&t["type"], &mut base_type_refs);
     }
     for key in typedefs.keys() {
-        if !derived_from_refs.contains(key) {
+        if !base_type_refs.contains(key) {
             errors.push(format!(
-                "typedefs[{key:?}] is never named by any derived-from in the document"
+                "typedefs[{key:?}] is never named by any base-type in the document"
             ));
         }
     }
@@ -1207,8 +1207,10 @@ fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
         ));
     }
     for (key, module) in import_only_modules {
-        if module.get("root-nodes").is_some() {
-            errors.push(format!("import-only-modules[{key:?}] has root-nodes"));
+        if module.get("schema-root-nodes").is_some() {
+            errors.push(format!(
+                "import-only-modules[{key:?}] has schema-root-nodes"
+            ));
         }
         if module.get("data-root-nodes").is_some() {
             errors.push(format!("import-only-modules[{key:?}] has data-root-nodes"));
@@ -1239,9 +1241,9 @@ fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
             node.get("keyword").and_then(Json::as_str),
             Some("leaf" | "leaf-list" | "anydata" | "anyxml")
         ) {
-            if node.get("children").is_some() {
+            if node.get("schema-children").is_some() {
                 errors.push(format!(
-                    "schema-nodes[{path:?}] is a leaf/leaf-list/anydata/anyxml but carries a \"children\" field"
+                    "schema-nodes[{path:?}] is a leaf/leaf-list/anydata/anyxml but carries a \"schema-children\" field"
                 ));
             }
             if node.get("data-children").is_some() {
@@ -1295,7 +1297,7 @@ fn verify_resolved_catalog(doc: &Map<String, Json>) -> R<()> {
         Ok(())
     } else {
         Err(format!(
-            "resolved catalog has {} consistency error(s):\n{}",
+            "yang catalog has {} consistency error(s):\n{}",
             errors.len(),
             errors.join("\n")
         ))
@@ -1347,7 +1349,7 @@ mod tests {
         let schema =
             crate::schema::build(&[src.to_string()], &[sid_src.to_string()], &[], &[], &[])
                 .unwrap();
-        let doc = to_resolved_catalog(&schema, "deadbeef").unwrap();
+        let doc = to_yang_catalog(&schema).unwrap();
 
         assert!(doc["typedefs"].get("foo:percent").is_some());
         assert!(doc["typedefs"].get("/foo:bar inner-percent").is_some());
@@ -1359,7 +1361,7 @@ mod tests {
         let schema_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("schema")
-            .join("resolved-yang-catalog-schema-v1.0.0.json");
+            .join("yang-catalog-schema-v1.0.0.json");
         let schema_text = std::fs::read_to_string(schema_path).unwrap();
         let json_schema: Json = serde_json::from_str(&schema_text).unwrap();
         let validator = jsonschema::validator_for(&json_schema).unwrap();
@@ -1402,14 +1404,14 @@ mod tests {
             &[],
         )
         .unwrap();
-        let Json::Object(doc) = to_resolved_catalog(&schema, "deadbeef").unwrap() else {
+        let Json::Object(doc) = to_yang_catalog(&schema).unwrap() else {
             unreachable!()
         };
         doc
     }
 
     fn verify_error(doc: &Map<String, Json>) -> String {
-        verify_resolved_catalog(doc).expect_err("the corrupted document must fail verification")
+        verify_yang_catalog(doc).expect_err("the corrupted document must fail verification")
     }
 
     #[test]
@@ -1429,7 +1431,10 @@ mod tests {
             doc["modules"]["foo"]["yang-data"],
             serde_json::json!(["foo:error-template"])
         );
-        assert_eq!(doc["modules"]["foo"]["root-nodes"], serde_json::json!([]));
+        assert_eq!(
+            doc["modules"]["foo"]["schema-root-nodes"],
+            serde_json::json!([])
+        );
         assert!(doc["schema-nodes"]["/foo:error"].get("parent").is_none());
         assert_eq!(
             doc["schema-nodes"]["/foo:error/message"]["parent"],
@@ -1452,7 +1457,7 @@ mod tests {
     #[test]
     fn verify_rejects_a_parentless_node_that_is_both_a_module_root_and_a_yang_data_root() {
         let mut doc = yang_data_doc();
-        doc["modules"]["foo"]["root-nodes"] = serde_json::json!(["/foo:error"]);
+        doc["modules"]["foo"]["schema-root-nodes"] = serde_json::json!(["/foo:error"]);
         doc["modules"]["foo"]["data-root-nodes"] = serde_json::json!(["/foo:error"]);
         let e = verify_error(&doc);
         assert!(e.contains("listed 2 times"), "{e}");
@@ -1584,7 +1589,7 @@ mod tests {
             &[],
         )
         .unwrap();
-        let Json::Object(doc) = to_resolved_catalog(&schema, "deadbeef").unwrap() else {
+        let Json::Object(doc) = to_yang_catalog(&schema).unwrap() else {
             unreachable!()
         };
         doc
@@ -1713,7 +1718,7 @@ mod tests {
             &[],
         )
         .unwrap();
-        let Json::Object(doc) = to_resolved_catalog(&schema, "deadbeef").unwrap() else {
+        let Json::Object(doc) = to_yang_catalog(&schema).unwrap() else {
             unreachable!()
         };
         doc
@@ -1842,7 +1847,7 @@ mod tests {
         let schema =
             crate::schema::build(&[src.to_string()], &[sid_src.to_string()], &[], &[], &[])
                 .unwrap();
-        let doc = to_resolved_catalog(&schema, "deadbeef").unwrap();
+        let doc = to_yang_catalog(&schema).unwrap();
         let mut keys: Vec<&String> = doc["identities"].as_object().unwrap().keys().collect();
         keys.sort();
         assert_eq!(keys, vec!["foo:animal", "foo:dog", "foo:pet"]);
@@ -1888,7 +1893,7 @@ mod tests {
         let schema =
             crate::schema::build(&[src.to_string()], &[sid_src.to_string()], &[], &[], &[])
                 .unwrap();
-        let doc = to_resolved_catalog(&schema, "deadbeef").unwrap();
+        let doc = to_yang_catalog(&schema).unwrap();
         let mut keys: Vec<&String> = doc["identities"].as_object().unwrap().keys().collect();
         keys.sort();
         assert_eq!(keys, vec!["foo:animal", "foo:pet"]);
@@ -2008,7 +2013,7 @@ mod tests {
         let schema =
             crate::schema::build(&[src.to_string()], &[sid_src.to_string()], &[], &[], &[])
                 .unwrap();
-        let Json::Object(mut doc) = to_resolved_catalog(&schema, "deadbeef").unwrap() else {
+        let Json::Object(mut doc) = to_yang_catalog(&schema).unwrap() else {
             unreachable!()
         };
         assert!(doc["typedefs"]["foo:animal-ref"]["type"]
@@ -2074,7 +2079,7 @@ mod tests {
         let schema =
             crate::schema::build(&[src.to_string()], &[sid_src.to_string()], &[], &[], &[])
                 .unwrap();
-        let doc = to_resolved_catalog(&schema, "deadbeef").unwrap();
+        let doc = to_yang_catalog(&schema).unwrap();
         let typedef = &doc["typedefs"]["foo:seconds"];
         assert_eq!(typedef["default"], "5");
         assert_eq!(typedef["units"], "seconds");
@@ -2138,7 +2143,7 @@ mod tests {
         let schema =
             crate::schema::build(&[src.to_string()], &[sid_src.to_string()], &[], &[], &[])
                 .unwrap();
-        let doc = to_resolved_catalog(&schema, "deadbeef").unwrap();
+        let doc = to_yang_catalog(&schema).unwrap();
         let nodes = &doc["schema-nodes"];
         assert_eq!(
             nodes["/foo:level"]["type"]["range"],

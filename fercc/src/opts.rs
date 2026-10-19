@@ -142,9 +142,10 @@ pub enum Command {
     Conv(ConvArgs),
     /// Generate a JSON Schema from a YANG schema.
     Schema(SchemaArgs),
-    /// Resolve a yang catalog into one JSON document (see
-    /// schema/resolved-yang-catalog-schema-v1.0.0.json).
-    Dump(DumpArgs),
+    /// Generate the yang catalog (see
+    /// schema/yang-catalog-schema-v1.0.0.json) from YANG modules, their
+    /// SID files and a ui-tailoring.yaml.
+    Catalog(CatalogArgs),
 }
 
 #[derive(Args, Debug)]
@@ -184,24 +185,14 @@ pub struct SchemaArgs {
 }
 
 #[derive(Args, Debug)]
-pub struct DumpArgs {
-    /// The yang catalog's checksum (lowercase hex) -- downloaded via the
-    /// same checksum-addressed cache the main device flow uses
-    /// (~/.velocitydrive-yang-cache/), or read straight from that cache
-    /// if already present.
-    pub checksum: String,
-
-    /// Where to write the resolved yang catalog JSON document.
+pub struct CatalogArgs {
+    /// Where to write the yang catalog (default: STDOUT).
     #[arg(short = 'o', long = "output")]
-    pub output: String,
+    pub output: Option<String>,
 
-    /// Replace the built-in `curl`-based catalog download with this
-    /// command instead. Called as `<command> <checksum>`; must write
-    /// the catalog's .tar.gz bytes to stdout and exit 0.
-    #[arg(long = "catalog-fetcher", value_name = "COMMAND")]
-    pub catalog_fetcher: Option<String>,
-
-    /// Be more verbose.
-    #[arg(short = 'v', long = "verbose")]
-    pub verbose: bool,
+    /// The `.yang` files, their matching `.sid` files, and optionally a
+    /// `ui-tailoring.yaml`. Order doesn't matter -- each argument is
+    /// sorted by its extension, or by its name for `ui-tailoring.yaml`.
+    #[arg(required = true)]
+    pub files: Vec<String>,
 }

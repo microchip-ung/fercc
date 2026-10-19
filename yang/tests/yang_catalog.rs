@@ -8,8 +8,8 @@ use std::sync::OnceLock;
 use jsonschema::Validator;
 use serde_json::{Map, Value as Json};
 
-use yang::resolved_catalog::to_resolved_catalog;
 use yang::schema::Schema;
+use yang::yang_catalog::to_yang_catalog;
 
 fn test_data_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -21,13 +21,13 @@ fn schema_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("schema")
-        .join("resolved-yang-catalog-schema-v1.0.0.json")
+        .join("yang-catalog-schema-v1.0.0.json")
 }
 
 fn validator() -> Validator {
-    let text = fs::read_to_string(schema_path()).expect("read resolved-yang-catalog-schema");
-    let schema: Json = serde_json::from_str(&text).expect("parse resolved-yang-catalog-schema");
-    jsonschema::validator_for(&schema).expect("compile resolved-yang-catalog-schema")
+    let text = fs::read_to_string(schema_path()).expect("read yang-catalog-schema");
+    let schema: Json = serde_json::from_str(&text).expect("parse yang-catalog-schema");
+    jsonschema::validator_for(&schema).expect("compile yang-catalog-schema")
 }
 
 fn schema() -> &'static Schema {
@@ -43,8 +43,7 @@ fn schema() -> &'static Schema {
 }
 
 fn doc() -> Json {
-    to_resolved_catalog(schema(), "9a836fc0bdf2b7b77ba49ea26c94261e")
-        .expect("serialize resolved yang catalog")
+    to_yang_catalog(schema()).expect("serialize yang catalog")
 }
 
 #[test]
@@ -86,13 +85,13 @@ fn maps_and_arrays_without_source_order_semantics_are_sorted() {
 }
 
 #[test]
-fn resolved_catalog_validates_against_the_real_schema() {
+fn yang_catalog_validates_against_the_real_schema() {
     let v = validator();
     let d = doc();
     let errors: Vec<String> = v.iter_errors(&d).map(|e| e.to_string()).collect();
     assert!(
         errors.is_empty(),
-        "resolved catalog failed schema validation:\n{}",
+        "yang catalog failed schema validation:\n{}",
         errors.join("\n")
     );
 }
@@ -105,13 +104,11 @@ fn a_yang_data_entry_in_the_old_schema_node_shape_fails_validation() {
     // unevaluatedProperties closing yang-data, by deliberate forward-
     // compat policy). So the schema's own pattern must be checked by
     // hand, against a synthetic malformed entry (the real document's
-    // own key shape is checked generically by verify_resolved_catalog,
-    // which to_resolved_catalog always runs).
+    // own key shape is checked generically by verify_yang_catalog,
+    // which to_yang_catalog always runs).
     let v = validator();
     let base = serde_json::json!({
-        "$schema": "urn:fercc:resolved-yang-catalog-schema:1.0.0",
-        "schema-version": "1.0.0",
-        "yang-catalog": "deadbeef",
+        "$schema": "urn:fercc:yang-catalog-schema:1.0.0",
         "modules": {},
         "import-only-modules": {},
         "typedefs": {},
@@ -252,7 +249,7 @@ fn two_modules_augmenting_the_same_parent_resolve_to_independent_nodes() {
     assert!(v1["sid"].is_string());
     assert!(v2["sid"].is_string());
     assert_ne!(v1["sid"], v2["sid"]);
-    assert_ne!(v1["children"], v2["children"]);
+    assert_ne!(v1["schema-children"], v2["schema-children"]);
 }
 
 #[test]
@@ -261,7 +258,7 @@ fn the_coreconf_error_template_names_its_root_in_schema_nodes_but_no_module_root
     // {...} }` is accept-listed: the template is keyed by its own name,
     // its container lives in schema-nodes at the path its .sid file
     // addresses it by, and nothing about it leaks into the module's
-    // datastore root-nodes.
+    // datastore schema-root-nodes.
     let d = doc();
     assert_eq!(
         d["yang-data"],
@@ -278,7 +275,7 @@ fn the_coreconf_error_template_names_its_root_in_schema_nodes_but_no_module_root
         module["yang-data"],
         serde_json::json!(["ietf-coreconf:coreconf-error"])
     );
-    assert_eq!(module["root-nodes"], serde_json::json!([]));
+    assert_eq!(module["schema-root-nodes"], serde_json::json!([]));
     assert_eq!(module["data-root-nodes"], serde_json::json!([]));
     let error_root = &d["schema-nodes"]["/ietf-coreconf:error"];
     assert_eq!(error_root["keyword"], "container");
@@ -467,7 +464,7 @@ fn the_bundled_catalogs_type_defaults_units_and_require_instance_reach_their_lea
         nodes
             .values()
             .filter(|n| {
-                n.get("type").and_then(|t| t.get("derived-from")) == Some(&Json::from(typedef))
+                n.get("type").and_then(|t| t.get("base-type")) == Some(&Json::from(typedef))
             })
             .collect()
     };
@@ -666,7 +663,7 @@ fn the_bundled_ietf_sid_files_structure_is_interpreted_with_its_own_sids() {
     assert_eq!(entry_point.ty().unwrap().base().unwrap().name, "sid");
 
     // A structure is not part of any datastore: it isn't a schema node,
-    // a yang-data root, a wire-addressable SID, or anything the resolved
+    // a yang-data root, a wire-addressable SID, or anything the yang
     // catalog reports.
     assert!(schema
         .node_by_schema_path("/ietf-sid-file:sid-file")

@@ -3241,6 +3241,56 @@ fn each_pattern_and_a_length_carry_their_own_error_info() {
 }
 
 #[test]
+fn the_schema_does_not_depend_on_the_order_its_modules_are_given_in() {
+    // Two modules augment the same container and neither imports the
+    // other, so nothing orders them; their nodes are appended to its
+    // children in a fixed order regardless of which source came first.
+    let host = r#"
+        module host {
+          namespace "urn:host";
+          prefix h;
+
+          container top {
+            leaf own {
+              type string;
+            }
+          }
+        }
+    "#;
+    let augmenter = |name: &str| {
+        format!(
+            r#"
+            module {name} {{
+              namespace "urn:{name}";
+              prefix {name};
+
+              import host {{
+                prefix h;
+              }}
+
+              augment "/h:top" {{
+                leaf {name}-leaf {{
+                  type string;
+                }}
+              }}
+            }}
+        "#
+        )
+    };
+    let sources = vec![host.to_string(), augmenter("aaa"), augmenter("zzz")];
+    let shape = |sources: &[String]| {
+        let schema = build(sources, &[], &[], &[], &[]).unwrap();
+        let top = schema.node_by_schema_path("/host:top").unwrap();
+        top.children()
+            .map(|c| c.name.clone())
+            .collect::<Vec<String>>()
+    };
+    let mut reversed = sources.clone();
+    reversed.reverse();
+    assert_eq!(shape(&sources), shape(&reversed));
+}
+
+#[test]
 fn a_yang_data_template_not_on_the_accept_list_is_absent_entirely() {
     // schema.rs must not distinguish between "implemented
     // yang-data" and "yang-data" -- the only yang-data a Schema
@@ -3515,7 +3565,7 @@ fn same_named_yang_data_containers_in_different_modules_are_independent() {
 fn no_module_name_is_ever_listed_in_both_modules_and_import_only_modules() {
     // modules() and import_only_modules() must partition disjointly
     // -- a name identifying something structurally different
-    // (root-nodes/data-root-nodes vs. none) can never satisfy both.
+    // (schema-root-nodes/data-root-nodes vs. none) can never satisfy both.
     let lib = r#"
         module lib {
           namespace "urn:lib";
@@ -3593,7 +3643,7 @@ fn an_import_only_module_needed_by_an_implemented_one_is_listed_separately() {
     // own. "foo" genuinely implements something and imports "lib",
     // so "lib" must appear in import_only_modules, not modules --
     // and must stay out of modules() entirely, since it has no
-    // root-nodes/data-root-nodes to speak of.
+    // schema-root-nodes/data-root-nodes to speak of.
     let lib = r#"
         module lib {
           namespace "urn:lib";

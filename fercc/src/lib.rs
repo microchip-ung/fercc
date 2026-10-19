@@ -36,7 +36,7 @@ pub fn run() -> Result<(), String> {
         return match command {
             opts::Command::Conv(args) => run_conv(args),
             opts::Command::Schema(args) => run_schema(args),
-            opts::Command::Dump(args) => run_dump(args),
+            opts::Command::Catalog(args) => run_catalog(args),
         };
     }
 
@@ -481,23 +481,34 @@ fn run_schema(args: &opts::SchemaArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn run_dump(args: &opts::DumpArgs) -> Result<(), String> {
-    let checksum = args.checksum.to_lowercase();
-    if checksum.is_empty() || !checksum.bytes().all(|b| b.is_ascii_hexdigit()) {
+fn run_catalog(args: &opts::CatalogArgs) -> Result<(), String> {
+    let CatalogArgs {
+        yangs,
+        sids,
+        ui_tailoring,
+        rest,
+    } = partition_catalog_files(&args.files);
+    if !rest.is_empty() {
         return Err(format!(
-            "{:?} doesn't look like a yang catalog checksum (expected lowercase hex)",
-            args.checksum
+            "catalog takes only .yang, .sid and ui-tailoring.yaml files -- unexpected argument(s): {}",
+            rest.join(", ")
         ));
     }
-
-    let schema = load_schema_by_checksum(&checksum, args.catalog_fetcher.as_deref(), args.verbose)?;
-    let doc = yang::resolved_catalog::to_resolved_catalog(&schema, &checksum)?;
-    let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
-    std::fs::write(&args.output, text).map_err(|e| format!("writing {}: {e}", args.output))?;
-    if args.verbose {
-        eprintln!("wrote resolved yang catalog to {}", args.output);
+    if yangs.is_empty() {
+        return Err("catalog needs at least one .yang file".to_string());
     }
-    Ok(())
+    let schema = build_explicit_schema(&yangs, &sids, ui_tailoring.as_deref())?;
+    let doc = yang::yang_catalog::to_yang_catalog(&schema)?;
+    let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
+    match &args.output {
+        Some(path) => {
+            std::fs::write(path, format!("{text}\n")).map_err(|e| format!("writing {path}: {e}"))
+        }
+        None => {
+            print_normalized(&text);
+            Ok(())
+        }
+    }
 }
 
 /// Mirrors `fetch_yang_lib_checksum_from_dut` (mup1cc:81-89): a FETCH

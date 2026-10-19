@@ -1,31 +1,19 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:fercc:resolved-yang-catalog-schema:1.0.0",
-  "title": "Resolved YANG Catalog",
-  "description": "A yang catalog with cross-module references resolved and its types, nodes, and identities interpreted per module.",
+  "$id": "urn:fercc:yang-catalog-schema:1.0.0",
+  "title": "YANG Catalog",
+  "description": "The YANG interface implemented by every device whose firmware was generated from this yang catalog: the modules it implements, and the types, nodes, identities and values it actually uses.",
 
   "type": "object",
   "required": [
-    "schema-version", "yang-catalog", "modules", "import-only-modules", "typedefs",
+    "$schema", "modules", "import-only-modules", "typedefs",
     "identities", "schema-nodes", "yang-data", "sid-index"
   ],
   "properties": {
     "$schema": {
       "type": "string",
       "format": "uri",
-      "description": "URL of the exact schema version this resolved yang catalog was produced against."
-    },
-
-    "schema-version": {
-      "type": "string",
-      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
-      "description": "Semver of the resolved yang catalog's shape. New optional fields bump the minor version; breaking changes bump the major version."
-    },
-
-    "yang-catalog": {
-      "type": "string",
-      "pattern": "^[0-9a-f]+$",
-      "description": "The identity of the yang catalog this resolved yang catalog was derived from."
+      "description": "The exact schema this document conforms to, including its version. New optional fields bump the minor version; breaking changes bump the major version."
     },
 
     "modules": {
@@ -54,7 +42,7 @@
 
     "identities": {
       "type": "object",
-      "description": "Every identity the server implements, and every base identity an implemented identity or an implemented identityref refers to, directly or through base statements, keyed by \"module:identity-name\".",
+      "description": "Every identity the server implements, and every base identity an implemented identity or an implemented identityref refers to, through base statements, keyed by \"module:identity-name\".",
       "patternProperties": {
         "^[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*$": { "$ref": "#/$defs/identity" }
       }
@@ -233,9 +221,9 @@
                 "leafref", "string", "uint8", "uint16", "uint32", "uint64", "union"
               ]
             },
-            "derived-from": {
+            "base-type": {
               "$ref": "#/$defs/typedef-key",
-              "description": "The named typedef this type derives from, if any."
+              "description": "The typedef this type is derived from. Absent when its base type is the built-in type in `builtin`."
             }
           }
         },
@@ -456,7 +444,7 @@
 
     "module": {
       "type": "object",
-      "required": ["namespace", "sid", "root-nodes", "data-root-nodes", "typedefs", "identities", "yang-data", "deviations"],
+      "required": ["namespace", "sid", "schema-root-nodes", "data-root-nodes", "typedefs", "identities", "yang-data", "deviations"],
       "properties": {
         "namespace": {
           "type": "string",
@@ -471,7 +459,7 @@
           "description": "This module's latest revision date, if any."
         },
 
-        "root-nodes": {
+        "schema-root-nodes": {
           "type": "array",
           "items": { "$ref": "#/$defs/schema-node-path" },
           "description": "This module's top-level schema node paths, in declaration order."
@@ -603,11 +591,11 @@
             {
               "title": "Container",
               "type": "object",
-              "required": ["config", "children", "data-children", "status", "sid"],
+              "required": ["config", "schema-children", "data-children", "status", "sid"],
               "properties": {
                 "keyword": { "const": "container" },
                 "config": { "type": "boolean" },
-                "children": { "$ref": "#/$defs/node-children" },
+                "schema-children": { "$ref": "#/$defs/node-schema-children" },
                 "data-children": { "$ref": "#/$defs/node-data-children" }
               }
             },
@@ -653,11 +641,11 @@
             {
               "title": "List",
               "type": "object",
-              "required": ["config", "children", "data-children", "keys", "status", "sid"],
+              "required": ["config", "schema-children", "data-children", "keys", "status", "sid"],
               "properties": {
                 "keyword": { "const": "list" },
                 "config": { "type": "boolean" },
-                "children": { "$ref": "#/$defs/node-children" },
+                "schema-children": { "$ref": "#/$defs/node-schema-children" },
                 "data-children": { "$ref": "#/$defs/node-data-children" },
                 "keys": {
                   "type": "array",
@@ -669,11 +657,11 @@
             {
               "title": "Choice",
               "type": "object",
-              "required": ["config", "children", "data-children", "mandatory", "status"],
+              "required": ["config", "schema-children", "data-children", "mandatory", "status"],
               "properties": {
                 "keyword": { "const": "choice" },
                 "config": { "type": "boolean" },
-                "children": { "$ref": "#/$defs/node-children" },
+                "schema-children": { "$ref": "#/$defs/node-schema-children" },
                 "data-children": { "$ref": "#/$defs/node-data-children" },
                 "mandatory": { "type": "boolean" },
                 "default": {
@@ -685,60 +673,60 @@
             {
               "title": "Case",
               "type": "object",
-              "required": ["children", "data-children", "status"],
+              "required": ["schema-children", "data-children", "status"],
               "properties": {
                 "keyword": { "const": "case" },
-                "children": { "$ref": "#/$defs/node-children" },
+                "schema-children": { "$ref": "#/$defs/node-schema-children" },
                 "data-children": { "$ref": "#/$defs/node-data-children" }
               }
             },
             {
               "title": "Rpc",
               "type": "object",
-              "required": ["children", "data-children", "status", "sid"],
+              "required": ["schema-children", "data-children", "status", "sid"],
               "properties": {
                 "keyword": { "const": "rpc" },
-                "children": { "$ref": "#/$defs/node-children" },
+                "schema-children": { "$ref": "#/$defs/node-schema-children" },
                 "data-children": { "$ref": "#/$defs/node-data-children" }
               }
             },
             {
               "title": "Action",
               "type": "object",
-              "required": ["children", "data-children", "status", "sid"],
+              "required": ["schema-children", "data-children", "status", "sid"],
               "properties": {
                 "keyword": { "const": "action" },
-                "children": { "$ref": "#/$defs/node-children" },
+                "schema-children": { "$ref": "#/$defs/node-schema-children" },
                 "data-children": { "$ref": "#/$defs/node-data-children" }
               }
             },
             {
               "title": "Input",
               "type": "object",
-              "required": ["children", "data-children", "sid"],
+              "required": ["schema-children", "data-children", "sid"],
               "properties": {
                 "keyword": { "const": "input" },
-                "children": { "$ref": "#/$defs/node-children" },
+                "schema-children": { "$ref": "#/$defs/node-schema-children" },
                 "data-children": { "$ref": "#/$defs/node-data-children" }
               }
             },
             {
               "title": "Output",
               "type": "object",
-              "required": ["children", "data-children", "sid"],
+              "required": ["schema-children", "data-children", "sid"],
               "properties": {
                 "keyword": { "const": "output" },
-                "children": { "$ref": "#/$defs/node-children" },
+                "schema-children": { "$ref": "#/$defs/node-schema-children" },
                 "data-children": { "$ref": "#/$defs/node-data-children" }
               }
             },
             {
               "title": "Notification",
               "type": "object",
-              "required": ["children", "data-children", "status", "sid"],
+              "required": ["schema-children", "data-children", "status", "sid"],
               "properties": {
                 "keyword": { "const": "notification" },
-                "children": { "$ref": "#/$defs/node-children" },
+                "schema-children": { "$ref": "#/$defs/node-schema-children" },
                 "data-children": { "$ref": "#/$defs/node-data-children" }
               }
             },
@@ -767,7 +755,7 @@
       ]
     },
 
-    "node-children": {
+    "node-schema-children": {
       "type": "array",
       "items": { "$ref": "#/$defs/schema-node-path" },
       "description": "Direct children's paths, in declaration order."

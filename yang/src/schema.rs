@@ -1010,7 +1010,8 @@ pub fn build(
         referenced_modules: Default::default(),
     };
 
-    let module_names: Vec<String> = parsed.iter().map(|m| m.arg_str().to_string()).collect();
+    let mut module_names: Vec<String> = parsed.iter().map(|m| m.arg_str().to_string()).collect();
+    module_names.sort();
     for name in &module_names {
         b.ensure_module(name)?;
     }

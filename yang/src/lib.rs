@@ -8,6 +8,6 @@ pub mod catalog;
 pub mod codec;
 pub mod json_schema;
 pub mod parser;
-pub mod resolved_catalog;
 pub mod schema;
 pub mod sid;
+pub mod yang_catalog;
