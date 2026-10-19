@@ -2167,4 +2167,23 @@ mod tests {
             }])
         );
     }
+
+    #[test]
+    fn verify_rejects_children_on_a_node_that_cannot_have_any() {
+        let mut doc = identity_doc();
+        doc["schema-nodes"]["/foo:kind"]["schema-children"] = serde_json::json!([]);
+        let e = verify_error(&doc);
+        assert!(
+            e.contains("schema-nodes[\"/foo:kind\"] is a leaf/leaf-list/anydata/anyxml but carries a \"schema-children\" field"),
+            "{e}"
+        );
+
+        let mut doc = identity_doc();
+        doc["schema-nodes"]["/foo:kind"]["data-children"] = serde_json::json!([]);
+        let e = verify_error(&doc);
+        assert!(
+            e.contains("schema-nodes[\"/foo:kind\"] is a leaf/leaf-list/anydata/anyxml but carries a \"data-children\" field"),
+            "{e}"
+        );
+    }
 }
