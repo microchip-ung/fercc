@@ -796,7 +796,9 @@ impl Schema {
     }
 
     pub fn modules(&self) -> impl Iterator<Item = ModuleRef<'_>> + '_ {
-        self.module_root.values().map(|module| ModuleRef {
+        let mut modules: Vec<&Module> = self.module_root.values().collect();
+        modules.sort_by(|a, b| a.name.cmp(&b.name));
+        modules.into_iter().map(|module| ModuleRef {
             schema: self,
             module,
         })
@@ -836,7 +838,9 @@ impl Schema {
     }
 
     pub fn structure_roots(&self) -> impl Iterator<Item = NodeRef<'_>> + '_ {
-        self.structure_roots.values().map(|&id| self.node_ref(id))
+        let mut roots: Vec<(&String, &NodeId)> = self.structure_roots.iter().collect();
+        roots.sort_by(|a, b| a.0.cmp(b.0));
+        roots.into_iter().map(|(_, &id)| self.node_ref(id))
     }
 
     pub fn node_by_data_path(&self, path: &str) -> Option<NodeRef<'_>> {
@@ -2509,6 +2513,9 @@ impl<'a> Builder<'a> {
                 });
             }
         }
+        import_only_modules.sort_by(|a, b| {
+            (&a.name, &a.import_revision_date).cmp(&(&b.name, &b.import_revision_date))
+        });
         self.module_root
             .retain(|name, _| implemented_names.contains(name));
 

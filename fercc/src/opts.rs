@@ -172,15 +172,17 @@ pub struct ConvArgs {
     /// An optional data file (default: read from STDIN), and/or an
     /// explicit catalog to use instead of the workspace catalog: some
     /// `.yang` files plus their matching `.sid` files (both required
-    /// together). Order doesn't matter -- each argument is sorted into
-    /// one of the three groups by its extension.
+    /// together), and optionally a `ui-tailoring.yaml`. Order doesn't
+    /// matter -- each argument is sorted by its extension, or by its name
+    /// for `ui-tailoring.yaml`.
     pub files: Vec<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct SchemaArgs {
-    /// An explicit set of `.yang` files to schematize instead of the
-    /// workspace catalog.
+    /// An explicit set of `.yang` files, and optionally a
+    /// `ui-tailoring.yaml`, to schematize instead of the workspace
+    /// catalog.
     pub files: Vec<String>,
 }
 

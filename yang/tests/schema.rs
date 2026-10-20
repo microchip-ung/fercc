@@ -3241,6 +3241,141 @@ fn each_pattern_and_a_length_carry_their_own_error_info() {
 }
 
 #[test]
+fn modules_import_only_modules_and_structure_roots_iterate_in_name_order() {
+    // None of these has a meaningful declaration order of its own, so
+    // they come out sorted, whichever order their sources were given in.
+    let lib = |name: &str| {
+        format!(
+            r#"
+            module {name} {{
+              namespace "urn:{name}";
+              prefix {name};
+
+              typedef t {{
+                type string;
+              }}
+            }}
+        "#
+        )
+    };
+    let zeta = r#"
+        module zeta {
+          namespace "urn:zeta";
+          prefix z;
+
+          import ietf-yang-structure-ext {
+            prefix sx;
+          }
+          import lib-a {
+            prefix la;
+            revision-date 2026-02-01;
+          }
+          import lib-b {
+            prefix lb;
+          }
+
+          sx:structure zeta-doc {
+            leaf x {
+              type string;
+            }
+          }
+
+          leaf a {
+            type la:t;
+          }
+          leaf b {
+            type lb:t;
+          }
+        }
+    "#;
+    let alpha = r#"
+        module alpha {
+          namespace "urn:alpha";
+          prefix a;
+
+          import ietf-yang-structure-ext {
+            prefix sx;
+          }
+          import lib-a {
+            prefix la;
+            revision-date 2026-01-01;
+          }
+
+          sx:structure alpha-doc {
+            leaf x {
+              type string;
+            }
+          }
+
+          leaf c {
+            type la:t;
+          }
+        }
+    "#;
+    let filler_module = |name: &str| {
+        format!(
+            r#"
+            module {name} {{
+              namespace "urn:{name}";
+              prefix {name};
+
+              import ietf-yang-structure-ext {{
+                prefix sx;
+              }}
+
+              sx:structure {name}-doc {{
+                leaf x {{
+                  type string;
+                }}
+              }}
+
+              leaf {name}-leaf {{
+                type string;
+              }}
+            }}
+        "#
+        )
+    };
+    let mut sources = vec![
+        STRUCTURE_EXT.to_string(),
+        lib("lib-b"),
+        lib("lib-a"),
+        zeta.to_string(),
+        alpha.to_string(),
+    ];
+    // Enough implemented modules and structures that an unsorted map
+    // order matching the sorted one by chance is out of the question.
+    let fillers: Vec<String> = (0..12).map(|i| format!("m{i:02}")).collect();
+    sources.extend(fillers.iter().rev().map(|name| filler_module(name)));
+    let schema = build(&sources, &[], &[], &[], &[]).unwrap();
+    let modules: Vec<String> = schema.modules().map(|m| m.name.clone()).collect();
+    let mut expected: Vec<String> = vec!["alpha".to_string(), "zeta".to_string()];
+    expected.extend(fillers.iter().cloned());
+    expected.sort();
+    assert_eq!(modules, expected);
+    let import_only: Vec<(String, Option<String>)> = schema
+        .import_only_modules()
+        .map(|m| (m.name.clone(), m.import_revision_date.clone()))
+        .collect();
+    assert_eq!(
+        import_only,
+        vec![
+            ("lib-a".to_string(), Some("2026-01-01".to_string())),
+            ("lib-a".to_string(), Some("2026-02-01".to_string())),
+            ("lib-b".to_string(), None),
+        ]
+    );
+    let structures: Vec<String> = schema.structure_roots().map(|r| r.name.clone()).collect();
+    let mut expected_structures: Vec<String> =
+        vec!["alpha:alpha-doc".to_string(), "zeta:zeta-doc".to_string()];
+    for name in &fillers {
+        expected_structures.push(format!("{name}:{name}-doc"));
+    }
+    expected_structures.sort();
+    assert_eq!(structures, expected_structures);
+}
+
+#[test]
 fn the_schema_does_not_depend_on_the_order_its_modules_are_given_in() {
     // Two modules augment the same container and neither imports the
     // other, so nothing orders them; their nodes are appended to its

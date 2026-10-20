@@ -108,11 +108,12 @@ fn sid_string(sid: Option<i64>, what: &str) -> R<String> {
         .ok_or_else(|| format!("{what} has no sid -- this catalog's .sid files are incomplete"))
 }
 
-fn range_bounds(ranges: &[(i128, i128)]) -> Json {
-    arr(ranges
-        .iter()
-        .map(|&(min, max)| arr(vec![num(min), num(max)]))
-        .collect())
+fn range_bounds(ranges: &[(i128, i128)]) -> R<Json> {
+    let mut bounds = Vec::new();
+    for &(min, max) in ranges {
+        bounds.push(arr(vec![num(min)?, num(max)?]));
+    }
+    Ok(arr(bounds))
 }
 
 fn range64_bounds(ranges: &[(i128, i128)]) -> Json {
@@ -128,10 +129,10 @@ fn with_error_info(mut m: Map<String, Json>, error: &ErrorInfo) -> Json {
     Json::Object(m)
 }
 
-fn range_object(ty: TypeRef<'_>) -> Json {
+fn range_object(ty: TypeRef<'_>) -> R<Json> {
     let mut m = Map::new();
-    m.insert("bounds".to_string(), range_bounds(&ty.ranges));
-    with_error_info(m, &ty.range_error)
+    m.insert("bounds".to_string(), range_bounds(&ty.ranges)?);
+    Ok(with_error_info(m, &ty.range_error))
 }
 
 fn range64_object(ty: TypeRef<'_>) -> Json {
@@ -157,7 +158,7 @@ fn type_descriptor(ty: TypeRef<'_>) -> R<Json> {
     match ty.builtin {
         Builtin::Binary => {
             if is_explicitly_restricted(ty) {
-                m.insert("length".to_string(), range_object(ty));
+                m.insert("length".to_string(), range_object(ty)?);
             }
         }
         Builtin::Bits => {
@@ -235,7 +236,7 @@ fn type_descriptor(ty: TypeRef<'_>) -> R<Json> {
         | Builtin::Uint16
         | Builtin::Uint32 => {
             if is_explicitly_restricted(ty) {
-                m.insert("range".to_string(), range_object(ty));
+                m.insert("range".to_string(), range_object(ty)?);
             }
         }
         Builtin::Int64 | Builtin::Uint64 => {
@@ -261,7 +262,7 @@ fn type_descriptor(ty: TypeRef<'_>) -> R<Json> {
         }
         Builtin::String => {
             if is_explicitly_restricted(ty) {
-                m.insert("length".to_string(), range_object(ty));
+                m.insert("length".to_string(), range_object(ty)?);
             }
             if !ty.patterns.is_empty() {
                 m.insert(

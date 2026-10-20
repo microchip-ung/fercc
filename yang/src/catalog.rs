@@ -587,7 +587,7 @@ ui-tailoring:
         // exactly the contract a real replacement is expected to
         // satisfy, and exactly what the built-in `curl` default's own
         // stdout capture must handle too.
-        let tarball = test_data_dir().join("e6311dd5be50af0f0286fd3a6fb218a1.tar.gz");
+        let tarball = test_data_dir().join("9a836fc0bdf2b7b77ba49ea26c94261e.tar.gz");
         let script_path = unique_path("fetcher-script.sh");
         {
             // sync_all() ensures the kernel write lock is released before we

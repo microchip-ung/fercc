@@ -476,7 +476,7 @@ fn run_schema(args: &opts::SchemaArgs) -> Result<(), String> {
     } else {
         build_explicit_schema(&yangs, &[], ui_tailoring.as_deref())?
     };
-    let value = yang::json_schema::to_json_schema_for_catalog(&schema, "yang");
+    let value = yang::json_schema::to_json_schema_for_catalog(&schema, "yang")?;
     print_normalized(&serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?);
     Ok(())
 }
