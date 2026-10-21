@@ -7,7 +7,7 @@ import groovy.transform.Field
 @Field ARTIFACT_DAYS  = 30
 
 def ciUpload(paths) {
-  withCredentials([usernamePassword(credentialsId: 'artifacts-aws-cred',
+  withCredentials([usernamePassword(credentialsId: 'ArtifactoryAccess',
       usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASS')]) {
     container('fercc-builder') {
       // Pass git context explicitly: git remote get-url origin doesn't work
@@ -111,7 +111,7 @@ pipeline {
           ciUpload('fercc-console.log')
         }
 
-        withCredentials([usernamePassword(credentialsId: 'artifacts-aws-cred',
+        withCredentials([usernamePassword(credentialsId: 'ArtifactoryAccess',
             usernameVariable: 'ARTIFACTORY_USER', passwordVariable: 'ARTIFACTORY_PASS')]) {
           container('fercc-builder') {
             sh "scripts/artifactory-ci --final \${CI_MANIFEST} --days ${ARTIFACT_DAYS} --git-repo \${GIT_URL}"
