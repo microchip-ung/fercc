@@ -31,31 +31,20 @@ use yang::codec::{self, ContentFormat};
 use yang::schema::Schema;
 
 fn test_data_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("test-data")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("test-data")
 }
 
 fn schema() -> &'static Schema {
     static SCHEMA: OnceLock<Schema> = OnceLock::new();
     SCHEMA.get_or_init(|| {
-        let tarball = test_data_dir().join("e6311dd5be50af0f0286fd3a6fb218a1.tar.gz");
-        let file = fs::File::open(&tarball).expect("open bundled catalog tarball");
-        let gz = flate2::read::GzDecoder::new(file);
-        let mut archive = tar::Archive::new(gz);
-
-        let mut yang_sources = Vec::new();
-        let mut sid_sources = Vec::new();
-        for entry in archive.entries().expect("read tar entries") {
-            let mut entry = entry.expect("tar entry");
-            let path = entry.path().expect("entry path").to_path_buf();
-            let mut content = String::new();
-            std::io::Read::read_to_string(&mut entry, &mut content).expect("read entry content");
-            match path.extension().and_then(|e| e.to_str()) {
-                Some("yang") => yang_sources.push(content),
-                Some("sid") => sid_sources.push(content),
-                _ => {}
-            }
-        }
-        yang::schema::build(&yang_sources, &sid_sources).expect("build schema from bundled catalog")
+        let tarball = test_data_dir().join("9a836fc0bdf2b7b77ba49ea26c94261e.tar.gz");
+        let bytes = fs::read(&tarball).expect("read bundled catalog tarball");
+        yang::catalog::load_from_tarball(&bytes)
+            .expect("load bundled catalog tarball")
+            .build_schema()
+            .expect("build schema from bundled catalog")
     })
 }
 
@@ -76,7 +65,10 @@ fn fixture_corpus_round_trips() {
     let schema = schema();
     let dir = test_data_dir();
 
-    let mut entries: Vec<_> = fs::read_dir(&dir).expect("read test-data dir").filter_map(|e| e.ok()).collect();
+    let mut entries: Vec<_> = fs::read_dir(&dir)
+        .expect("read test-data dir")
+        .filter_map(|e| e.ok())
+        .collect();
     entries.sort_by_key(|e| e.path());
 
     let mut cases = 0;
@@ -88,7 +80,9 @@ fn fixture_corpus_round_trips() {
             continue;
         }
         let name = path.file_stem().unwrap().to_str().unwrap().to_string();
-        let Some(cf) = content_format_for(&name) else { continue };
+        let Some(cf) = content_format_for(&name) else {
+            continue;
+        };
         let cbor_path = dir.join(format!("{name}.cbor"));
         if !cbor_path.exists() {
             continue;
@@ -99,15 +93,19 @@ fn fixture_corpus_round_trips() {
             let yaml_text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
             let expected_cbor = fs::read(&cbor_path).map_err(|e| e.to_string())?;
 
-            let value: Json = serde_yml::from_str(&yaml_text).map_err(|e| format!("yaml parse: {e}"))?;
+            let value: Json =
+                serde_yml::from_str(&yaml_text).map_err(|e| format!("yaml parse: {e}"))?;
             let items = value.as_array().ok_or("top-level yaml is not a sequence")?;
-            let got_cbor = codec::json_seq_to_cbor(schema, items, cf, false).map_err(|e| format!("encode: {e}"))?;
+            let got_cbor = codec::json_seq_to_cbor(schema, items, cf, false)
+                .map_err(|e| format!("encode: {e}"))?;
             if got_cbor != expected_cbor {
                 return Err("encode mismatch".to_string());
             }
 
-            let decoded = codec::cbor_seq_to_json(schema, &expected_cbor, cf).map_err(|e| format!("decode: {e}"))?;
-            let re_encoded = codec::json_seq_to_cbor(schema, &decoded, cf, false).map_err(|e| format!("re-encode: {e}"))?;
+            let decoded = codec::cbor_seq_to_json(schema, &expected_cbor, cf)
+                .map_err(|e| format!("decode: {e}"))?;
+            let re_encoded = codec::json_seq_to_cbor(schema, &decoded, cf, false)
+                .map_err(|e| format!("re-encode: {e}"))?;
             if re_encoded != expected_cbor {
                 return Err("roundtrip mismatch".to_string());
             }
@@ -120,7 +118,11 @@ fn fixture_corpus_round_trips() {
     }
 
     assert!(cases == 12, "expected exactly 12 curated fixture cases, found {cases} -- test-data/ missing, or the corpus changed without updating this count?");
-    assert!(failures.is_empty(), "{} unexpected fixture failures:\n{failures:#?}", failures.len());
+    assert!(
+        failures.is_empty(),
+        "{} unexpected fixture failures:\n{failures:#?}",
+        failures.len()
+    );
 }
 
 /// Negative cases: real device *error* responses (content-format 140,
@@ -134,14 +136,16 @@ fn fixture_corpus_round_trips() {
 /// Each fixture is real hardware data, captured from a live board via a
 /// deliberately malformed/rejected request. They cover different
 /// response shapes: which of `error-tag`/`error-app-tag`/
-/// `error-data-node`/`error-message` are present, and whether
-/// `error-data-node` is empty or a populated instance-identifier.
+/// `error-data-node`/`error-message` are present.
 #[test]
 fn coreconf_error_responses_decode_correctly() {
     let schema = schema();
     let dir = test_data_dir();
 
-    let mut entries: Vec<_> = fs::read_dir(&dir).expect("read test-data dir").filter_map(|e| e.ok()).collect();
+    let mut entries: Vec<_> = fs::read_dir(&dir)
+        .expect("read test-data dir")
+        .filter_map(|e| e.ok())
+        .collect();
     entries.sort_by_key(|e| e.path());
 
     let mut cases = 0;
@@ -164,12 +168,16 @@ fn coreconf_error_responses_decode_correctly() {
 
         let outcome = (|| -> Result<(), String> {
             let yaml_text = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-            let expected: Json = serde_yml::from_str(&yaml_text).map_err(|e| format!("yaml parse: {e}"))?;
+            let expected: Json =
+                serde_yml::from_str(&yaml_text).map_err(|e| format!("yaml parse: {e}"))?;
             let cbor_bytes = fs::read(&cbor_path).map_err(|e| e.to_string())?;
 
-            let decoded = codec::cbor_to_json(schema, &cbor_bytes, ContentFormat::Yang).map_err(|e| format!("decode: {e}"))?;
+            let decoded = codec::cbor_to_json(schema, &cbor_bytes, ContentFormat::Yang)
+                .map_err(|e| format!("decode: {e}"))?;
             if decoded != expected {
-                return Err(format!("decode mismatch: got {decoded:#?}, expected {expected:#?}"));
+                return Err(format!(
+                    "decode mismatch: got {decoded:#?}, expected {expected:#?}"
+                ));
             }
             Ok(())
         })();
@@ -180,5 +188,29 @@ fn coreconf_error_responses_decode_correctly() {
     }
 
     assert!(cases == 4, "expected exactly 4 *-error-res fixtures, found {cases} -- test-data/ missing, or the corpus changed without updating this count?");
-    assert!(failures.is_empty(), "{} unexpected coreconf-error fixture failures:\n{failures:#?}", failures.len());
+    assert!(
+        failures.is_empty(),
+        "{} unexpected coreconf-error fixture failures:\n{failures:#?}",
+        failures.len()
+    );
+}
+
+#[test]
+fn real_catalog_list_keys_follow_the_key_statement_not_declaration_order() {
+    // ieee802-dot1q-bridge:.../filtering-entry declares its key leafs
+    // database-id, address, vids (in that order) but its own `key`
+    // statement lists them "database-id vids address" -- address and
+    // vids swapped relative to declaration order. keys() must follow
+    // the `key` statement's order, not declaration order.
+    let schema = schema();
+    let filtering_entry = schema
+        .node_by_schema_path(
+            "/ieee802-dot1q-bridge:bridges/bridge/component/filtering-database/filtering-entry",
+        )
+        .expect("filtering-entry exists in the bundled catalog");
+    let key_names: Vec<String> = filtering_entry
+        .keys()
+        .map(|k| k.local_name().to_string())
+        .collect();
+    assert_eq!(key_names, vec!["database-id", "vids", "address"]);
 }

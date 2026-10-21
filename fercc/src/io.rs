@@ -44,9 +44,12 @@ pub fn parse(text: &str, format: Format) -> Result<Json, String> {
 
 pub fn render(value: &Json, format: Format) -> Result<String, String> {
     match format {
-        Format::Json => serde_json::to_string_pretty(value).map_err(|e| format!("JSON encode error: {e}")),
+        Format::Json => {
+            serde_json::to_string_pretty(value).map_err(|e| format!("JSON encode error: {e}"))
+        }
         Format::Yaml => {
-            let mut s = serde_yml::to_string(value).map_err(|e| format!("YAML encode error: {e}"))?;
+            let mut s =
+                serde_yml::to_string(value).map_err(|e| format!("YAML encode error: {e}"))?;
             if !s.ends_with('\n') {
                 s.push('\n');
             }
@@ -57,17 +60,24 @@ pub fn render(value: &Json, format: Format) -> Result<String, String> {
 
 /// Read the request body from `-i FILE` or STDIN, applying the same
 /// format-priority chain as the Ruby reference.
-pub fn read_input(input_file: Option<&str>, input_format_flag: Option<&str>) -> Result<(Json, Format), String> {
+pub fn read_input(
+    input_file: Option<&str>,
+    input_format_flag: Option<&str>,
+) -> Result<(Json, Format), String> {
     let (text, format) = match input_file {
         Some(path) => {
-            let format = Format::from_flag(input_format_flag).or_else(|| Format::from_extension(path)).unwrap_or(Format::Yaml);
+            let format = Format::from_flag(input_format_flag)
+                .or_else(|| Format::from_extension(path))
+                .unwrap_or(Format::Yaml);
             let text = std::fs::read_to_string(path).map_err(|e| format!("reading {path}: {e}"))?;
             (text, format)
         }
         None => {
             let format = Format::from_flag(input_format_flag).unwrap_or(Format::Yaml);
             let mut text = String::new();
-            std::io::stdin().read_to_string(&mut text).map_err(|e| format!("reading stdin: {e}"))?;
+            std::io::stdin()
+                .read_to_string(&mut text)
+                .map_err(|e| format!("reading stdin: {e}"))?;
             (text, format)
         }
     };
@@ -89,7 +99,11 @@ pub fn is_nonempty(value: &Json) -> bool {
 
 /// Write the response body to `-o FILE` or STDOUT, applying the same
 /// format-priority chain as the Ruby reference (`output_data_process`).
-pub fn write_output(value: &Json, output_file: Option<&str>, output_format_flag: Option<&str>) -> Result<(), String> {
+pub fn write_output(
+    value: &Json,
+    output_file: Option<&str>,
+    output_format_flag: Option<&str>,
+) -> Result<(), String> {
     if !is_nonempty(value) {
         return Ok(());
     }
@@ -104,7 +118,9 @@ pub fn write_output(value: &Json, output_file: Option<&str>, output_format_flag:
             println!();
         }
         Some(path) => {
-            let format = Format::from_flag(output_format_flag).or_else(|| Format::from_extension(path)).unwrap_or(Format::Yaml);
+            let format = Format::from_flag(output_format_flag)
+                .or_else(|| Format::from_extension(path))
+                .unwrap_or(Format::Yaml);
             let rendered = render(value, format)?;
             std::fs::write(path, rendered).map_err(|e| format!("writing {path}: {e}"))?;
         }
@@ -121,7 +137,8 @@ mod tests {
     use super::*;
 
     fn temp_file(name: &str, contents: &str) -> std::path::PathBuf {
-        let path = std::env::temp_dir().join(format!("fercc-io-test-{}-{name}", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("fercc-io-test-{}-{name}", std::process::id()));
         std::fs::write(&path, contents).unwrap();
         path
     }
@@ -177,18 +194,34 @@ mod tests {
     #[test]
     fn write_output_infers_json_from_extension_when_no_flag_given() {
         let path = temp_file("out.json", "");
-        write_output(&serde_json::json!({"d": 4}), Some(path.to_str().unwrap()), None).unwrap();
+        write_output(
+            &serde_json::json!({"d": 4}),
+            Some(path.to_str().unwrap()),
+            None,
+        )
+        .unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(parse(&written, Format::Json).unwrap(), serde_json::json!({"d": 4}));
+        assert_eq!(
+            parse(&written, Format::Json).unwrap(),
+            serde_json::json!({"d": 4})
+        );
         std::fs::remove_file(path).unwrap();
     }
 
     #[test]
     fn write_output_explicit_format_flag_overrides_extension() {
         let path = temp_file("out.yaml", "");
-        write_output(&serde_json::json!({"e": 5}), Some(path.to_str().unwrap()), Some("json")).unwrap();
+        write_output(
+            &serde_json::json!({"e": 5}),
+            Some(path.to_str().unwrap()),
+            Some("json"),
+        )
+        .unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
-        assert_eq!(parse(&written, Format::Json).unwrap(), serde_json::json!({"e": 5}));
+        assert_eq!(
+            parse(&written, Format::Json).unwrap(),
+            serde_json::json!({"e": 5})
+        );
         std::fs::remove_file(path).unwrap();
     }
 

@@ -3,8 +3,14 @@
 # yang/tests/fixtures.rs's coreconf_error_responses_decode_correctly -- this
 # is a decode-only negative case: a genuine device error body, never
 # something this client would construct itself).
+#
+# The original capture had firmware bug LMSTAX-1250: error-data-node was
+# encoded as the bare integer 0 (a leaked zero-initialized default, not a
+# real SID -- SID 0 is reserved and never valid in interchange, RFC 9595
+# section 6.4.2/6.4.4) instead of being left out of the response. This
+# fixture reflects the behavior of the fixed firmware, which omits
+# error-data-node entirely in this case rather than send a bogus 0.
 ietf-coreconf:error:
-  error-data-node: ""
   error-tag: ietf-coreconf:operation-failed
   error-app-tag: ietf-coreconf:malformed-message
   error-message: "lma_cc_parse_iid()"

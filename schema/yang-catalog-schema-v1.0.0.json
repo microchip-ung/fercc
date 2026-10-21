@@ -1,0 +1,750 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:fercc:yang-catalog-schema:1.0.0",
+  "title": "YANG Catalog",
+  "description": "The YANG interface implemented by every device whose firmware was generated from this yang catalog: the modules it implements, and the types, nodes, identities and values it actually uses.",
+
+  "type": "object",
+  "required": [
+    "$schema", "modules", "import-only-modules", "typedefs",
+    "identities", "schema-nodes", "yang-data", "sid-index"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "format": "uri",
+      "description": "The exact schema this document conforms to, including its version. New optional fields bump the minor version; breaking changes bump the major version."
+    },
+
+    "modules": {
+      "type": "object",
+      "description": "Every module implemented by the server this catalog belongs to, keyed by module name.",
+      "patternProperties": {
+        "^[A-Za-z_][A-Za-z0-9_.-]*$": { "$ref": "#/$defs/module" }
+      }
+    },
+
+    "import-only-modules": {
+      "type": "object",
+      "description": "Every module that is imported for its reuseable definitions but doesn't define any protocol accessible objects. Keyed by \"module-name\" or \"module-name revision-date\" when the importing revision-date is known.",
+      "patternProperties": {
+        "^[A-Za-z_][A-Za-z0-9_.-]*( \\S+)?$": { "$ref": "#/$defs/import-only-module" }
+      }
+    },
+
+    "typedefs": {
+      "type": "object",
+      "description": "Every named type used in this catalog, keyed by typedef-key.",
+      "patternProperties": {
+        "^([A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*|/\\S+ \\S+)$": { "$ref": "#/$defs/typedef" }
+      }
+    },
+
+    "identities": {
+      "type": "object",
+      "description": "Every identity the server implements, and every base identity an implemented identity or an implemented identityref refers to, through base statements, keyed by \"module:identity-name\".",
+      "patternProperties": {
+        "^[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*$": { "$ref": "#/$defs/identity" }
+      }
+    },
+
+    "schema-nodes": {
+      "type": "object",
+      "description": "Every schema node, keyed by its schema-node-path, including the nodes of every yang-data template.",
+      "patternProperties": {
+        "^/[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*(/[A-Za-z_][A-Za-z0-9_.-]*(:[A-Za-z_][A-Za-z0-9_.-]*)?)*$": {
+          "$ref": "#/$defs/schema-node"
+        }
+      }
+    },
+
+    "yang-data": {
+      "type": "object",
+      "description": "Every YANG data template (RFC 8040's yang-data extension, used e.g. by ietf-coreconf's error structure), keyed by \"module:template-name\".",
+      "patternProperties": {
+        "^[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*$": { "$ref": "#/$defs/yang-data" }
+      }
+    },
+
+    "sid-index": {
+      "type": "object",
+      "description": "Every SID in this catalog, keyed by the SID itself (as a string), naming the namespace and natural identifier it refers to.",
+      "patternProperties": {
+        "^[0-9]+$": { "$ref": "#/$defs/sid-index-entry" }
+      }
+    }
+  },
+
+  "$defs": {
+    "schema-node-path": {
+      "type": "string",
+      "pattern": "^/[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*(/[A-Za-z_][A-Za-z0-9_.-]*(:[A-Za-z_][A-Za-z0-9_.-]*)?)*$",
+      "description": "An absolute schema-node path: the first segment is always module-qualified, later segments only when they cross into a different module."
+    },
+
+    "sid-string": {
+      "type": "string",
+      "pattern": "^[0-9]+$",
+      "description": "A SID, as a decimal string."
+    },
+
+    "decimal-string": {
+      "type": "string",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$",
+      "description": "A range/length bound, as a decimal string (avoids JSON-number precision loss)."
+    },
+
+    "module-name": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*$",
+      "description": "A bare YANG module name."
+    },
+
+    "qualified-name": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*$",
+      "description": "A \"module:local-name\" reference to an identity or a yang-data template."
+    },
+
+    "typedef-key": {
+      "type": "string",
+      "pattern": "^([A-Za-z_][A-Za-z0-9_.-]*:[A-Za-z_][A-Za-z0-9_.-]*|/\\S+ \\S+)$",
+      "description": "A reference into `typedefs`. A module-level typedef looks like \"module-name:local-name\" form. A nested typedef uses \"<schema-node-path> <local-name>\"."
+    },
+
+    "range": {
+      "type": "object",
+      "required": ["bounds"],
+      "description": "A range/length restriction. Absent if never explicitly restricted.",
+      "properties": {
+        "bounds": {
+          "type": "array",
+          "description": "One or more [min, max] integer pairs.",
+          "items": {
+            "type": "array",
+            "prefixItems": [{ "type": "integer" }, { "type": "integer" }],
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "minItems": 1
+        },
+        "error-message": {
+          "type": "string",
+          "description": "The message to report when a value is outside this range or length."
+        },
+        "error-app-tag": {
+          "type": "string",
+          "description": "The application tag to report when a value is outside this range or length."
+        }
+      }
+    },
+
+    "range64": {
+      "type": "object",
+      "required": ["bounds"],
+      "description": "A range/length restriction, decimal-string bounds -- avoids JSON-number precision loss for int64/uint64/decimal64, which can exceed 2^53. Absent if never explicitly restricted.",
+      "properties": {
+        "bounds": {
+          "type": "array",
+          "description": "One or more [min, max] pairs, as decimal strings.",
+          "items": {
+            "type": "array",
+            "prefixItems": [
+              { "$ref": "#/$defs/decimal-string" },
+              { "$ref": "#/$defs/decimal-string" }
+            ],
+            "minItems": 2,
+            "maxItems": 2
+          },
+          "minItems": 1
+        },
+        "error-message": {
+          "type": "string",
+          "description": "The message to report when a value is outside this range."
+        },
+        "error-app-tag": {
+          "type": "string",
+          "description": "The application tag to report when a value is outside this range."
+        }
+      }
+    },
+
+    "enum-value": {
+      "type": "object",
+      "required": ["name", "value"],
+      "properties": {
+        "name": { "type": "string" },
+        "value": { "type": "integer" }
+      }
+    },
+
+    "bit-value": {
+      "type": "object",
+      "required": ["name", "position"],
+      "properties": {
+        "name": { "type": "string" },
+        "position": { "type": "integer", "minimum": 0 }
+      }
+    },
+
+    "pattern-value": {
+      "type": "object",
+      "required": ["pattern", "invert-match"],
+      "properties": {
+        "pattern": { "type": "string" },
+        "invert-match": {
+          "type": "boolean",
+          "description": "true if a value must NOT match the pattern."
+        },
+        "error-message": {
+          "type": "string",
+          "description": "The message to report when a value fails this pattern."
+        },
+        "error-app-tag": {
+          "type": "string",
+          "description": "The application tag to report when a value fails this pattern."
+        }
+      }
+    },
+
+    "type-descriptor": {
+      "description": "A resolved YANG type, selected by `builtin`. Each branch requires exactly the substatements RFC 7950 Sec. 9 makes mandatory for that builtin; fercc may add further optional fields to any branch in a future minor version.",
+      "allOf": [
+        {
+          "type": "object",
+          "required": ["builtin"],
+          "properties": {
+            "builtin": {
+              "enum": [
+                "binary", "bits", "boolean", "decimal64", "empty", "enumeration",
+                "identityref", "instance-identifier", "int8", "int16", "int32", "int64",
+                "leafref", "string", "uint8", "uint16", "uint32", "uint64", "union"
+              ]
+            },
+            "base-type": {
+              "$ref": "#/$defs/typedef-key",
+              "description": "The typedef this type is derived from. Absent when its base type is the built-in type in `builtin`."
+            }
+          }
+        },
+        {
+          "oneOf": [
+            {
+              "title": "Binary",
+              "type": "object",
+              "properties": {
+                "builtin": { "const": "binary" },
+                "length": { "$ref": "#/$defs/range" }
+              }
+            },
+            {
+              "title": "Bits",
+              "type": "object",
+              "required": ["bit"],
+              "properties": {
+                "builtin": { "const": "bits" },
+                "bit": { "type": "array", "items": { "$ref": "#/$defs/bit-value" } }
+              }
+            },
+            {
+              "title": "Boolean",
+              "type": "object",
+              "properties": { "builtin": { "const": "boolean" } }
+            },
+            {
+              "title": "Decimal64",
+              "type": "object",
+              "required": ["fraction-digit"],
+              "properties": {
+                "builtin": { "const": "decimal64" },
+                "fraction-digit": { "type": "integer", "minimum": 1, "maximum": 18 },
+                "range": { "$ref": "#/$defs/range64" }
+              }
+            },
+            {
+              "title": "Empty",
+              "type": "object",
+              "properties": { "builtin": { "const": "empty" } }
+            },
+            {
+              "title": "Enumeration",
+              "type": "object",
+              "required": ["enum"],
+              "properties": {
+                "builtin": { "const": "enumeration" },
+                "enum": { "type": "array", "items": { "$ref": "#/$defs/enum-value" } }
+              }
+            },
+            {
+              "title": "Identityref",
+              "type": "object",
+              "required": ["base"],
+              "properties": {
+                "builtin": { "const": "identityref" },
+                "base": {
+                  "type": "array",
+                  "items": { "$ref": "#/$defs/qualified-name" },
+                  "minItems": 1,
+                  "description": "Base identities, into `identities`."
+                },
+                "values": {
+                  "type": "array",
+                  "items": { "$ref": "#/$defs/qualified-name" },
+                  "description": "The identities the server implements as values of this identityref, into `identities`, sorted. Present on a schema node's own resolved type. Absent on a typedef's own declaration -- a typedef can be used in multiple places, each with its own values."
+                }
+              }
+            },
+            {
+              "title": "Instance-identifier",
+              "type": "object",
+              "required": ["require-instance"],
+              "properties": {
+                "builtin": { "const": "instance-identifier" },
+                "require-instance": {
+                  "type": "boolean",
+                  "description": "Whether the referenced instance must exist."
+                }
+              }
+            },
+            {
+              "title": "Int8",
+              "type": "object",
+              "properties": { "builtin": { "const": "int8" }, "range": { "$ref": "#/$defs/range" } }
+            },
+            {
+              "title": "Int16",
+              "type": "object",
+              "properties": { "builtin": { "const": "int16" }, "range": { "$ref": "#/$defs/range" } }
+            },
+            {
+              "title": "Int32",
+              "type": "object",
+              "properties": { "builtin": { "const": "int32" }, "range": { "$ref": "#/$defs/range" } }
+            },
+            {
+              "title": "Int64",
+              "type": "object",
+              "properties": { "builtin": { "const": "int64" }, "range": { "$ref": "#/$defs/range64" } }
+            },
+            {
+              "title": "Leafref",
+              "type": "object",
+              "required": ["path", "require-instance"],
+              "properties": {
+                "builtin": { "const": "leafref" },
+                "path": { "type": "string", "description": "The raw (possibly relative) path." },
+                "target": {
+                  "$ref": "#/$defs/schema-node-path",
+                  "description": "Resolved target of `path`. Present on a schema node's own resolved type. Absent on a typedef's own declaration -- a typedef can be used in multiple places so there is no single target."
+                },
+                "require-instance": {
+                  "type": "boolean",
+                  "description": "Whether a node with the referenced value must exist at `target`."
+                }
+              }
+            },
+            {
+              "title": "String",
+              "type": "object",
+              "properties": {
+                "builtin": { "const": "string" },
+                "length": { "$ref": "#/$defs/range" },
+                "pattern": { "type": "array", "items": { "$ref": "#/$defs/pattern-value" } }
+              }
+            },
+            {
+              "title": "Uint8",
+              "type": "object",
+              "properties": { "builtin": { "const": "uint8" }, "range": { "$ref": "#/$defs/range" } }
+            },
+            {
+              "title": "Uint16",
+              "type": "object",
+              "properties": { "builtin": { "const": "uint16" }, "range": { "$ref": "#/$defs/range" } }
+            },
+            {
+              "title": "Uint32",
+              "type": "object",
+              "properties": { "builtin": { "const": "uint32" }, "range": { "$ref": "#/$defs/range" } }
+            },
+            {
+              "title": "Uint64",
+              "type": "object",
+              "properties": { "builtin": { "const": "uint64" }, "range": { "$ref": "#/$defs/range64" } }
+            },
+            {
+              "title": "Union",
+              "type": "object",
+              "required": ["type"],
+              "properties": {
+                "builtin": { "const": "union" },
+                "type": { "type": "array", "items": { "$ref": "#/$defs/type-descriptor" }, "minItems": 1 }
+              }
+            }
+          ]
+        }
+      ]
+    },
+
+    "typedef": {
+      "description": "A named YANG type.",
+      "type": "object",
+      "required": ["module", "name", "type"],
+      "properties": {
+        "module": { "$ref": "#/$defs/module-name" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "type": { "$ref": "#/$defs/type-descriptor" },
+        "default": {
+          "type": "string",
+          "description": "This type's default value, if it has one."
+        },
+        "units": {
+          "type": "string",
+          "description": "This type's units, if it has any."
+        }
+      }
+    },
+
+    "identity": {
+      "type": "object",
+      "required": ["module", "name", "sid", "base"],
+      "properties": {
+        "module": { "$ref": "#/$defs/module-name" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "sid": { "$ref": "#/$defs/sid-string" },
+
+        "base": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/qualified-name" },
+          "description": "This identity's own declared base identities."
+        }
+      }
+    },
+
+    "yang-data": {
+      "type": "object",
+      "required": ["module", "name", "root"],
+      "properties": {
+        "module": {
+          "$ref": "#/$defs/module-name",
+          "description": "The module this template is declared in."
+        },
+        "name": {
+          "type": "string",
+          "description": "This template's own name, the argument of its yang-data statement."
+        },
+        "root": {
+          "$ref": "#/$defs/schema-node-path",
+          "description": "The template's single top-level container, in schema-nodes."
+        }
+      }
+    },
+
+    "module": {
+      "type": "object",
+      "required": ["namespace", "sid", "schema-root-nodes", "data-root-nodes", "typedefs", "identities", "yang-data", "deviations"],
+      "properties": {
+        "namespace": {
+          "type": "string",
+          "format": "uri",
+          "description": "This module's XML namespace URI."
+        },
+
+        "sid": { "$ref": "#/$defs/sid-string" },
+
+        "revision": {
+          "type": "string",
+          "description": "This module's latest revision date, if any."
+        },
+
+        "schema-root-nodes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/schema-node-path" },
+          "description": "This module's top-level schema node paths, in declaration order."
+        },
+
+        "data-root-nodes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/schema-node-path" },
+          "description": "This module's top-level schema node paths with choice/case spliced out (each replaced by its own data-children, recursively), in declaration order."
+        },
+
+        "typedefs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/typedef-key" },
+          "description": "Typedefs this module declares."
+        },
+
+        "identities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/qualified-name" },
+          "description": "Identities this module declares that the server implements, i.e. that are valid values of an identityref the server implements."
+        },
+
+        "yang-data": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/qualified-name" },
+          "description": "Yang-data templates this module declares."
+        },
+
+        "deviations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/module-name" },
+          "description": "Every module that declares a deviation on a node in this module. Never includes itself."
+        }
+      }
+    },
+
+    "import-only-module": {
+      "type": "object",
+      "required": ["name", "namespace", "sid", "typedefs", "identities"],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/module-name",
+          "description": "This module's unique name."
+        },
+
+        "namespace": {
+          "type": "string",
+          "format": "uri",
+          "description": "This module's XML namespace URI."
+        },
+
+        "sid": { "$ref": "#/$defs/sid-string" },
+
+        "revision": {
+          "type": "string",
+          "description": "The revision of this module that is imported. Absent if no revision was specified on the import statement."
+        },
+
+        "typedefs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/typedef-key" },
+          "description": "Typedefs this module declares."
+        },
+
+        "identities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/qualified-name" },
+          "description": "Base identities this module declares that the server's implemented identities and identityrefs refer to, directly or through base statements. The server doesn't implement them as values."
+        }
+      }
+    },
+
+    "sid-index-entry": {
+      "type": "object",
+      "required": ["namespace", "identifier"],
+      "properties": {
+        "namespace": {
+          "enum": ["module", "data", "identity", "feature"],
+          "description": "As given in the source .sid file (RFC 9595). Note: pyang tags choice/case as \"data\" too, though RFC 7950 excludes them from that term."
+        },
+
+        "identifier": {
+          "type": "string",
+          "description": "The natural key for this namespace: schema-node-path (data), module name (module), \"module:name\" (identity), or \"module:name\" (feature)."
+        }
+      }
+    },
+
+    "schema-node": {
+      "description": "One schema node, selected by `keyword`. Each branch requires exactly the substatements RFC 7950 makes mandatory for that keyword; fercc may add further optional fields to any branch in a future minor version.",
+      "allOf": [
+        {
+          "type": "object",
+          "required": ["keyword", "name", "module", "implicit"],
+          "properties": {
+            "keyword": {
+              "enum": [
+                "container", "leaf", "leaf-list", "list", "choice", "case",
+                "rpc", "action", "input", "output", "notification", "anydata", "anyxml"
+              ]
+            },
+            "name": {
+              "type": "string",
+              "description": "This node's own declared name."
+            },
+            "module": {
+              "$ref": "#/$defs/module-name",
+              "description": "This node's defining module."
+            },
+            "parent": {
+              "$ref": "#/$defs/schema-node-path",
+              "description": "The schema node's parent. Absent at a module's top level and at a yang-data template's root."
+            },
+            "status": {
+              "enum": ["current", "deprecated", "obsolete"],
+              "description": "current: safe to use. deprecated: still usable but scheduled for removal. obsolete: no longer usable."
+            },
+            "description": { "type": "string" },
+            "sid": { "$ref": "#/$defs/sid-string" },
+            "implicit": {
+              "type": "boolean",
+              "description": "True if this node has no corresponding statement in the source YANG text -- e.g. a shorthand `case` or an rpc/action's `input`/`output` left unwritten, both of which always exist in the schema tree regardless."
+            },
+            "schema-children": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/schema-node-path" },
+              "description": "Direct children's paths, in declaration order."
+            },
+            "data-children": {
+              "type": "array",
+              "items": { "$ref": "#/$defs/schema-node-path" },
+              "description": "Direct children's paths with choice/case spliced out (each replaced by its own data-children, recursively), in declaration order."
+            }
+          }
+        },
+        {
+          "oneOf": [
+            {
+              "title": "Container",
+              "type": "object",
+              "required": ["config", "schema-children", "data-children", "status", "sid"],
+              "properties": {
+                "keyword": { "const": "container" },
+                "config": { "type": "boolean" }
+              }
+            },
+            {
+              "title": "Leaf",
+              "type": "object",
+              "required": ["config", "type", "mandatory", "status", "sid"],
+              "properties": {
+                "keyword": { "const": "leaf" },
+                "config": { "type": "boolean" },
+                "type": { "$ref": "#/$defs/type-descriptor" },
+                "mandatory": { "type": "boolean" },
+                "default": {
+                  "type": "string",
+                  "description": "The value used when the leaf is absent, if it has one."
+                },
+                "units": {
+                  "type": "string",
+                  "description": "The leaf's units, if it has any."
+                }
+              }
+            },
+            {
+              "title": "Leaf-list",
+              "type": "object",
+              "required": ["config", "type", "status", "sid"],
+              "properties": {
+                "keyword": { "const": "leaf-list" },
+                "config": { "type": "boolean" },
+                "type": { "$ref": "#/$defs/type-descriptor" },
+                "default": {
+                  "type": "array",
+                  "items": { "type": "string" },
+                  "minItems": 1,
+                  "description": "The values used when the leaf-list is absent, in order, if it has any."
+                },
+                "units": {
+                  "type": "string",
+                  "description": "The leaf-list's units, if it has any."
+                }
+              }
+            },
+            {
+              "title": "List",
+              "type": "object",
+              "required": ["config", "schema-children", "data-children", "keys", "status", "sid"],
+              "properties": {
+                "keyword": { "const": "list" },
+                "config": { "type": "boolean" },
+                "keys": {
+                  "type": "array",
+                  "items": { "$ref": "#/$defs/schema-node-path" },
+                  "description": "Key leafs' own paths, in the order the list's \"key\" statement lists them. Empty for a keyless list (legal when config false)."
+                }
+              }
+            },
+            {
+              "title": "Choice",
+              "type": "object",
+              "required": ["config", "schema-children", "data-children", "mandatory", "status"],
+              "properties": {
+                "keyword": { "const": "choice" },
+                "config": { "type": "boolean" },
+                "mandatory": { "type": "boolean" },
+                "default": {
+                  "$ref": "#/$defs/schema-node-path",
+                  "description": "The case used when no case is present in the data."
+                }
+              }
+            },
+            {
+              "title": "Case",
+              "type": "object",
+              "required": ["schema-children", "data-children", "status"],
+              "properties": {
+                "keyword": { "const": "case" }
+              }
+            },
+            {
+              "title": "Rpc",
+              "type": "object",
+              "required": ["schema-children", "data-children", "status", "sid"],
+              "properties": {
+                "keyword": { "const": "rpc" }
+              }
+            },
+            {
+              "title": "Action",
+              "type": "object",
+              "required": ["schema-children", "data-children", "status", "sid"],
+              "properties": {
+                "keyword": { "const": "action" }
+              }
+            },
+            {
+              "title": "Input",
+              "type": "object",
+              "required": ["schema-children", "data-children", "sid"],
+              "properties": {
+                "keyword": { "const": "input" }
+              }
+            },
+            {
+              "title": "Output",
+              "type": "object",
+              "required": ["schema-children", "data-children", "sid"],
+              "properties": {
+                "keyword": { "const": "output" }
+              }
+            },
+            {
+              "title": "Notification",
+              "type": "object",
+              "required": ["schema-children", "data-children", "status", "sid"],
+              "properties": {
+                "keyword": { "const": "notification" }
+              }
+            },
+            {
+              "title": "Anydata",
+              "type": "object",
+              "required": ["config", "mandatory", "status", "sid"],
+              "properties": {
+                "keyword": { "const": "anydata" },
+                "config": { "type": "boolean" },
+                "mandatory": { "type": "boolean" }
+              }
+            },
+            {
+              "title": "Anyxml",
+              "type": "object",
+              "required": ["config", "mandatory", "status", "sid"],
+              "properties": {
+                "keyword": { "const": "anyxml" },
+                "config": { "type": "boolean" },
+                "mandatory": { "type": "boolean" }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -8,7 +8,11 @@
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Parser, Debug)]
-#[command(name = "fercc", about = "MUP1/CoAP/CORECONF client for VelocityDRIVE-SP devices", version)]
+#[command(
+    name = "fercc",
+    about = "MUP1/CoAP/CORECONF client for VelocityDRIVE-SP devices",
+    version
+)]
 pub struct Opts {
     /// `conv`/`schema`, folding in `yang-enc`'s CLI (mirrors
     /// `support/yang-enc/yang-enc.rb`). Omitted entirely: the flat
@@ -138,6 +142,10 @@ pub enum Command {
     Conv(ConvArgs),
     /// Generate a JSON Schema from a YANG schema.
     Schema(SchemaArgs),
+    /// Generate the yang catalog (see
+    /// schema/yang-catalog-schema-v1.0.0.json) from YANG modules, their
+    /// SID files and a ui-tailoring.yaml.
+    Catalog(CatalogArgs),
 }
 
 #[derive(Args, Debug)]
@@ -164,14 +172,29 @@ pub struct ConvArgs {
     /// An optional data file (default: read from STDIN), and/or an
     /// explicit catalog to use instead of the workspace catalog: some
     /// `.yang` files plus their matching `.sid` files (both required
-    /// together). Order doesn't matter -- each argument is sorted into
-    /// one of the three groups by its extension.
+    /// together), and optionally a `ui-tailoring.yaml`. Order doesn't
+    /// matter -- each argument is sorted by its extension, or by its name
+    /// for `ui-tailoring.yaml`.
     pub files: Vec<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct SchemaArgs {
-    /// An explicit set of `.yang` files to schematize instead of the
-    /// workspace catalog.
+    /// An explicit set of `.yang` files, and optionally a
+    /// `ui-tailoring.yaml`, to schematize instead of the workspace
+    /// catalog.
+    pub files: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct CatalogArgs {
+    /// Where to write the yang catalog (default: STDOUT).
+    #[arg(short = 'o', long = "output")]
+    pub output: Option<String>,
+
+    /// The `.yang` files, their matching `.sid` files, and optionally a
+    /// `ui-tailoring.yaml`. Order doesn't matter -- each argument is
+    /// sorted by its extension, or by its name for `ui-tailoring.yaml`.
+    #[arg(required = true)]
     pub files: Vec<String>,
 }

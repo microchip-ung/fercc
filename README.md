@@ -21,13 +21,32 @@ way to get one). No other system packages are needed to build.
 cargo build --release
 ```
 
-The binary is then at `target/release/fercc`. Alternatively,
-`cargo install --path fercc` builds and installs it straight to
-`~/.cargo/bin` (make sure that's on your `PATH`)
+The binary is then at `target/release/fercc`. Alternatively, without
+cloning this repository at all, this builds a release and installs it
+straight to `~/.cargo/bin` (make sure that's on your `PATH`):
+
+```
+cargo install --locked --git https://github.com/microchip-ung/fercc --tag <TAG> fercc
+```
+
+where `<TAG>` is one of the
+[release tags](https://github.com/microchip-ung/fercc/releases), e.g.
+`v0.1.0`.
 
 `curl` needs to be installed for the automatic YANG data model download
 mentioned above; everything else has no runtime dependencies beyond the
 operating system itself.
+
+## Developing
+
+After cloning, point git at this repo's committed hooks so `cargo fmt`
+formatting is checked before each commit:
+
+```
+git config core.hooksPath .githooks
+```
+
+This is a one-time, per-clone step (git does not do this automatically).
 
 ## Usage
 

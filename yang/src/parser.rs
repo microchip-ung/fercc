@@ -30,12 +30,16 @@ pub struct Stmt {
 impl Stmt {
     /// The first immediate substatement with this keyword, if any.
     pub fn sub(&self, keyword: &str) -> Option<&Stmt> {
-        self.subs.iter().find(|s| s.prefix.is_none() && s.keyword == keyword)
+        self.subs
+            .iter()
+            .find(|s| s.prefix.is_none() && s.keyword == keyword)
     }
 
     /// All immediate substatements with this keyword.
     pub fn subs_of<'a>(&'a self, keyword: &'a str) -> impl Iterator<Item = &'a Stmt> {
-        self.subs.iter().filter(move |s| s.prefix.is_none() && s.keyword == keyword)
+        self.subs
+            .iter()
+            .filter(move |s| s.prefix.is_none() && s.keyword == keyword)
     }
 
     /// The argument, or an empty string if the statement takes none.
@@ -75,7 +79,12 @@ impl Lexer {
     /// real `pyang`-based toolchain doesn't produce.
     fn new(src: &str) -> Self {
         let normalized = src.replace("\r\n", "\n").replace('\r', "\n");
-        Self { chars: normalized.chars().collect(), pos: 0, line: 1, col: 0 }
+        Self {
+            chars: normalized.chars().collect(),
+            pos: 0,
+            line: 1,
+            col: 0,
+        }
     }
 
     fn peek(&self) -> Option<char> {
@@ -105,7 +114,11 @@ impl Lexer {
     }
 
     fn err(&self, message: impl Into<String>) -> ParseError {
-        ParseError { message: message.into(), line: self.line, col: self.col }
+        ParseError {
+            message: message.into(),
+            line: self.line,
+            col: self.col,
+        }
     }
 
     fn skip_trivia(&mut self) {
@@ -228,7 +241,9 @@ impl Lexer {
             return Err(self.err(format!("expected a keyword, found {:?}", self.peek())));
         }
         match word.split_once(':') {
-            Some((prefix, local)) if !local.is_empty() => Ok((Some(prefix.to_string()), local.to_string())),
+            Some((prefix, local)) if !local.is_empty() => {
+                Ok((Some(prefix.to_string()), local.to_string()))
+            }
             _ => Ok((None, word)),
         }
     }
@@ -265,7 +280,12 @@ impl Lexer {
             other => return Err(self.err(format!("expected ';' or '{{', found {other:?}"))),
         }
 
-        Ok(Stmt { prefix, keyword, arg, subs })
+        Ok(Stmt {
+            prefix,
+            keyword,
+            arg,
+            subs,
+        })
     }
 }
 
@@ -326,7 +346,10 @@ pub fn parse_module(src: &str) -> Result<Stmt, ParseError> {
     }
     if stmt.keyword != "module" && stmt.keyword != "submodule" {
         return Err(ParseError {
-            message: format!("expected a 'module' or 'submodule' statement, found '{}'", stmt.keyword),
+            message: format!(
+                "expected a 'module' or 'submodule' statement, found '{}'",
+                stmt.keyword
+            ),
             line: 1,
             col: 0,
         });

@@ -96,7 +96,11 @@ impl Block {
     }
 
     fn decode_value(raw: u32) -> Self {
-        Block { szx: (raw & 7) as u8, more: (raw >> 3) & 1 != 0, num: raw >> 4 }
+        Block {
+            szx: (raw & 7) as u8,
+            more: (raw >> 3) & 1 != 0,
+            num: raw >> 4,
+        }
     }
 }
 
@@ -155,7 +159,10 @@ struct Writer {
 
 impl Writer {
     fn new() -> Self {
-        Self { buf: Vec::new(), prev_opt: 0 }
+        Self {
+            buf: Vec::new(),
+            prev_opt: 0,
+        }
     }
 
     fn opt_header(&mut self, delta: u16, length: u16) {
@@ -246,7 +253,14 @@ pub fn encode_request(p: &RequestParams) -> Vec<u8> {
     }
 
     // Block2: always offered, `more` is meaningless on a request.
-    w.opt_block(OPT_BLOCK2, Block { num: p.block2.num, more: false, szx: p.block2.szx });
+    w.opt_block(
+        OPT_BLOCK2,
+        Block {
+            num: p.block2.num,
+            more: false,
+            szx: p.block2.szx,
+        },
+    );
 
     if let Some(block1) = p.block1 {
         w.opt_block(OPT_BLOCK1, block1);
@@ -306,7 +320,15 @@ pub fn parse(msg: &[u8]) -> Result<ParsedMessage, ParseError> {
                 return Err(ParseError);
             }
             payload = msg[pos..].to_vec();
-            return Ok(ParsedMessage { msg_type, code, msg_id, content_format, block1, block2, payload });
+            return Ok(ParsedMessage {
+                msg_type,
+                code,
+                msg_id,
+                content_format,
+                block1,
+                block2,
+                payload,
+            });
         }
 
         let opt_byte = msg[pos];
@@ -370,7 +392,15 @@ pub fn parse(msg: &[u8]) -> Result<ParsedMessage, ParseError> {
         prev_opt_num = opt_num;
     }
 
-    Ok(ParsedMessage { msg_type, code, msg_id, content_format, block1, block2, payload })
+    Ok(ParsedMessage {
+        msg_type,
+        code,
+        msg_id,
+        content_format,
+        block1,
+        block2,
+        payload,
+    })
 }
 
 #[cfg(test)]
@@ -379,7 +409,11 @@ mod tests {
 
     #[test]
     fn encodes_a_simple_get_with_uri_path_and_query() {
-        let block2 = Block { num: 0, more: false, szx: 4 };
+        let block2 = Block {
+            num: 0,
+            more: false,
+            szx: 4,
+        };
         let wire = encode_request(&RequestParams {
             method: Method::Get,
             msg_id: 0x1234,
@@ -426,7 +460,14 @@ mod tests {
         assert_eq!(parsed.code, (2 << 5) | 5);
         assert_eq!(parsed.msg_id, 0xABCD);
         assert_eq!(parsed.content_format, Some(140));
-        assert_eq!(parsed.block2, Some(Block { num: 1, more: false, szx: 4 }));
+        assert_eq!(
+            parsed.block2,
+            Some(Block {
+                num: 1,
+                more: false,
+                szx: 4
+            })
+        );
         assert_eq!(parsed.payload, b"hi");
     }
 
@@ -434,7 +475,11 @@ mod tests {
     fn block_size_round_trips_through_szx() {
         for size in [16u32, 32, 64, 128, 256, 512, 1024] {
             let szx = Block::szx_for_size(size).unwrap();
-            let block = Block { num: 3, more: true, szx };
+            let block = Block {
+                num: 3,
+                more: true,
+                szx,
+            };
             assert_eq!(block.size(), size);
             assert_eq!(Block::decode_value(block.encode_value()), block);
         }

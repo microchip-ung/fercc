@@ -10,3 +10,4 @@ pub mod json_schema;
 pub mod parser;
 pub mod schema;
 pub mod sid;
+pub mod yang_catalog;

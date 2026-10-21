@@ -22,7 +22,9 @@ pub fn from_slice(bytes: &[u8], pos: &mut usize) -> Result<Value, Error> {
         2 => Ok(Value::Bytes(read_string_bytes(bytes, pos, info, 2)?)),
         3 => {
             let raw = read_string_bytes(bytes, pos, info, 3)?;
-            String::from_utf8(raw).map(Value::Text).map_err(|_| err("this CBOR text string isn't valid UTF-8"))
+            String::from_utf8(raw)
+                .map(Value::Text)
+                .map_err(|_| err("this CBOR text string isn't valid UTF-8"))
         }
         4 => Ok(Value::Array(read_array(bytes, pos, info)?)),
         5 => Ok(Value::Map(read_map(bytes, pos, info)?)),
@@ -39,14 +41,20 @@ pub fn from_slice(bytes: &[u8], pos: &mut usize) -> Result<Value, Error> {
 /// The 3-bit major type and 5-bit additional-info field of one head byte
 /// (Section 3.1).
 fn read_head_byte(bytes: &[u8], pos: &mut usize) -> Result<(u8, u8), Error> {
-    let b = *bytes.get(*pos).ok_or_else(|| err("unexpected end of CBOR data"))?;
+    let b = *bytes
+        .get(*pos)
+        .ok_or_else(|| err("unexpected end of CBOR data"))?;
     *pos += 1;
     Ok((b >> 5, b & 0x1f))
 }
 
 fn read_bytes<const N: usize>(bytes: &[u8], pos: &mut usize) -> Result<[u8; N], Error> {
-    let end = pos.checked_add(N).ok_or_else(|| err("unexpected end of CBOR data"))?;
-    let slice = bytes.get(*pos..end).ok_or_else(|| err("unexpected end of CBOR data"))?;
+    let end = pos
+        .checked_add(N)
+        .ok_or_else(|| err("unexpected end of CBOR data"))?;
+    let slice = bytes
+        .get(*pos..end)
+        .ok_or_else(|| err("unexpected end of CBOR data"))?;
     let mut out = [0u8; N];
     out.copy_from_slice(slice);
     *pos = end;
@@ -63,20 +71,29 @@ fn read_arg(bytes: &[u8], pos: &mut usize, info: u8) -> Result<u64, Error> {
         25 => Ok(u64::from(u16::from_be_bytes(read_bytes::<2>(bytes, pos)?))),
         26 => Ok(u64::from(u32::from_be_bytes(read_bytes::<4>(bytes, pos)?))),
         27 => Ok(u64::from_be_bytes(read_bytes::<8>(bytes, pos)?)),
-        _ => Err(err(format!("this CBOR data uses an unsupported length encoding (additional info {info})"))),
+        _ => Err(err(format!(
+            "this CBOR data uses an unsupported length encoding (additional info {info})"
+        ))),
     }
 }
 
 fn read_raw(bytes: &[u8], pos: &mut usize, len: u64) -> Result<Vec<u8>, Error> {
-    let len = usize::try_from(len).map_err(|_| err("a length in this CBOR data is larger than this machine can address"))?;
-    let end = pos.checked_add(len).ok_or_else(|| err("unexpected end of CBOR data"))?;
-    let slice = bytes.get(*pos..end).ok_or_else(|| err("unexpected end of CBOR data"))?;
+    let len = usize::try_from(len)
+        .map_err(|_| err("a length in this CBOR data is larger than this machine can address"))?;
+    let end = pos
+        .checked_add(len)
+        .ok_or_else(|| err("unexpected end of CBOR data"))?;
+    let slice = bytes
+        .get(*pos..end)
+        .ok_or_else(|| err("unexpected end of CBOR data"))?;
     *pos = end;
     Ok(slice.to_vec())
 }
 
 fn peek_is_break(bytes: &[u8], pos: &usize) -> Result<bool, Error> {
-    let b = *bytes.get(*pos).ok_or_else(|| err("unexpected end of CBOR data"))?;
+    let b = *bytes
+        .get(*pos)
+        .ok_or_else(|| err("unexpected end of CBOR data"))?;
     Ok(b == 0xff)
 }
 
@@ -114,7 +131,9 @@ fn read_array(bytes: &[u8], pos: &mut usize, info: u8) -> Result<Vec<Value>, Err
         return Ok(out);
     }
     let count = read_arg(bytes, pos, info)?;
-    let count = usize::try_from(count).map_err(|_| err("an array length in this CBOR data is larger than this machine can address"))?;
+    let count = usize::try_from(count).map_err(|_| {
+        err("an array length in this CBOR data is larger than this machine can address")
+    })?;
     // Reserve a bounded hint only -- a huge claimed count with few actual
     // bytes remaining still errors out item-by-item below, rather than
     // eagerly allocating an attacker-controlled amount of memory.
@@ -137,7 +156,9 @@ fn read_map(bytes: &[u8], pos: &mut usize, info: u8) -> Result<Vec<(Value, Value
         return Ok(out);
     }
     let count = read_arg(bytes, pos, info)?;
-    let count = usize::try_from(count).map_err(|_| err("a map length in this CBOR data is larger than this machine can address"))?;
+    let count = usize::try_from(count).map_err(|_| {
+        err("a map length in this CBOR data is larger than this machine can address")
+    })?;
     let mut out = Vec::with_capacity(count.min(1024));
     for _ in 0..count {
         let k = from_slice(bytes, pos)?;

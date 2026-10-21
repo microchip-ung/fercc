@@ -67,9 +67,16 @@ pub fn parse(src: &str) -> Result<SidFile, String> {
             "feature" => Namespace::Feature,
             other => return Err(format!("unknown SID namespace {other:?}")),
         };
-        items.push(SidItem { namespace, identifier: it.identifier, sid: it.sid });
+        items.push(SidItem {
+            namespace,
+            identifier: it.identifier,
+            sid: it.sid,
+        });
     }
-    Ok(SidFile { module_name: raw.module_name, items })
+    Ok(SidFile {
+        module_name: raw.module_name,
+        items,
+    })
 }
 
 #[cfg(test)]
