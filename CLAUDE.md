@@ -49,10 +49,19 @@ Conversely: don't add a test for something that's already covered (directly
 or transitively) by the existing suite — check first. Do add a test for any
 genuinely new public entry point.
 
+## Tests go in test files, not implementation files
+
+Put new tests in the crate's `tests/` directory (e.g. `yang/tests/codec.rs`
+for `yang/src/codec.rs`), not in a `#[cfg(test)] mod tests` inside the
+implementation file. An in-file test module is only for a test that has to
+reach something private to that file. Before writing one, check whether the
+behavior can be tested through the public API instead; if it can, it goes in
+`tests/`. Don't widen visibility just to move a test out unless told to do that.
+
 ## Test coverage is required before committing
 
 Every change needs test coverage before it's committed: either a new
-`#[test]` (unit test in the same file, or an integration test) or, when
+`#[test]` (in `tests/`, see above) or, when
 behavior is better exercised against real data, a check against the bundled
 real YANG catalog. Check first whether the existing suite already covers the
 new behavior (directly or transitively) before adding a redundant test — see
