@@ -1319,7 +1319,7 @@ fn encode_body(
     // Operational-state (`config false`) children are never required for
     // an ipatch/put request, matching `to_json_schema`'s own filter.
     for c in scope.data_children() {
-        if matches!(cf, ContentFormat::Ipatch | ContentFormat::Put) && !c.config {
+        if matches!(cf, ContentFormat::Ipatch | ContentFormat::Put) && c.config == Some(false) {
             continue;
         }
         let is_key = scope.keys().any(|k| k.local_name() == c.local_name());

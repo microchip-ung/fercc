@@ -115,7 +115,7 @@ pub fn to_json_schema_for_catalog(schema: &Schema, content_format: &str) -> R<Js
             if matches!(child.kw.as_str(), "rpc" | "action") {
                 continue;
             }
-            if matches!(content_format, "ipatch" | "put") && !child.config {
+            if matches!(content_format, "ipatch" | "put") && child.config == Some(false) {
                 continue;
             }
             properties.insert(child.name.clone(), to_json_schema(child, content_format)?);
@@ -149,7 +149,7 @@ pub fn to_json_schema(node: NodeRef<'_>, content_format: &str) -> R<Json> {
         if matches!(child.kw.as_str(), "rpc" | "action") {
             continue;
         }
-        if matches!(content_format, "ipatch" | "put") && !child.config {
+        if matches!(content_format, "ipatch" | "put") && child.config == Some(false) {
             continue;
         }
         properties.insert(child.name.clone(), to_json_schema(child, content_format)?);
@@ -181,7 +181,7 @@ pub fn to_json_schema(node: NodeRef<'_>, content_format: &str) -> R<Json> {
                 type2schema(node.ty().expect("leaf-list without a type"))
                     .map_err(|e| format!("{}: {e}", node.path()))?,
             );
-            if node.config {
+            if node.config == Some(true) {
                 m.insert("uniqueItems".into(), Json::Bool(true));
             }
             Json::Object(m)

@@ -635,7 +635,7 @@ fn the_bundled_ietf_sid_files_structure_is_interpreted_with_its_own_sids() {
         assert_eq!(child.kw, kw, "{name}");
         assert_eq!(child.sid, Some(sid), "{name}");
         // RFC 8791: the config-stmt is ignored inside a structure.
-        assert!(!child.config, "{name} must not be config");
+        assert_eq!(child.config, None, "{name} must have no config");
         let mut names: Vec<String> = child
             .children()
             .map(|c| c.local_name().to_string())
@@ -683,11 +683,11 @@ fn the_bundled_ietf_sid_files_structure_is_interpreted_with_its_own_sids() {
 }
 
 #[test]
-fn every_yang_data_node_reports_config_false() {
+fn no_yang_data_node_reports_config() {
     // RFC 8040 Sec. 8: "The config-stmt is ignored if present" inside a
     // yang-data extension's content -- it isn't real config/state
-    // data, so config must read false everywhere in a yang-data
-    // subtree, never the ordinary config:true default a schema node
+    // data, so no node in a yang-data subtree has a config value at
+    // all, not even the ordinary config:true default a schema node
     // gets when nothing says otherwise.
     let d = doc();
     let schema_nodes = d["schema-nodes"].as_object().unwrap();
@@ -697,9 +697,10 @@ fn every_yang_data_node_reports_config_false() {
         for (path, node) in schema_nodes {
             if path == root || path.starts_with(&format!("{root}/")) {
                 checked += 1;
-                if let Some(config) = node.get("config") {
-                    assert_eq!(config, false, "schema-nodes[{path:?}].config must be false");
-                }
+                assert!(
+                    node.get("config").is_none(),
+                    "schema-nodes[{path:?}] must have no config"
+                );
             }
         }
     }
@@ -1765,4 +1766,148 @@ fn verify_rejects_children_on_a_node_that_cannot_have_any() {
         e.contains("schema-nodes[\"/foo:kind\"] is a leaf/leaf-list/anydata/anyxml but carries a \"data-children\" field"),
         "{e}"
     );
+}
+
+fn config_doc() -> Map<String, Json> {
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          container top {
+            leaf rw {
+              type string;
+            }
+            leaf ro {
+              config false;
+              type string;
+            }
+            action reset {
+              input {
+                leaf delay {
+                  type uint8;
+                }
+              }
+              output {
+                leaf result {
+                  type string;
+                }
+              }
+            }
+            notification changed {
+              leaf what {
+                type string;
+              }
+            }
+          }
+
+          rc:yang-data error-template {
+            container error {
+              leaf message {
+                type string;
+              }
+            }
+          }
+        }
+    "#;
+    let sid_src = r#"{
+        "module-name": "foo",
+        "module-revision": "2026-01-01",
+        "items": [
+            {"namespace": "module", "identifier": "foo", "sid": 1000},
+            {"namespace": "data", "identifier": "/foo:top", "sid": 1001},
+            {"namespace": "data", "identifier": "/foo:top/rw", "sid": 1002},
+            {"namespace": "data", "identifier": "/foo:top/ro", "sid": 1003},
+            {"namespace": "data", "identifier": "/foo:top/reset", "sid": 1004},
+            {"namespace": "data", "identifier": "/foo:top/reset/input", "sid": 1005},
+            {"namespace": "data", "identifier": "/foo:top/reset/input/delay", "sid": 1006},
+            {"namespace": "data", "identifier": "/foo:top/reset/output", "sid": 1007},
+            {"namespace": "data", "identifier": "/foo:top/reset/output/result", "sid": 1008},
+            {"namespace": "data", "identifier": "/foo:top/changed", "sid": 1009},
+            {"namespace": "data", "identifier": "/foo:top/changed/what", "sid": 1010},
+            {"namespace": "data", "identifier": "/foo:error", "sid": 1011},
+            {"namespace": "data", "identifier": "/foo:error/message", "sid": 1012}
+        ]
+    }"#;
+    let schema = yang::schema::build(
+        &[src.to_string()],
+        &[sid_src.to_string()],
+        &["foo:error-template"],
+        &[],
+        &[],
+    )
+    .unwrap();
+    let Json::Object(doc) = to_yang_catalog(&schema).unwrap() else {
+        unreachable!()
+    };
+    doc
+}
+
+#[test]
+fn config_is_emitted_only_on_nodes_that_are_part_of_a_datastore() {
+    let doc = config_doc();
+    let nodes = &doc["schema-nodes"];
+    assert_eq!(nodes["/foo:top"]["config"], true);
+    assert_eq!(nodes["/foo:top/rw"]["config"], true);
+    assert_eq!(nodes["/foo:top/ro"]["config"], false);
+    for path in [
+        "/foo:top/reset",
+        "/foo:top/reset/input",
+        "/foo:top/reset/input/delay",
+        "/foo:top/reset/output",
+        "/foo:top/reset/output/result",
+        "/foo:top/changed",
+        "/foo:top/changed/what",
+        "/foo:error",
+        "/foo:error/message",
+    ] {
+        assert!(
+            nodes[path].get("config").is_none(),
+            "{path} must have no config: {}",
+            nodes[path]
+        );
+    }
+}
+
+#[test]
+fn verify_rejects_a_datastore_node_without_config() {
+    for path in ["/foo:top", "/foo:top/rw", "/foo:top/ro"] {
+        let mut doc = config_doc();
+        doc["schema-nodes"][path]
+            .as_object_mut()
+            .unwrap()
+            .remove("config");
+        let e = verify_yang_catalog(&doc).unwrap_err();
+        assert!(
+            e.contains(&format!("schema-nodes[{path:?}] has no \"config\" field")),
+            "{e}"
+        );
+    }
+}
+
+#[test]
+fn verify_rejects_config_on_a_node_outside_any_datastore() {
+    // Under an action's input and output, under a notification, in a
+    // yang-data template (its root included), and on the action,
+    // input and notification nodes themselves.
+    for path in [
+        "/foo:top/reset",
+        "/foo:top/reset/input",
+        "/foo:top/reset/input/delay",
+        "/foo:top/reset/output/result",
+        "/foo:top/changed",
+        "/foo:top/changed/what",
+        "/foo:error",
+        "/foo:error/message",
+    ] {
+        let mut doc = config_doc();
+        doc["schema-nodes"][path]["config"] = Json::Bool(true);
+        let e = verify_yang_catalog(&doc).unwrap_err();
+        assert!(
+            e.contains(&format!(
+                "schema-nodes[{path:?}] carries a \"config\" field, but isn't part of any datastore"
+            )),
+            "{e}"
+        );
+    }
 }

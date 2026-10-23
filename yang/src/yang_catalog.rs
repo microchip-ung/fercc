@@ -363,10 +363,10 @@ fn schema_node_entry(node: NodeRef<'_>) -> R<Json> {
 
     match node.kw.as_str() {
         "container" => {
-            m.insert("config".to_string(), Json::Bool(node.config));
+            opt_insert(&mut m, "config", node.config.map(Json::Bool));
         }
         "leaf" => {
-            m.insert("config".to_string(), Json::Bool(node.config));
+            opt_insert(&mut m, "config", node.config.map(Json::Bool));
             let ty = node
                 .ty()
                 .ok_or_else(|| format!("leaf {} has no type", node.path()))?;
@@ -376,7 +376,7 @@ fn schema_node_entry(node: NodeRef<'_>) -> R<Json> {
             opt_insert(&mut m, "units", node.units.clone().map(s));
         }
         "leaf-list" => {
-            m.insert("config".to_string(), Json::Bool(node.config));
+            opt_insert(&mut m, "config", node.config.map(Json::Bool));
             let ty = node
                 .ty()
                 .ok_or_else(|| format!("leaf-list {} has no type", node.path()))?;
@@ -390,20 +390,20 @@ fn schema_node_entry(node: NodeRef<'_>) -> R<Json> {
             opt_insert(&mut m, "units", node.units.clone().map(s));
         }
         "list" => {
-            m.insert("config".to_string(), Json::Bool(node.config));
+            opt_insert(&mut m, "config", node.config.map(Json::Bool));
             m.insert(
                 "keys".to_string(),
                 arr(node.keys().map(|k| s(k.path())).collect()),
             );
         }
         "choice" => {
-            m.insert("config".to_string(), Json::Bool(node.config));
+            opt_insert(&mut m, "config", node.config.map(Json::Bool));
             m.insert("mandatory".to_string(), Json::Bool(node.mandatory));
             opt_insert(&mut m, "default", node.default.clone().map(s));
         }
         "case" | "rpc" | "action" | "input" | "output" | "notification" => {}
         "anydata" | "anyxml" => {
-            m.insert("config".to_string(), Json::Bool(node.config));
+            opt_insert(&mut m, "config", node.config.map(Json::Bool));
             m.insert("mandatory".to_string(), Json::Bool(node.mandatory));
         }
         other => return Err(format!("unexpected schema-node keyword {other:?}")),
@@ -1237,11 +1237,45 @@ pub fn verify_yang_catalog(doc: &Map<String, Json>) -> R<()> {
         }
     }
 
+    let yang_data_roots: std::collections::HashSet<&str> = yang_data
+        .values()
+        .filter_map(|template| template["root"].as_str())
+        .collect();
     for (path, node) in schema_nodes {
-        if matches!(
-            node.get("keyword").and_then(Json::as_str),
-            Some("leaf" | "leaf-list" | "anydata" | "anyxml")
-        ) {
+        let keyword = node.get("keyword").and_then(Json::as_str);
+        let carries_config = matches!(
+            keyword,
+            Some("container" | "leaf" | "leaf-list" | "list" | "choice" | "anydata" | "anyxml")
+        );
+        let mut outside_any_datastore = false;
+        let mut cur = Some(path.as_str());
+        while let Some(p) = cur {
+            let ancestor = &schema_nodes[p];
+            if yang_data_roots.contains(p)
+                || matches!(
+                    ancestor.get("keyword").and_then(Json::as_str),
+                    Some("rpc" | "action" | "notification")
+                )
+            {
+                outside_any_datastore = true;
+                break;
+            }
+            cur = ancestor
+                .get("parent")
+                .and_then(Json::as_str)
+                .filter(|parent| schema_nodes.contains_key(*parent));
+        }
+        let has_config = node.get("config").is_some();
+        if carries_config && !outside_any_datastore && !has_config {
+            errors.push(format!("schema-nodes[{path:?}] has no \"config\" field"));
+        }
+        if (!carries_config || outside_any_datastore) && has_config {
+            errors.push(format!(
+                "schema-nodes[{path:?}] carries a \"config\" field, but isn't part of any datastore"
+            ));
+        }
+
+        if matches!(keyword, Some("leaf" | "leaf-list" | "anydata" | "anyxml")) {
             if node.get("schema-children").is_some() {
                 errors.push(format!(
                     "schema-nodes[{path:?}] is a leaf/leaf-list/anydata/anyxml but carries a \"schema-children\" field"

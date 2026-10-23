@@ -6,6 +6,60 @@ use serde_json::Value as Json;
 use yang::codec::*;
 use yang::schema::*;
 
+#[test]
+fn a_put_only_skips_the_required_check_for_state_data() {
+    // A mandatory config false leaf may be left out of a PUT, but a
+    // mandatory leaf under an action's input has no config at all,
+    // so it must still be given.
+    let yang = r#"
+        module st {
+            namespace "urn:st";
+            prefix s;
+
+            container box {
+                leaf counter {
+                    config false;
+                    mandatory true;
+                    type uint32;
+                }
+                action reset {
+                    input {
+                        leaf delay {
+                            mandatory true;
+                            type uint8;
+                        }
+                    }
+                }
+            }
+        }
+    "#;
+    let sid = r#"{
+        "module-name": "st",
+        "module-revision": "2026-01-01",
+        "items": [
+            {"namespace": "module", "identifier": "st", "sid": 2000},
+            {"namespace": "data", "identifier": "/st:box", "sid": 2001},
+            {"namespace": "data", "identifier": "/st:box/counter", "sid": 2002},
+            {"namespace": "data", "identifier": "/st:box/reset", "sid": 2003},
+            {"namespace": "data", "identifier": "/st:box/reset/input", "sid": 2004},
+            {"namespace": "data", "identifier": "/st:box/reset/input/delay", "sid": 2005}
+        ]
+    }"#;
+    let schema =
+        yang::schema::build(&[yang.to_string()], &[sid.to_string()], &[], &[], &[]).unwrap();
+    let empty = Json::Object(serde_json::Map::new());
+
+    let box_id = schema.node_by_data_path("/st:box").unwrap();
+    encode_node_value(&schema, box_id, &empty, ContentFormat::Put, false).unwrap();
+    let e = encode_node_value(&schema, box_id, &empty, ContentFormat::Yang, false).unwrap_err();
+    assert!(e.0.contains("\"counter\""), "{}", e.0);
+
+    let input = schema.node_by_schema_path("/st:box/reset/input").unwrap();
+    let e = encode_node_value(&schema, input, &empty, ContentFormat::Put, false).unwrap_err();
+    assert!(e.0.contains("\"delay\""), "{}", e.0);
+    assert!(e.0.contains("required"), "{}", e.0);
+}
+
 fn cbor_as_i128(value: &Cbor) -> Option<i128> {
     match value {
         Cbor::Integer(i) => Some(*i),
