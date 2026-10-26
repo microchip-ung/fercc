@@ -14,6 +14,12 @@ require 'thread'
 
 VERSION = "1"
 
+# A file is only deleted if it was not modified for at least this amount of
+# time. Without this it is possible to delete files of a build which is still
+# running: the files are uploaded before the property unge-keep-until is set on
+# them and before they are added to the manifest file.
+MIN_AGE = 24 * 60 * 60
+
 INLINE_SCHEMA = {
   "$id" => "https://artifacts-aws.devops.microchip.com/artifactory/ung-generic-dev-local/schemas/unge-artifact-generic-manifest-schema-1.json",
   "$schema" => "https://json-schema.org/draft/2020-12/schema",
@@ -216,6 +222,10 @@ INLINE_SCHEMA = {
                 "build-artifact-browse-ext" => {
                   "type" => "string",
                   "description" => "URL to a browsable directory listing for the external artifact location."
+                },
+                "version" => {
+                  "type" => "string",
+                  "description" => "Optional version selector, e.g. to pick one package version from an archive containing several."
                 }
               },
               "required" => ["build-artifact-url"]
@@ -254,6 +264,11 @@ INLINE_SCHEMA = {
 
 
 $trace_mutex = Mutex.new
+
+# all the files and folders which were deleted, they are printed at the end of
+# the script
+$deleted = []
+$deleted_mutex = Mutex.new
 
 def err msg
   $trace_mutex.synchronize do
@@ -368,7 +383,7 @@ def size_of_txt a
     return "0b"
   end
 
-  s = a.size
+  s = a.is_a?(Integer) ? a : a.size
 
   if s.to_s.size <= 4
     return "#{s}B"
@@ -399,11 +414,19 @@ def uri_to_txt u
   end
 end
 
+AUTH_RETRIES     = 3
+AUTH_RETRY_DELAY = 10 # seconds, multiplied by attempt number
+
 def http_req uri, req
   http = Net::HTTP.new(uri.host, uri.port)
   #http.set_debug_output($stdout)
   http.use_ssl = true
   http.verify_mode = OpenSSL::SSL::VERIFY_NONE
+
+  # net/http silently retries idempotent requests (PUT included) once, but it
+  # doesn't rewind a body stream, so the retry would send an empty body with
+  # the original Content-Length. a_upload() retries streamed uploads instead.
+  http.max_retries = 0 if req.body_stream
 
   req.basic_auth $user, $token
 
@@ -412,14 +435,30 @@ def http_req uri, req
     raise "URI looks wrong: #{uri}"
   end
 
-  dbg "%-12s %5s             %s" % [req.method + "-START", size_of_txt(req.body), uri_to_txt(uri)]
+  req_size = req.body_stream ? req.content_length : req.body
 
-  ts_a = Time.now
-  res = http.request(req)
-  ts_b = Time.now
+  dbg "%-12s %5s             %s" % [req.method + "-START", size_of_txt(req_size), uri_to_txt(uri)]
 
-  dbg "%-6s %3d %7.2f %5s/%-5s %s" % [req.method, res.code.to_i, ts_b - ts_a,
-                                      size_of_txt(req.body), size_of_txt(res.body), uri_to_txt(uri)]
+  res = nil
+  attempt = 0
+  loop do
+    ts_a = Time.now
+    res = http.request(req)
+    ts_b = Time.now
+
+    dbg "%-6s %3d %7.2f %5s/%-5s %s" % [req.method, res.code.to_i, ts_b - ts_a,
+                                        size_of_txt(req_size), size_of_txt(res.body), uri_to_txt(uri)]
+
+    # Now and then Artifactory answers 401 to valid credentials, typically
+    # after ~10 seconds, which looks like its authentication backend timing
+    # out. Retry before concluding that the credentials are bad.
+    break if res.code.to_i != 401 || attempt >= AUTH_RETRIES
+
+    attempt += 1
+    warn "#{req.method} #{uri_to_txt(uri)} got HTTP 401, retry #{attempt}/#{AUTH_RETRIES}"
+    sleep(AUTH_RETRY_DELAY * attempt)
+    req.body_stream.rewind if req.body_stream
+  end
 
   # raise an excetion if not success
   res.value
@@ -437,18 +476,30 @@ def http_put url, data, params = {}
   req = Net::HTTP::Put.new(uri, 'Content-Type' => 'application/octet-stream', 'Accept' => '*/*')
   req.delete "Accept-Encoding"
   req.delete "User-Agent"
-  req.body = data
+  # Stream file handles so net/http sends in chunks; a single >2GiB TLS write overflows OpenSSL's int.
+  if data.respond_to?(:read)
+    req.body_stream = data
+    req.content_length = data.size
+  else
+    req.body = data
+  end
 
   http_req(uri, req)
 end
 
 def http_del url
 
+  url = url.gsub("/api/storage","")
+
+  $deleted_mutex.synchronize do
+    # the callers concatenate the paths, so the url can contain double slashes,
+    # remove them to have a readable list at the end
+    $deleted << url.gsub(/(?<!:)\/\/+/, "/")
+  end
+
   if $dry_run
     return
   end
-
-  url = url.gsub("/api/storage","")
 
   uri = URI(url)
 
@@ -519,6 +570,37 @@ def url_to_path url
   end
 end
 
+def storage_url url
+  base = "https://artifacts-aws.devops.microchip.com/artifactory"
+  path = url_to_path url.gsub("/api/storage", "")
+  # the callers concatenate the paths, so it can contain double slashes
+  return "#{base}/api/storage/#{path.squeeze("/")}"
+end
+
+def http_get_age url
+  begin
+    body = http_get(storage_url(url))
+    m = JSON.parse(body)
+    # 'lastModified' is the time when the content was uploaded, folders don't
+    # have it so fallback on the other timestamps
+    t = m["lastModified"] || m["lastUpdated"] || m["created"]
+    return Time.now - Time.parse(t)
+  rescue
+    # if the age can not be determined, then report it as new such that it is
+    # not deleted now but on one of the next runs
+    return 0
+  end
+end
+
+def old_enough? url
+  age = http_get_age url
+  if age < MIN_AGE
+    info "Keep #{url}, it is only #{(age / 3600).round(1)} hours old"
+    return false
+  end
+  return true
+end
+
 def http_set_keep_until url, keep_until
   base = "https://artifacts-aws.devops.microchip.com/artifactory"
   path = url_to_path url
@@ -571,8 +653,18 @@ def a_exists_folder_or_path path
   end
 end
 
+# Transient network errors on which an upload is retried. Now and then the
+# connection is dropped after the request body is sent, but before the response
+# status line is received (SSL_read: unexpected eof while reading).
+UPLOAD_RETRY_ERRORS = [IOError, EOFError, Errno::ECONNRESET, Errno::ECONNABORTED,
+                       Errno::EPIPE, Errno::ETIMEDOUT, Net::OpenTimeout,
+                       Net::ReadTimeout, OpenSSL::SSL::SSLError]
+UPLOAD_RETRIES     = 3
+UPLOAD_RETRY_DELAY = 10 # seconds, multiplied by attempt number
+
 def a_upload path, data
   if a_exists_folder_or_path path
+    data.close if data.respond_to?(:close)
     if $skip_files_already_present
       return
     end
@@ -580,7 +672,22 @@ def a_upload path, data
   end
 
   dbg "Uploading (#{size_of_txt(data)}) to #{path}"
-  body, code = http_put path, data
+  attempt = 0
+  begin
+    begin
+      # A failed attempt may have consumed (part of) the stream
+      data.rewind if data.respond_to?(:rewind)
+      body, code = http_put path, data
+    rescue *UPLOAD_RETRY_ERRORS => e
+      attempt += 1
+      raise if attempt > UPLOAD_RETRIES
+      warn "Upload of #{uri_to_txt(path)} failed (#{e.class}: #{e.message}), retry #{attempt}/#{UPLOAD_RETRIES}"
+      sleep(UPLOAD_RETRY_DELAY * attempt)
+      retry
+    end
+  ensure
+    data.close if data.respond_to?(:close)
+  end
 end
 
 def update_keep_until_deps deps, indent = ""
@@ -779,6 +886,12 @@ def delete_manifest url
     return
   end
 
+  # the entire build is deleted at once, so it is enough to check the age of the
+  # manifest file
+  if not old_enough? url
+    return
+  end
+
   body = http_get url
   manifest = JSON.parse(body)
 
@@ -788,7 +901,7 @@ def delete_manifest url
       func = -> (d) {
         if d["type"] == "generic-file"
           time = http_get_keep_until d["generic-file-url"]
-          if time < Time.now
+          if time < Time.now and old_enough? d["generic-file-url"]
             http_del d["generic-file-url"]
           end
         elsif d["type"] == "docker"
@@ -804,7 +917,7 @@ def delete_manifest url
           manifest_file = "https://artifacts-aws.devops.microchip.com/artifactory/#{manifest_file}"
 
           time = http_get_keep_until manifest_file
-          if time < Time.now
+          if time < Time.now and old_enough? manifest_file
             http_del "https://artifacts-aws.devops.microchip.com/artifactory/#{repo}/#{u.path}/#{d["docker-tag"]}"
           end
         elsif d["type"] == "build-artifact"
@@ -841,6 +954,26 @@ def delete_manifest url
   end
 
   http_del url
+end
+
+def print_deleted
+  # only the delete command removes something, so don't print anything for the
+  # other commands
+  return if $cmd != "delete"
+
+  # the same path can be deleted more than once, e.g. a file of a manifest and
+  # afterwards the entire folder
+  deleted = $deleted.uniq.sort
+
+  puts ""
+  if $dry_run
+    puts "The following #{deleted.size} files and folders would be deleted:"
+  else
+    puts "The following #{deleted.size} files and folders were deleted:"
+  end
+  deleted.each do |d|
+    puts "  #{d}"
+  end
 end
 
 def read_manifest_files url
@@ -895,7 +1028,7 @@ def clear_path base, url
 
   if exists_manifest(info)
     time = http_get_keep_until "#{content_base}#{url}/manifest.json"
-    if time <= Time.now
+    if time <= Time.now and old_enough? "#{content_base}#{url}/manifest.json"
       # this will go through dependencies and call delete for each of them and
       # then delete all the files in the manifest and the manifest file
       delete_manifest "#{content_base}#{url}/manifest.json"
@@ -926,6 +1059,10 @@ def clear_path base, url
         tmp = files_path - files_manifest
         if tmp.size != 0
           tmp.each do |f|
+            # the file can also be a file of a build which is still running and
+            # which is not yet added to the manifest file, so delete it only
+            # once it is old enough
+            next if not old_enough? "#{content_base}#{url}/#{f}"
             http_del "#{base}#{url}/#{f}"
           end
         end
@@ -939,8 +1076,11 @@ def clear_path base, url
       if c["folder"] == true
         clear_path base, "#{url}#{c["uri"]}"
       else
+        # files without the property unge-keep-until are reported as expired,
+        # therefore also check the age to not delete files which were just
+        # uploaded
         time = http_get_keep_until "#{content_base}#{url}#{c["uri"]}"
-        if time <= Time.now
+        if time <= Time.now and old_enough? "#{content_base}#{url}#{c["uri"]}"
           http_del "#{base}#{url}#{c["uri"]}"
         end
       end
@@ -950,7 +1090,7 @@ def clear_path base, url
     # folder so just remove it
     body = http_get "#{base}#{url}"
     info = JSON.parse(body)
-    if info["children"].size == 0
+    if info["children"].size == 0 and old_enough? "#{content_base}#{url}"
       http_del "#{content_base}#{url}"
     end
   end
@@ -1028,11 +1168,14 @@ Following is a descriptions of the different commands supported:
   to specify the full destination path.
 
 --command delete: delete all files that have the property UNGE-KEEP-UNTIL older
-  than the current date.
+  than the current date. A file is only deleted if it was not modified for at
+  least 1 day, this is to not delete the files of a build which is still
+  running.
   It is required to pass the argument --artifactory-path and this needs to point
   a folder. By default this command will not delete anything, it is required to
   pass --no-dry-run to actually delete the files, otherwise will just print the
-  files that will be deleted
+  files that will be deleted.
+  At the end, the list of all the deleted files and folders is printed.
 
 --command check: check that all the dependencies and all the generated files of
   a build exist.
@@ -1393,7 +1536,7 @@ if $dep_generic_file_dst
   threads=[]
   $m_deps.each do |e|
     func = ->(e) {
-      a_upload(e["generic-file-url"], File.binread(e["generic-file-local-path"]))
+      a_upload(e["generic-file-url"], File.open(e["generic-file-local-path"], "rb"))
       time = http_get_keep_until e["generic-file-url"]
       if time < $keep_until
         http_set_keep_until e["generic-file-url"], $keep_until
@@ -1444,7 +1587,7 @@ threads=[]
 $files.each_slice(slice) do |s|
   func = ->(s) {
     s.each do |e|
-      a_upload("#{$target_url}/#{e["path"]}", File.binread(e["ci-path"]))
+      a_upload("#{$target_url}/#{e["path"]}", File.open(e["ci-path"], "rb"))
     end
   }
   if $threads_support == true
@@ -1492,4 +1635,5 @@ when "check"
   check_build "https://artifacts-aws.devops.microchip.com/artifactory/#{$artifactory_path}"
 when "delete"
   clear_path "https://artifacts-aws.devops.microchip.com/artifactory/api/storage/", "#{$artifactory_path}"
+  print_deleted
 end
