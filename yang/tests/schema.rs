@@ -63,7 +63,7 @@ fn a_yang_data_roots_status_defaults_to_current_too() {
 }
 
 #[test]
-fn a_yang_data_roots_config_is_always_false_even_with_an_explicit_config_true() {
+fn a_yang_data_templates_nodes_have_no_config_even_with_an_explicit_config_true() {
     // RFC 8040 Sec. 8: "The config-stmt is ignored if present" inside
     // a yang-data extension's content -- an explicit `config true`
     // must not survive into the resulting node, unlike an ordinary
@@ -98,9 +98,9 @@ fn a_yang_data_roots_config_is_always_false_even_with_an_explicit_config_true() 
         .find(|y| y.name == "error-template")
         .unwrap()
         .root();
-    assert!(!error_root.config);
+    assert_eq!(error_root.config, None);
     let message = error_root.find_child("message").unwrap();
-    assert!(!message.config);
+    assert_eq!(message.config, None);
 }
 
 #[test]
@@ -1300,6 +1300,294 @@ fn a_typedef_nested_in_a_list_rpc_input_and_notification_all_resolve() {
 
     let notif_x = schema.node_by_data_path("/foo:happened/x").unwrap();
     assert_eq!(notif_x.ty().unwrap().ranges, vec![(0, 100)]);
+}
+
+const CONFIG: &str = r#"
+    module cfg {
+      namespace "urn:cfg";
+      prefix c;
+
+      grouping args {
+        leaf arg {
+          config false;
+          type string;
+        }
+      }
+
+      container top {
+        leaf rw {
+          type string;
+        }
+        container state {
+          config false;
+          leaf counter {
+            type uint32;
+          }
+        }
+        choice mode {
+          config false;
+          leaf implicit {
+            type string;
+          }
+          case explicit {
+            leaf in-case {
+              type string;
+            }
+          }
+        }
+        action reset {
+          input {
+            leaf delay {
+              type uint8;
+            }
+            container options {
+              config false;
+              leaf force {
+                type boolean;
+              }
+            }
+            uses args;
+          }
+          output {
+            leaf result {
+              config true;
+              type string;
+            }
+          }
+        }
+        notification changed {
+          leaf what {
+            type string;
+          }
+        }
+      }
+
+      container ro {
+        config false;
+        leaf value {
+          type string;
+        }
+      }
+
+      rpc restart {
+        input {
+          leaf when {
+            type string;
+          }
+        }
+        output {
+          list log {
+            key "line";
+            leaf line {
+              type string;
+            }
+          }
+        }
+      }
+
+      notification booted {
+        container info {
+          leaf uptime {
+            type uint32;
+          }
+        }
+      }
+
+      augment "/c:top/c:reset/c:input" {
+        leaf added {
+          type string;
+        }
+      }
+    }
+"#;
+
+fn config_of(schema: &Schema, path: &str) -> Option<bool> {
+    schema
+        .node_by_schema_path(path)
+        .unwrap_or_else(|| panic!("{path} not found"))
+        .config
+}
+
+#[test]
+fn a_datastore_nodes_config_is_explicit_or_inherited_from_its_parent() {
+    let schema = build(&[CONFIG.to_string()], &[], &[], &[], &[]).unwrap();
+    // A top-level node with no config statement is configuration.
+    assert_eq!(config_of(&schema, "/cfg:top"), Some(true));
+    assert_eq!(config_of(&schema, "/cfg:top/rw"), Some(true));
+    assert_eq!(config_of(&schema, "/cfg:top/state"), Some(false));
+    assert_eq!(config_of(&schema, "/cfg:top/state/counter"), Some(false));
+    assert_eq!(config_of(&schema, "/cfg:ro"), Some(false));
+    assert_eq!(config_of(&schema, "/cfg:ro/value"), Some(false));
+}
+
+#[test]
+fn a_choices_config_is_inherited_by_its_cases_and_their_children() {
+    // Both the shorthand case and an explicit one take the choice's
+    // config false, and pass it on to the node inside.
+    let schema = build(&[CONFIG.to_string()], &[], &[], &[], &[]).unwrap();
+    assert_eq!(config_of(&schema, "/cfg:top/mode"), Some(false));
+    assert_eq!(config_of(&schema, "/cfg:top/mode/implicit"), Some(false));
+    assert_eq!(
+        config_of(&schema, "/cfg:top/mode/implicit/implicit"),
+        Some(false)
+    );
+    assert_eq!(config_of(&schema, "/cfg:top/mode/explicit"), Some(false));
+    assert_eq!(
+        config_of(&schema, "/cfg:top/mode/explicit/in-case"),
+        Some(false)
+    );
+}
+
+#[test]
+fn nothing_under_an_rpc_action_or_notification_has_config() {
+    // RFC 7950 7.14.2, 7.14.3 and 7.16.2: input, output and notification
+    // trees aren't part of any datastore, so their config statements are
+    // ignored -- explicit ones (options, result) included, and whatever
+    // the node they hang off is.
+    let schema = build(&[CONFIG.to_string()], &[], &[], &[], &[]).unwrap();
+    for path in [
+        "/cfg:top/reset",
+        "/cfg:top/reset/input",
+        "/cfg:top/reset/input/delay",
+        "/cfg:top/reset/input/options",
+        "/cfg:top/reset/input/options/force",
+        "/cfg:top/reset/output",
+        "/cfg:top/reset/output/result",
+        "/cfg:top/changed",
+        "/cfg:top/changed/what",
+        "/cfg:restart",
+        "/cfg:restart/input",
+        "/cfg:restart/input/when",
+        "/cfg:restart/output",
+        "/cfg:restart/output/log",
+        "/cfg:restart/output/log/line",
+        "/cfg:booted",
+        "/cfg:booted/info",
+        "/cfg:booted/info/uptime",
+    ] {
+        assert_eq!(config_of(&schema, path), None, "{path}");
+    }
+}
+
+#[test]
+fn a_node_placed_into_an_input_by_uses_or_augment_has_no_config() {
+    // The grouping's own config false, and the augment's absence of one,
+    // make no difference once the node lands under an input.
+    let schema = build(&[CONFIG.to_string()], &[], &[], &[], &[]).unwrap();
+    assert_eq!(config_of(&schema, "/cfg:top/reset/input/arg"), None);
+    assert_eq!(config_of(&schema, "/cfg:top/reset/input/cfg:added"), None);
+}
+
+#[test]
+fn a_deviate_replace_config_sets_a_datastore_nodes_config_and_its_subtrees() {
+    let dev = r#"
+        module cfg-dev {
+          namespace "urn:cfg-dev";
+          prefix cd;
+
+          import cfg {
+            prefix c;
+          }
+
+          deviation /c:top {
+            deviate replace {
+              config false;
+            }
+          }
+          deviation /c:ro/c:value {
+            deviate replace {
+              config true;
+            }
+          }
+        }
+    "#;
+    let schema = build(&[CONFIG.to_string(), dev.to_string()], &[], &[], &[], &[]).unwrap();
+    assert_eq!(config_of(&schema, "/cfg:top"), Some(false));
+    assert_eq!(config_of(&schema, "/cfg:top/rw"), Some(false));
+    assert_eq!(
+        config_of(&schema, "/cfg:top/mode/explicit/in-case"),
+        Some(false)
+    );
+    assert_eq!(config_of(&schema, "/cfg:ro/value"), Some(true));
+    // The config false spreading down from /cfg:top stops at the
+    // action and notification: their subtrees still have no config.
+    assert_eq!(config_of(&schema, "/cfg:top/reset"), None);
+    assert_eq!(config_of(&schema, "/cfg:top/reset/input/delay"), None);
+    assert_eq!(config_of(&schema, "/cfg:top/changed/what"), None);
+}
+
+#[test]
+fn a_deviate_replace_config_on_a_node_under_an_input_is_ignored() {
+    let dev = r#"
+        module cfg-dev {
+          namespace "urn:cfg-dev";
+          prefix cd;
+
+          import cfg {
+            prefix c;
+          }
+
+          deviation /c:top/c:reset/c:input/c:delay {
+            deviate replace {
+              config false;
+            }
+          }
+          deviation /c:restart/c:output/c:log {
+            deviate replace {
+              config true;
+            }
+          }
+        }
+    "#;
+    let schema = build(&[CONFIG.to_string(), dev.to_string()], &[], &[], &[], &[]).unwrap();
+    assert_eq!(config_of(&schema, "/cfg:top/reset/input/delay"), None);
+    assert_eq!(config_of(&schema, "/cfg:restart/output/log"), None);
+    assert_eq!(config_of(&schema, "/cfg:restart/output/log/line"), None);
+}
+
+#[test]
+fn nothing_in_a_structure_has_config_even_with_an_explicit_config_statement() {
+    // RFC 8791: the config-stmt is ignored inside a structure.
+    let src = r#"
+        module doc {
+          namespace "urn:doc";
+          prefix d;
+
+          import ietf-yang-structure-ext {
+            prefix sx;
+          }
+
+          sx:structure document {
+            container header {
+              config true;
+              leaf title {
+                type string;
+              }
+            }
+            leaf body {
+              config false;
+              type string;
+            }
+          }
+        }
+    "#;
+    let schema = build(
+        &[STRUCTURE_EXT.to_string(), src.to_string()],
+        &[],
+        &[],
+        &[],
+        &[],
+    )
+    .unwrap();
+    let root = schema
+        .structure_roots()
+        .find(|r| r.name == "doc:document")
+        .unwrap();
+    assert_eq!(root.config, None);
+    let header = root.find_child("header").unwrap();
+    assert_eq!(header.config, None);
+    assert_eq!(header.find_child("title").unwrap().config, None);
+    assert_eq!(root.find_child("body").unwrap().config, None);
 }
 
 #[test]

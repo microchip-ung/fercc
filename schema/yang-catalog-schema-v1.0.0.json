@@ -579,6 +579,10 @@
               "description": "current: safe to use. deprecated: still usable but scheduled for removal. obsolete: no longer usable."
             },
             "description": { "type": "string" },
+            "config": {
+              "type": "boolean",
+              "description": "True for configuration, false for state data. On every container, leaf, leaf-list, list, choice, anydata and anyxml, except those under an rpc, action or notification or in a yang-data template, which are not part of any datastore."
+            },
             "sid": { "$ref": "#/$defs/sid-string" },
             "implicit": {
               "type": "boolean",
@@ -601,19 +605,17 @@
             {
               "title": "Container",
               "type": "object",
-              "required": ["config", "schema-children", "data-children", "status", "sid"],
+              "required": ["schema-children", "data-children", "status", "sid"],
               "properties": {
-                "keyword": { "const": "container" },
-                "config": { "type": "boolean" }
+                "keyword": { "const": "container" }
               }
             },
             {
               "title": "Leaf",
               "type": "object",
-              "required": ["config", "type", "mandatory", "status", "sid"],
+              "required": ["type", "mandatory", "status", "sid"],
               "properties": {
                 "keyword": { "const": "leaf" },
-                "config": { "type": "boolean" },
                 "type": { "$ref": "#/$defs/type-descriptor" },
                 "mandatory": { "type": "boolean" },
                 "default": {
@@ -629,10 +631,9 @@
             {
               "title": "Leaf-list",
               "type": "object",
-              "required": ["config", "type", "status", "sid"],
+              "required": ["type", "status", "sid"],
               "properties": {
                 "keyword": { "const": "leaf-list" },
-                "config": { "type": "boolean" },
                 "type": { "$ref": "#/$defs/type-descriptor" },
                 "default": {
                   "type": "array",
@@ -649,10 +650,9 @@
             {
               "title": "List",
               "type": "object",
-              "required": ["config", "schema-children", "data-children", "keys", "status", "sid"],
+              "required": ["schema-children", "data-children", "keys", "status", "sid"],
               "properties": {
                 "keyword": { "const": "list" },
-                "config": { "type": "boolean" },
                 "keys": {
                   "type": "array",
                   "items": { "$ref": "#/$defs/schema-node-path" },
@@ -663,10 +663,9 @@
             {
               "title": "Choice",
               "type": "object",
-              "required": ["config", "schema-children", "data-children", "mandatory", "status"],
+              "required": ["schema-children", "data-children", "mandatory", "status"],
               "properties": {
                 "keyword": { "const": "choice" },
-                "config": { "type": "boolean" },
                 "mandatory": { "type": "boolean" },
                 "default": {
                   "$ref": "#/$defs/schema-node-path",
@@ -725,20 +724,18 @@
             {
               "title": "Anydata",
               "type": "object",
-              "required": ["config", "mandatory", "status", "sid"],
+              "required": ["mandatory", "status", "sid"],
               "properties": {
                 "keyword": { "const": "anydata" },
-                "config": { "type": "boolean" },
                 "mandatory": { "type": "boolean" }
               }
             },
             {
               "title": "Anyxml",
               "type": "object",
-              "required": ["config", "mandatory", "status", "sid"],
+              "required": ["mandatory", "status", "sid"],
               "properties": {
                 "keyword": { "const": "anyxml" },
-                "config": { "type": "boolean" },
                 "mandatory": { "type": "boolean" }
               }
             }

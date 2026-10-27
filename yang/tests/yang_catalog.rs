@@ -9,7 +9,7 @@ use jsonschema::Validator;
 use serde_json::{Map, Value as Json};
 
 use yang::schema::Schema;
-use yang::yang_catalog::to_yang_catalog;
+use yang::yang_catalog::{to_yang_catalog, verify_yang_catalog};
 
 fn test_data_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -635,7 +635,7 @@ fn the_bundled_ietf_sid_files_structure_is_interpreted_with_its_own_sids() {
         assert_eq!(child.kw, kw, "{name}");
         assert_eq!(child.sid, Some(sid), "{name}");
         // RFC 8791: the config-stmt is ignored inside a structure.
-        assert!(!child.config, "{name} must not be config");
+        assert_eq!(child.config, None, "{name} must have no config");
         let mut names: Vec<String> = child
             .children()
             .map(|c| c.local_name().to_string())
@@ -683,11 +683,11 @@ fn the_bundled_ietf_sid_files_structure_is_interpreted_with_its_own_sids() {
 }
 
 #[test]
-fn every_yang_data_node_reports_config_false() {
+fn no_yang_data_node_reports_config() {
     // RFC 8040 Sec. 8: "The config-stmt is ignored if present" inside a
     // yang-data extension's content -- it isn't real config/state
-    // data, so config must read false everywhere in a yang-data
-    // subtree, never the ordinary config:true default a schema node
+    // data, so no node in a yang-data subtree has a config value at
+    // all, not even the ordinary config:true default a schema node
     // gets when nothing says otherwise.
     let d = doc();
     let schema_nodes = d["schema-nodes"].as_object().unwrap();
@@ -697,9 +697,10 @@ fn every_yang_data_node_reports_config_false() {
         for (path, node) in schema_nodes {
             if path == root || path.starts_with(&format!("{root}/")) {
                 checked += 1;
-                if let Some(config) = node.get("config") {
-                    assert_eq!(config, false, "schema-nodes[{path:?}].config must be false");
-                }
+                assert!(
+                    node.get("config").is_none(),
+                    "schema-nodes[{path:?}] must have no config"
+                );
             }
         }
     }
@@ -903,4 +904,1010 @@ fn a_modules_own_typedefs_and_identities_follow_source_declaration_order_not_alp
             "ietf-hardware:sensor-status",
         ])
     );
+}
+
+#[test]
+fn typedef_key_uses_module_colon_name_for_a_top_level_typedef_but_space_form_when_nested() {
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          typedef percent {
+            type uint8 {
+              range "0..100";
+            }
+          }
+
+          container bar {
+            typedef inner-percent {
+              type uint8 {
+                range "0..50";
+              }
+            }
+            leaf a {
+              type percent;
+            }
+            leaf b {
+              type inner-percent;
+            }
+          }
+        }
+    "#;
+    let sid_src = r#"{
+        "module-name": "foo",
+        "module-revision": "2026-01-01",
+        "items": [
+            {"namespace": "module", "identifier": "foo", "sid": 1000},
+            {"namespace": "data", "identifier": "/foo:bar", "sid": 1001},
+            {"namespace": "data", "identifier": "/foo:bar/a", "sid": 1002},
+            {"namespace": "data", "identifier": "/foo:bar/b", "sid": 1003}
+        ]
+    }"#;
+    let schema =
+        yang::schema::build(&[src.to_string()], &[sid_src.to_string()], &[], &[], &[]).unwrap();
+    let doc = to_yang_catalog(&schema).unwrap();
+
+    assert!(doc["typedefs"].get("foo:percent").is_some());
+    assert!(doc["typedefs"].get("/foo:bar inner-percent").is_some());
+    assert_eq!(
+        doc["modules"]["foo"]["typedefs"],
+        serde_json::json!(["foo:percent", "/foo:bar inner-percent"])
+    );
+
+    let v = validator();
+    let errors: Vec<_> = v.iter_errors(&doc).collect();
+    assert!(
+        errors.is_empty(),
+        "document fails schema validation: {errors:?}"
+    );
+}
+
+fn yang_data_doc() -> Map<String, Json> {
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          rc:yang-data error-template {
+            container error {
+              leaf message {
+                type string;
+              }
+            }
+          }
+        }
+    "#;
+    let sid_src = r#"{
+        "module-name": "foo",
+        "module-revision": "2026-01-01",
+        "items": [
+            {"namespace": "module", "identifier": "foo", "sid": 1000},
+            {"namespace": "data", "identifier": "/foo:error", "sid": 1001},
+            {"namespace": "data", "identifier": "/foo:error/message", "sid": 1002}
+        ]
+    }"#;
+    let schema = yang::schema::build(
+        &[src.to_string()],
+        &[sid_src.to_string()],
+        &["foo:error-template"],
+        &[],
+        &[],
+    )
+    .unwrap();
+    let Json::Object(doc) = to_yang_catalog(&schema).unwrap() else {
+        unreachable!()
+    };
+    doc
+}
+
+fn verify_error(doc: &Map<String, Json>) -> String {
+    verify_yang_catalog(doc).expect_err("the corrupted document must fail verification")
+}
+
+#[test]
+fn a_yang_data_templates_root_lives_in_schema_nodes_and_is_listed_by_its_module() {
+    let doc = yang_data_doc();
+    assert_eq!(
+        doc["yang-data"],
+        serde_json::json!({
+            "foo:error-template": {
+                "module": "foo",
+                "name": "error-template",
+                "root": "/foo:error"
+            }
+        })
+    );
+    assert_eq!(
+        doc["modules"]["foo"]["yang-data"],
+        serde_json::json!(["foo:error-template"])
+    );
+    assert_eq!(
+        doc["modules"]["foo"]["schema-root-nodes"],
+        serde_json::json!([])
+    );
+    assert!(doc["schema-nodes"]["/foo:error"].get("parent").is_none());
+    assert_eq!(
+        doc["schema-nodes"]["/foo:error/message"]["parent"],
+        "/foo:error"
+    );
+}
+
+#[test]
+fn verify_rejects_a_parentless_node_that_is_neither_a_module_root_nor_a_yang_data_root() {
+    let mut doc = yang_data_doc();
+    doc["yang-data"].as_object_mut().unwrap().clear();
+    doc["modules"]["foo"]["yang-data"] = serde_json::json!([]);
+    let e = verify_error(&doc);
+    assert!(
+        e.contains("schema-nodes[\"/foo:error\"] carries no parent"),
+        "{e}"
+    );
+}
+
+#[test]
+fn verify_rejects_a_parentless_node_that_is_both_a_module_root_and_a_yang_data_root() {
+    let mut doc = yang_data_doc();
+    doc["modules"]["foo"]["schema-root-nodes"] = serde_json::json!(["/foo:error"]);
+    doc["modules"]["foo"]["data-root-nodes"] = serde_json::json!(["/foo:error"]);
+    let e = verify_error(&doc);
+    assert!(e.contains("listed 2 times"), "{e}");
+}
+
+#[test]
+fn verify_rejects_a_yang_data_root_that_carries_a_parent() {
+    let mut doc = yang_data_doc();
+    doc["yang-data"]["foo:error-template"]["root"] = serde_json::json!("/foo:error/message");
+    let e = verify_error(&doc);
+    assert!(
+        e.contains("schema-nodes[\"/foo:error/message\"] carries a parent but is listed"),
+        "{e}"
+    );
+    assert!(e.contains("is not a container"), "{e}");
+}
+
+#[test]
+fn verify_rejects_a_yang_data_root_missing_from_schema_nodes() {
+    let mut doc = yang_data_doc();
+    doc["yang-data"]["foo:error-template"]["root"] = serde_json::json!("/foo:nowhere");
+    let e = verify_error(&doc);
+    assert!(
+        e.contains(
+            "yang-data[\"foo:error-template\"].root: \"/foo:nowhere\" not found in schema-nodes"
+        ),
+        "{e}"
+    );
+}
+
+#[test]
+fn verify_rejects_a_yang_data_key_that_disagrees_with_its_module_and_name() {
+    let mut doc = yang_data_doc();
+    doc["yang-data"]["foo:error-template"]["name"] = serde_json::json!("other");
+    let e = verify_error(&doc);
+    assert!(e.contains("key doesn't match"), "{e}");
+}
+
+#[test]
+fn verify_rejects_a_yang_data_template_its_module_does_not_list() {
+    let mut doc = yang_data_doc();
+    doc["modules"]["foo"]["yang-data"] = serde_json::json!([]);
+    let e = verify_error(&doc);
+    assert!(
+        e.contains("yang-data[\"foo:error-template\"] is not listed by modules[\"foo\"].yang-data"),
+        "{e}"
+    );
+}
+
+#[test]
+fn verify_rejects_a_module_listing_a_yang_data_template_that_does_not_exist() {
+    let mut doc = yang_data_doc();
+    doc["modules"]["foo"]["yang-data"] = serde_json::json!(["foo:error-template", "foo:missing"]);
+    let e = verify_error(&doc);
+    assert!(
+        e.contains("modules[\"foo\"].yang-data: \"foo:missing\" not found in yang-data"),
+        "{e}"
+    );
+}
+
+#[test]
+fn verify_rejects_a_module_listing_another_modules_yang_data_template() {
+    let mut doc = yang_data_doc();
+    doc["yang-data"]["foo:error-template"]["module"] = serde_json::json!("bar");
+    let e = verify_error(&doc);
+    assert!(e.contains("but its module is \"bar\""), "{e}");
+    assert!(e.contains("is not defined in \"bar\""), "{e}");
+}
+
+fn deviation_doc() -> Map<String, Json> {
+    let host = r#"
+        module host {
+          namespace "urn:host";
+          prefix h;
+
+          leaf a {
+            type string;
+          }
+          leaf b {
+            type string;
+          }
+        }
+    "#;
+    let zed_dev = r#"
+        module zed-dev {
+          namespace "urn:zed-dev";
+          prefix z;
+
+          import host {
+            prefix h;
+          }
+
+          deviation "/h:a" {
+            deviate not-supported;
+          }
+        }
+    "#;
+    let abc_dev = r#"
+        module abc-dev {
+          namespace "urn:abc-dev";
+          prefix ab;
+
+          import host {
+            prefix h;
+          }
+
+          deviation "/h:b" {
+            deviate not-supported;
+          }
+        }
+    "#;
+    let sid_src = r#"{
+        "module-name": "host",
+        "module-revision": "2026-01-01",
+        "items": [
+            {"namespace": "module", "identifier": "host", "sid": 1000},
+            {"namespace": "module", "identifier": "zed-dev", "sid": 1100},
+            {"namespace": "module", "identifier": "abc-dev", "sid": 1200},
+            {"namespace": "data", "identifier": "/host:a", "sid": 1001},
+            {"namespace": "data", "identifier": "/host:b", "sid": 1002}
+        ]
+    }"#;
+    let schema = yang::schema::build(
+        &[host.to_string(), zed_dev.to_string(), abc_dev.to_string()],
+        &[sid_src.to_string()],
+        &[],
+        &[],
+        &[],
+    )
+    .unwrap();
+    let Json::Object(doc) = to_yang_catalog(&schema).unwrap() else {
+        unreachable!()
+    };
+    doc
+}
+
+#[test]
+fn a_modules_deviations_list_every_deviating_module_sorted() {
+    // zed-dev is declared before abc-dev, so this also checks the
+    // list is sorted rather than in declaration order.
+    let doc = deviation_doc();
+    assert_eq!(
+        doc["modules"]["host"]["deviations"],
+        serde_json::json!(["abc-dev", "zed-dev"])
+    );
+    assert_eq!(
+        doc["modules"]["abc-dev"]["deviations"],
+        serde_json::json!([])
+    );
+    assert_eq!(
+        doc["modules"]["zed-dev"]["deviations"],
+        serde_json::json!([])
+    );
+}
+
+#[test]
+fn verify_rejects_a_deviation_that_is_not_an_implemented_module() {
+    let mut doc = deviation_doc();
+    doc["modules"]["host"]["deviations"] = serde_json::json!(["abc-dev", "nowhere"]);
+    let e = verify_error(&doc);
+    assert!(
+        e.contains("modules[\"host\"].deviations: \"nowhere\" not found in modules"),
+        "{e}"
+    );
+}
+
+#[test]
+fn verify_rejects_a_module_listed_as_deviating_itself() {
+    let mut doc = deviation_doc();
+    doc["modules"]["host"]["deviations"] = serde_json::json!(["abc-dev", "host", "zed-dev"]);
+    let e = verify_error(&doc);
+    assert!(
+        e.contains("modules[\"host\"].deviations lists the module itself"),
+        "{e}"
+    );
+}
+
+#[test]
+fn verify_rejects_unsorted_or_duplicate_deviations() {
+    let mut doc = deviation_doc();
+    doc["modules"]["host"]["deviations"] = serde_json::json!(["zed-dev", "abc-dev"]);
+    let e = verify_error(&doc);
+    assert!(
+        e.contains("is not sorted alphabetically without duplicates"),
+        "{e}"
+    );
+
+    let mut doc = deviation_doc();
+    doc["modules"]["host"]["deviations"] = serde_json::json!(["abc-dev", "abc-dev"]);
+    let e = verify_error(&doc);
+    assert!(
+        e.contains("is not sorted alphabetically without duplicates"),
+        "{e}"
+    );
+}
+
+fn identity_doc() -> Map<String, Json> {
+    let lib = r#"
+        module lib {
+          namespace "urn:lib";
+          prefix l;
+
+          identity animal;
+        }
+    "#;
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          import lib {
+            prefix l;
+          }
+
+          identity pet {
+            base l:animal;
+          }
+          identity dog {
+            base pet;
+          }
+          identity cat {
+            base pet;
+          }
+
+          leaf kind {
+            type identityref {
+              base l:animal;
+            }
+          }
+        }
+    "#;
+    let sid_src = r#"{
+        "module-name": "foo",
+        "module-revision": "2026-01-01",
+        "items": [
+            {"namespace": "module", "identifier": "foo", "sid": 1000},
+            {"namespace": "data", "identifier": "/foo:kind", "sid": 1001},
+            {"namespace": "identity", "identifier": "pet", "sid": 1010},
+            {"namespace": "identity", "identifier": "dog", "sid": 1011},
+            {"namespace": "identity", "identifier": "cat", "sid": 1012}
+        ]
+    }"#;
+    let lib_sid = r#"{
+        "module-name": "lib",
+        "module-revision": "2026-01-01",
+        "items": [
+            {"namespace": "module", "identifier": "lib", "sid": 2000},
+            {"namespace": "identity", "identifier": "animal", "sid": 2010}
+        ]
+    }"#;
+    let accepted: &[&str] = &["foo:dog"];
+    let schema = yang::schema::build(
+        &[lib.to_string(), src.to_string()],
+        &[sid_src.to_string(), lib_sid.to_string()],
+        &[],
+        &[("lib:animal", accepted)],
+        &[],
+    )
+    .unwrap();
+    let Json::Object(doc) = to_yang_catalog(&schema).unwrap() else {
+        unreachable!()
+    };
+    doc
+}
+
+#[test]
+fn identities_split_into_implemented_values_and_bases_by_module_kind() {
+    // "pet" is kept as dog's base but isn't accepted, "cat" isn't
+    // accepted or a base of anything accepted, and "animal" is the
+    // leaf's own base, declared in import-only "lib".
+    let doc = identity_doc();
+    let mut keys: Vec<&String> = doc["identities"].as_object().unwrap().keys().collect();
+    keys.sort();
+    assert_eq!(keys, vec!["foo:dog", "foo:pet", "lib:animal"]);
+    assert_eq!(
+        doc["modules"]["foo"]["identities"],
+        serde_json::json!(["foo:dog"])
+    );
+    assert_eq!(
+        doc["import-only-modules"]["lib"]["identities"],
+        serde_json::json!(["lib:animal"])
+    );
+}
+
+#[test]
+fn verify_rejects_an_identity_neither_implemented_nor_referred_to_as_a_base() {
+    let mut doc = identity_doc();
+    doc["modules"]["foo"]["identities"] = serde_json::json!([]);
+    let e = verify_error(&doc);
+    assert!(
+        e.contains("identities[\"foo:dog\"] is neither implemented nor referred to as a base by anything implemented"),
+        "{e}"
+    );
+}
+
+#[test]
+fn verify_rejects_an_import_only_identity_nothing_implemented_refers_to() {
+    // A synthetic "lib:plant" listed by "lib" although nothing
+    // implemented refers to it: it's neither a leaf's base nor
+    // reachable from "dog" through base statements.
+    let mut doc = identity_doc();
+    let mut plant = doc["identities"]["lib:animal"].clone();
+    plant["name"] = serde_json::json!("plant");
+    plant["sid"] = serde_json::json!("2011");
+    doc["identities"]
+        .as_object_mut()
+        .unwrap()
+        .insert("lib:plant".to_string(), plant);
+    doc["sid-index"].as_object_mut().unwrap().insert(
+        "2011".to_string(),
+        serde_json::json!({"namespace": "identity", "identifier": "lib:plant"}),
+    );
+    doc["import-only-modules"]["lib"]["identities"] =
+        serde_json::json!(["lib:animal", "lib:plant"]);
+    let e = verify_error(&doc);
+    assert!(
+        e.contains("import-only-modules[\"lib\"].identities lists \"lib:plant\", which nothing implemented refers to as a base"),
+        "{e}"
+    );
+}
+
+#[test]
+fn verify_rejects_an_identity_listed_by_two_modules() {
+    let mut doc = identity_doc();
+    doc["import-only-modules"]["lib"]["identities"] = serde_json::json!(["lib:animal", "foo:dog"]);
+    let e = verify_error(&doc);
+    assert!(
+        e.contains("identities[\"foo:dog\"] is listed by more than one module"),
+        "{e}"
+    );
+    assert!(
+        e.contains("is listed by import-only-modules[\"lib\"], but is declared in \"foo\""),
+        "{e}"
+    );
+}
+
+#[test]
+fn verify_rejects_an_import_only_modules_identity_listed_by_no_module() {
+    let mut doc = identity_doc();
+    doc["import-only-modules"]["lib"]["identities"] = serde_json::json!([]);
+    let e = verify_error(&doc);
+    assert!(
+        e.contains("identities[\"lib:animal\"] is listed by no module"),
+        "{e}"
+    );
+}
+
+#[test]
+fn a_leaf_bases_own_base_is_listed_as_a_base_only() {
+    // "pet" is the leaf's base and has a base of its own, "animal",
+    // which no leaf names. The implemented "dog" still refers to
+    // "animal" through base statements, so it's listed, and the
+    // verifier must accept that.
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          identity animal;
+          identity pet {
+            base animal;
+          }
+          identity dog {
+            base pet;
+          }
+
+          leaf kind {
+            type identityref {
+              base pet;
+            }
+          }
+        }
+    "#;
+    let sid_src = r#"{
+        "module-name": "foo",
+        "module-revision": "2026-01-01",
+        "items": [
+            {"namespace": "module", "identifier": "foo", "sid": 1000},
+            {"namespace": "data", "identifier": "/foo:kind", "sid": 1001},
+            {"namespace": "identity", "identifier": "animal", "sid": 1010},
+            {"namespace": "identity", "identifier": "pet", "sid": 1011},
+            {"namespace": "identity", "identifier": "dog", "sid": 1012}
+        ]
+    }"#;
+    let schema =
+        yang::schema::build(&[src.to_string()], &[sid_src.to_string()], &[], &[], &[]).unwrap();
+    let doc = to_yang_catalog(&schema).unwrap();
+    let mut keys: Vec<&String> = doc["identities"].as_object().unwrap().keys().collect();
+    keys.sort();
+    assert_eq!(keys, vec!["foo:animal", "foo:dog", "foo:pet"]);
+    assert_eq!(
+        doc["modules"]["foo"]["identities"],
+        serde_json::json!(["foo:dog"])
+    );
+}
+
+#[test]
+fn a_leaf_base_without_values_still_lists_its_own_base() {
+    // Nothing derives from "pet", so the leaf has no valid values and
+    // nothing is implemented, but the implemented leaf still refers
+    // to "pet" as its base, and through it to "pet"'s own base
+    // "animal".
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          identity animal;
+          identity pet {
+            base animal;
+          }
+
+          leaf kind {
+            type identityref {
+              base pet;
+            }
+          }
+        }
+    "#;
+    let sid_src = r#"{
+        "module-name": "foo",
+        "module-revision": "2026-01-01",
+        "items": [
+            {"namespace": "module", "identifier": "foo", "sid": 1000},
+            {"namespace": "data", "identifier": "/foo:kind", "sid": 1001},
+            {"namespace": "identity", "identifier": "animal", "sid": 1010},
+            {"namespace": "identity", "identifier": "pet", "sid": 1011}
+        ]
+    }"#;
+    let schema =
+        yang::schema::build(&[src.to_string()], &[sid_src.to_string()], &[], &[], &[]).unwrap();
+    let doc = to_yang_catalog(&schema).unwrap();
+    let mut keys: Vec<&String> = doc["identities"].as_object().unwrap().keys().collect();
+    keys.sort();
+    assert_eq!(keys, vec!["foo:animal", "foo:pet"]);
+    assert_eq!(doc["modules"]["foo"]["identities"], serde_json::json!([]));
+}
+
+#[test]
+fn an_identityref_carries_its_own_sorted_values() {
+    let doc = identity_doc();
+    assert_eq!(
+        doc["schema-nodes"]["/foo:kind"]["type"]["values"],
+        serde_json::json!(["foo:dog"])
+    );
+}
+
+#[test]
+fn verify_rejects_an_identityref_without_values() {
+    let mut doc = identity_doc();
+    doc["schema-nodes"]["/foo:kind"]["type"]
+        .as_object_mut()
+        .unwrap()
+        .remove("values");
+    let e = verify_error(&doc);
+    assert!(e.contains("an identityref has no \"values\""), "{e}");
+}
+
+#[test]
+fn verify_rejects_an_identityref_value_not_derived_from_its_base() {
+    let mut doc = identity_doc();
+    doc["schema-nodes"]["/foo:kind"]["type"]["values"] = serde_json::json!(["lib:animal"]);
+    let e = verify_error(&doc);
+    assert!(
+        e.contains("\"lib:animal\" is not derived from every base"),
+        "{e}"
+    );
+}
+
+#[test]
+fn verify_rejects_an_identityref_value_missing_from_identities() {
+    let mut doc = identity_doc();
+    doc["schema-nodes"]["/foo:kind"]["type"]["values"] = serde_json::json!(["foo:dog", "foo:wolf"]);
+    let e = verify_error(&doc);
+    assert!(e.contains("\"foo:wolf\" not found in identities"), "{e}");
+}
+
+#[test]
+fn verify_rejects_unsorted_identityref_values() {
+    let mut doc = identity_doc();
+    doc["schema-nodes"]["/foo:kind"]["type"]["values"] = serde_json::json!(["foo:pet", "foo:dog"]);
+    let e = verify_error(&doc);
+    assert!(
+        e.contains("values is not sorted alphabetically without duplicates"),
+        "{e}"
+    );
+}
+
+#[test]
+fn verify_rejects_a_value_its_module_does_not_list_as_implemented() {
+    let mut doc = identity_doc();
+    doc["schema-nodes"]["/foo:kind"]["type"]["values"] = serde_json::json!(["foo:dog", "foo:pet"]);
+    let e = verify_error(&doc);
+    assert!(
+        e.contains(
+            "\"foo:pet\" is a value of an identityref but no module lists it as implemented"
+        ),
+        "{e}"
+    );
+}
+
+#[test]
+fn verify_rejects_an_implemented_identity_that_is_no_identityrefs_value() {
+    let mut doc = identity_doc();
+    doc["schema-nodes"]["/foo:kind"]["type"]["values"] = serde_json::json!([]);
+    let e = verify_error(&doc);
+    assert!(
+        e.contains("\"foo:dog\" is listed as implemented but is no identityref's value"),
+        "{e}"
+    );
+}
+
+#[test]
+fn verify_rejects_values_on_a_typedefs_own_descriptor() {
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          identity animal;
+          identity dog {
+            base animal;
+          }
+
+          typedef animal-ref {
+            type identityref {
+              base animal;
+            }
+          }
+
+          leaf kind {
+            type animal-ref;
+          }
+        }
+    "#;
+    let sid_src = r#"{
+        "module-name": "foo",
+        "module-revision": "2026-01-01",
+        "items": [
+            {"namespace": "module", "identifier": "foo", "sid": 1000},
+            {"namespace": "data", "identifier": "/foo:kind", "sid": 1001},
+            {"namespace": "identity", "identifier": "animal", "sid": 1010},
+            {"namespace": "identity", "identifier": "dog", "sid": 1011}
+        ]
+    }"#;
+    let schema =
+        yang::schema::build(&[src.to_string()], &[sid_src.to_string()], &[], &[], &[]).unwrap();
+    let Json::Object(mut doc) = to_yang_catalog(&schema).unwrap() else {
+        unreachable!()
+    };
+    assert!(doc["typedefs"]["foo:animal-ref"]["type"]
+        .get("values")
+        .is_none());
+    doc["typedefs"]["foo:animal-ref"]["type"]["values"] = serde_json::json!(["foo:dog"]);
+    let e = verify_error(&doc);
+    assert!(
+        e.contains("typedefs[\"foo:animal-ref\"]'s own type descriptor must never carry identityref values"),
+        "{e}"
+    );
+}
+
+#[test]
+fn defaults_units_require_instance_and_invert_match_reach_the_document() {
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          typedef seconds {
+            type uint8;
+            default 5;
+            units "seconds";
+          }
+
+          leaf timeout {
+            type seconds;
+          }
+          leaf-list retries {
+            type seconds;
+          }
+          leaf target {
+            type string {
+              pattern "x.*" {
+                modifier invert-match;
+              }
+            }
+          }
+          leaf ref {
+            type leafref {
+              path "/f:target";
+              require-instance false;
+            }
+          }
+          leaf node {
+            type instance-identifier;
+          }
+        }
+    "#;
+    let sid_src = r#"{
+        "module-name": "foo",
+        "module-revision": "2026-01-01",
+        "items": [
+            {"namespace": "module", "identifier": "foo", "sid": 1000},
+            {"namespace": "data", "identifier": "/foo:timeout", "sid": 1001},
+            {"namespace": "data", "identifier": "/foo:retries", "sid": 1002},
+            {"namespace": "data", "identifier": "/foo:target", "sid": 1003},
+            {"namespace": "data", "identifier": "/foo:ref", "sid": 1004},
+            {"namespace": "data", "identifier": "/foo:node", "sid": 1005}
+        ]
+    }"#;
+    let schema =
+        yang::schema::build(&[src.to_string()], &[sid_src.to_string()], &[], &[], &[]).unwrap();
+    let doc = to_yang_catalog(&schema).unwrap();
+    let typedef = &doc["typedefs"]["foo:seconds"];
+    assert_eq!(typedef["default"], "5");
+    assert_eq!(typedef["units"], "seconds");
+    let nodes = &doc["schema-nodes"];
+    assert_eq!(nodes["/foo:timeout"]["default"], "5");
+    assert_eq!(nodes["/foo:timeout"]["units"], "seconds");
+    assert_eq!(nodes["/foo:retries"]["default"], serde_json::json!(["5"]));
+    assert_eq!(nodes["/foo:retries"]["units"], "seconds");
+    assert_eq!(
+        nodes["/foo:target"]["type"]["pattern"],
+        serde_json::json!([{"pattern": "x.*", "invert-match": true}])
+    );
+    assert_eq!(nodes["/foo:ref"]["type"]["require-instance"], false);
+    assert_eq!(nodes["/foo:node"]["type"]["require-instance"], true);
+}
+
+#[test]
+fn range_length_and_pattern_error_info_reach_the_document() {
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          leaf level {
+            type uint8 {
+              range "0..100" {
+                error-message "must be a percentage";
+              }
+            }
+          }
+          leaf big {
+            type uint64 {
+              range "1..max" {
+                error-app-tag "too-small";
+              }
+            }
+          }
+          leaf name {
+            type string {
+              length "1..8" {
+                error-message "1 to 8 characters";
+              }
+              pattern "[a-z]+" {
+                error-message "lower case only";
+                error-app-tag "bad-case";
+              }
+            }
+          }
+        }
+    "#;
+    let sid_src = r#"{
+        "module-name": "foo",
+        "module-revision": "2026-01-01",
+        "items": [
+            {"namespace": "module", "identifier": "foo", "sid": 1000},
+            {"namespace": "data", "identifier": "/foo:level", "sid": 1001},
+            {"namespace": "data", "identifier": "/foo:big", "sid": 1002},
+            {"namespace": "data", "identifier": "/foo:name", "sid": 1003}
+        ]
+    }"#;
+    let schema =
+        yang::schema::build(&[src.to_string()], &[sid_src.to_string()], &[], &[], &[]).unwrap();
+    let doc = to_yang_catalog(&schema).unwrap();
+    let nodes = &doc["schema-nodes"];
+    assert_eq!(
+        nodes["/foo:level"]["type"]["range"],
+        serde_json::json!({"bounds": [[0, 100]], "error-message": "must be a percentage"})
+    );
+    assert_eq!(
+        nodes["/foo:big"]["type"]["range"]["error-app-tag"],
+        "too-small"
+    );
+    assert_eq!(
+        nodes["/foo:name"]["type"]["length"]["error-message"],
+        "1 to 8 characters"
+    );
+    assert_eq!(
+        nodes["/foo:name"]["type"]["pattern"],
+        serde_json::json!([{
+            "pattern": "[a-z]+",
+            "invert-match": false,
+            "error-message": "lower case only",
+            "error-app-tag": "bad-case"
+        }])
+    );
+}
+
+#[test]
+fn verify_rejects_children_on_a_node_that_cannot_have_any() {
+    let mut doc = identity_doc();
+    doc["schema-nodes"]["/foo:kind"]["schema-children"] = serde_json::json!([]);
+    let e = verify_error(&doc);
+    assert!(
+        e.contains("schema-nodes[\"/foo:kind\"] is a leaf/leaf-list/anydata/anyxml but carries a \"schema-children\" field"),
+        "{e}"
+    );
+
+    let mut doc = identity_doc();
+    doc["schema-nodes"]["/foo:kind"]["data-children"] = serde_json::json!([]);
+    let e = verify_error(&doc);
+    assert!(
+        e.contains("schema-nodes[\"/foo:kind\"] is a leaf/leaf-list/anydata/anyxml but carries a \"data-children\" field"),
+        "{e}"
+    );
+}
+
+fn config_doc() -> Map<String, Json> {
+    let src = r#"
+        module foo {
+          namespace "urn:foo";
+          prefix f;
+
+          container top {
+            leaf rw {
+              type string;
+            }
+            leaf ro {
+              config false;
+              type string;
+            }
+            action reset {
+              input {
+                leaf delay {
+                  type uint8;
+                }
+              }
+              output {
+                leaf result {
+                  type string;
+                }
+              }
+            }
+            notification changed {
+              leaf what {
+                type string;
+              }
+            }
+          }
+
+          rc:yang-data error-template {
+            container error {
+              leaf message {
+                type string;
+              }
+            }
+          }
+        }
+    "#;
+    let sid_src = r#"{
+        "module-name": "foo",
+        "module-revision": "2026-01-01",
+        "items": [
+            {"namespace": "module", "identifier": "foo", "sid": 1000},
+            {"namespace": "data", "identifier": "/foo:top", "sid": 1001},
+            {"namespace": "data", "identifier": "/foo:top/rw", "sid": 1002},
+            {"namespace": "data", "identifier": "/foo:top/ro", "sid": 1003},
+            {"namespace": "data", "identifier": "/foo:top/reset", "sid": 1004},
+            {"namespace": "data", "identifier": "/foo:top/reset/input", "sid": 1005},
+            {"namespace": "data", "identifier": "/foo:top/reset/input/delay", "sid": 1006},
+            {"namespace": "data", "identifier": "/foo:top/reset/output", "sid": 1007},
+            {"namespace": "data", "identifier": "/foo:top/reset/output/result", "sid": 1008},
+            {"namespace": "data", "identifier": "/foo:top/changed", "sid": 1009},
+            {"namespace": "data", "identifier": "/foo:top/changed/what", "sid": 1010},
+            {"namespace": "data", "identifier": "/foo:error", "sid": 1011},
+            {"namespace": "data", "identifier": "/foo:error/message", "sid": 1012}
+        ]
+    }"#;
+    let schema = yang::schema::build(
+        &[src.to_string()],
+        &[sid_src.to_string()],
+        &["foo:error-template"],
+        &[],
+        &[],
+    )
+    .unwrap();
+    let Json::Object(doc) = to_yang_catalog(&schema).unwrap() else {
+        unreachable!()
+    };
+    doc
+}
+
+#[test]
+fn config_is_emitted_only_on_nodes_that_are_part_of_a_datastore() {
+    let doc = config_doc();
+    let nodes = &doc["schema-nodes"];
+    assert_eq!(nodes["/foo:top"]["config"], true);
+    assert_eq!(nodes["/foo:top/rw"]["config"], true);
+    assert_eq!(nodes["/foo:top/ro"]["config"], false);
+    for path in [
+        "/foo:top/reset",
+        "/foo:top/reset/input",
+        "/foo:top/reset/input/delay",
+        "/foo:top/reset/output",
+        "/foo:top/reset/output/result",
+        "/foo:top/changed",
+        "/foo:top/changed/what",
+        "/foo:error",
+        "/foo:error/message",
+    ] {
+        assert!(
+            nodes[path].get("config").is_none(),
+            "{path} must have no config: {}",
+            nodes[path]
+        );
+    }
+}
+
+#[test]
+fn verify_rejects_a_datastore_node_without_config() {
+    for path in ["/foo:top", "/foo:top/rw", "/foo:top/ro"] {
+        let mut doc = config_doc();
+        doc["schema-nodes"][path]
+            .as_object_mut()
+            .unwrap()
+            .remove("config");
+        let e = verify_yang_catalog(&doc).unwrap_err();
+        assert!(
+            e.contains(&format!("schema-nodes[{path:?}] has no \"config\" field")),
+            "{e}"
+        );
+    }
+}
+
+#[test]
+fn verify_rejects_config_on_a_node_outside_any_datastore() {
+    // Under an action's input and output, under a notification, in a
+    // yang-data template (its root included), and on the action,
+    // input and notification nodes themselves.
+    for path in [
+        "/foo:top/reset",
+        "/foo:top/reset/input",
+        "/foo:top/reset/input/delay",
+        "/foo:top/reset/output/result",
+        "/foo:top/changed",
+        "/foo:top/changed/what",
+        "/foo:error",
+        "/foo:error/message",
+    ] {
+        let mut doc = config_doc();
+        doc["schema-nodes"][path]["config"] = Json::Bool(true);
+        let e = verify_yang_catalog(&doc).unwrap_err();
+        assert!(
+            e.contains(&format!(
+                "schema-nodes[{path:?}] carries a \"config\" field, but isn't part of any datastore"
+            )),
+            "{e}"
+        );
+    }
 }

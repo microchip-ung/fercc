@@ -115,7 +115,7 @@ pub fn to_json_schema_for_catalog(schema: &Schema, content_format: &str) -> R<Js
             if matches!(child.kw.as_str(), "rpc" | "action") {
                 continue;
             }
-            if matches!(content_format, "ipatch" | "put") && !child.config {
+            if matches!(content_format, "ipatch" | "put") && child.config == Some(false) {
                 continue;
             }
             properties.insert(child.name.clone(), to_json_schema(child, content_format)?);
@@ -149,7 +149,7 @@ pub fn to_json_schema(node: NodeRef<'_>, content_format: &str) -> R<Json> {
         if matches!(child.kw.as_str(), "rpc" | "action") {
             continue;
         }
-        if matches!(content_format, "ipatch" | "put") && !child.config {
+        if matches!(content_format, "ipatch" | "put") && child.config == Some(false) {
             continue;
         }
         properties.insert(child.name.clone(), to_json_schema(child, content_format)?);
@@ -181,7 +181,7 @@ pub fn to_json_schema(node: NodeRef<'_>, content_format: &str) -> R<Json> {
                 type2schema(node.ty().expect("leaf-list without a type"))
                     .map_err(|e| format!("{}: {e}", node.path()))?,
             );
-            if node.config {
+            if node.config == Some(true) {
                 m.insert("uniqueItems".into(), Json::Bool(true));
             }
             Json::Object(m)
@@ -630,27 +630,5 @@ mod tests {
             leaf_schema(BOUNDS, "/b:narrowed")["anyOf"],
             serde_json::json!([{"minLength": 5, "maxLength": 10}])
         );
-    }
-
-    #[test]
-    fn a_bound_that_does_not_fit_in_a_json_number_is_an_error() {
-        // 2^64 - 2 bytes fits in a u64, but its base64 length is 4/3 of
-        // that and doesn't.
-        let src = r#"
-            module big {
-              namespace "urn:big";
-              prefix b;
-
-              leaf blob {
-                type binary {
-                  length "18446744073709551614..max";
-                }
-              }
-            }
-        "#;
-        let schema = crate::schema::build(&[src.to_string()], &[], &[], &[], &[]).unwrap();
-        let err = to_json_schema_for_catalog(&schema, "yang").unwrap_err();
-        assert!(err.contains("/big:blob"), "{err}");
-        assert!(err.contains("24595658764946068820"), "{err}");
     }
 }

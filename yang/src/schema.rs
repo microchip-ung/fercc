@@ -337,7 +337,7 @@ pub struct Node {
     pub name: String,
     parent: Option<NodeId>,
     children: Vec<NodeId>,
-    pub config: bool,
+    pub config: Option<bool>,
     pub mandatory: bool,
     ty: Option<TypeDescriptor>,
     keys: Vec<NodeId>,
@@ -1043,12 +1043,19 @@ impl<'a> Builder<'a> {
         synthetic: bool,
     ) -> NodeId {
         let id = self.nodes.len();
+        let config = match kw {
+            "rpc" | "action" | "notification" => None,
+            _ => match parent {
+                Some(p) => self.nodes[p].config,
+                None => Some(true),
+            },
+        };
         self.nodes.push(Node {
             kw: kw.to_string(),
             name,
             parent,
             children: Vec::new(),
-            config: true,
+            config,
             mandatory: false,
             ty: None,
             keys: Vec::new(),
@@ -1312,6 +1319,7 @@ impl<'a> Builder<'a> {
                 true,
                 true,
             );
+            self.nodes[scratch].config = None;
             self.interpret_children(resolve, naming, &[], &s.subs, Some(scratch))?;
             let children = self.nodes[scratch].children.clone();
             let &[root] = children.as_slice() else {
@@ -1343,7 +1351,6 @@ impl<'a> Builder<'a> {
             }
             self.nodes[root].parent = None;
             self.nodes[root].name = name.clone();
-            self.clear_config_in_subtree(root);
             if let Some(m) = &ext_module {
                 self.nodes[root].references_modules.push(m.clone());
             }
@@ -1395,6 +1402,7 @@ impl<'a> Builder<'a> {
                 true,
                 true,
             );
+            self.nodes[root].config = None;
             self.nodes[root].status = Some(read_status(s)?);
             if let Some(d) = s.sub("description") {
                 self.nodes[root].description = Some(d.arg_str().to_string());
@@ -1403,17 +1411,9 @@ impl<'a> Builder<'a> {
             let scope = [(s, scope_label.clone())];
             self.interpret_scope_typedefs(resolve, &scope_label, &scope, &s.subs)?;
             self.interpret_children(resolve, naming, &scope, &s.subs, Some(root))?;
-            self.clear_config_in_subtree(root);
             self.structure_roots.insert(name, root);
         }
         Ok(())
-    }
-
-    fn clear_config_in_subtree(&mut self, root: NodeId) {
-        self.nodes[root].config = false;
-        for child in self.nodes[root].children.clone() {
-            self.clear_config_in_subtree(child);
-        }
     }
 
     fn qualify_top_level(&self, module: &str, local: &str) -> String {
@@ -1444,10 +1444,10 @@ impl<'a> Builder<'a> {
 
         let node = self.new_node(&s.keyword, name, naming.to_string(), parent, false, false);
 
-        if let Some(cfg) = s.sub("config") {
-            self.nodes[node].config = cfg.arg_str() == "true";
-        } else if let Some(p) = self.nodes[node].parent {
-            self.nodes[node].config = self.nodes[p].config;
+        if self.nodes[node].config.is_some() {
+            if let Some(cfg) = s.sub("config") {
+                self.nodes[node].config = Some(cfg.arg_str() == "true");
+            }
         }
         if let Some(m) = s.sub("mandatory") {
             self.nodes[node].mandatory = m.arg_str() == "true";
@@ -2055,10 +2055,12 @@ impl<'a> Builder<'a> {
                         "not-supported" => self.remove_node(target),
                         "replace" => {
                             if let Some(cfg) = d.sub("config") {
-                                let cfg_val = cfg.arg_str() == "true";
-                                self.nodes[target].config = cfg_val;
-                                if !cfg_val {
-                                    self.propagate_config_false(target);
+                                if self.nodes[target].config.is_some() {
+                                    let cfg_val = cfg.arg_str() == "true";
+                                    self.nodes[target].config = Some(cfg_val);
+                                    if !cfg_val {
+                                        self.propagate_config_false(target);
+                                    }
                                 }
                             }
                             if let Some(t) = d.sub("type") {
@@ -2118,8 +2120,10 @@ impl<'a> Builder<'a> {
         let len = self.nodes[node].children.len();
         for i in 0..len {
             let c = self.nodes[node].children[i];
-            self.nodes[c].config = false;
-            self.propagate_config_false(c);
+            if self.nodes[c].config.is_some() {
+                self.nodes[c].config = Some(false);
+                self.propagate_config_false(c);
+            }
         }
     }
 
