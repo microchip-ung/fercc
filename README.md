@@ -31,7 +31,8 @@ cargo install --locked --git https://github.com/microchip-ung/fercc --tag <TAG> 
 
 where `<TAG>` is one of the
 [release tags](https://github.com/microchip-ung/fercc/releases), e.g.
-`v0.1.0`.
+`v0.1.1`. Releases `v0.2.0` and later are only compatible with firmware
+releases 2026.12 and later; for earlier firmware, use `v0.1.1`.
 
 `curl` needs to be installed for the automatic YANG data model download
 mentioned above; everything else has no runtime dependencies beyond the
