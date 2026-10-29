@@ -72,7 +72,7 @@ checksum = "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
 
 [[package]]
 name = "cbor"
-version = "0.1.0"
+version = "0.1.1"
 
 [[package]]
 name = "cfg-if"
@@ -122,7 +122,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "coap"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "mup1",
 ]
@@ -176,7 +176,7 @@ dependencies = [
 
 [[package]]
 name = "fercc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cbor",
  "clap",
@@ -296,7 +296,7 @@ dependencies = [
 
 [[package]]
 name = "mup1"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serialport",
 ]
@@ -633,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "yang"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "cbor",
  "flate2",

@@ -749,14 +749,18 @@ impl<'a> Builder<'a> {
                 .ok_or_else(|| err(format!("target segment {first_local:?} not found in module {dst_module:?} ({path:?})")))?
         };
         for seg in segs {
-            let local = seg.rsplit_once(':').map(|(_, n)| n).unwrap_or(seg);
-            cur = self.find_by_local(cur, local).ok_or_else(|| err(format!("target segment {seg:?} not found ({path:?})")))?;
+            cur = self.find_by_segment(cur, seg).ok_or_else(|| err(format!("target segment {seg:?} not found ({path:?})")))?;
         }
         Ok(cur)
     }
 
     fn find_by_local(&self, parent: NodeId, local: &str) -> Option<NodeId> {
         self.nodes[parent].children.iter().copied().find(|&c| self.nodes[c].local_name() == local)
+    }
+
+    fn find_by_segment(&self, parent: NodeId, seg: &str) -> Option<NodeId> {
+        let local = seg.rsplit_once(':').map(|(_, n)| n).unwrap_or(seg);
+        self.nodes[parent].children.iter().copied().find(|&c| self.nodes[c].name == seg).or_else(|| self.find_by_local(parent, local))
     }
 
     /// Resolve an absolute schema-node-id (`/prefix:top/child/...`) using
