@@ -1,0 +1,89 @@
+#!/usr/bin/env ruby
+
+# Copyright (c) 2026 Microchip Technology Inc. and its subsidiaries.
+# SPDX-License-Identifier: MIT
+#
+# docker-import: point this repository at a build-env image published by the
+# sw-fercc-docker pipeline, by importing its deps-docker.json.
+#
+# The build-env image is built by sw-fercc-docker and published together with
+# a deps-docker.json (the docker image with tag + digest, and the build it came
+# from). This script downloads that file into ./.deps.docker.json and then
+# updates the other references to the image:
+#
+#   * .kubernetespod.yaml - the fercc-builder container image (by digest)
+#   * .docker.env         - MCHP_DOCKER_TAG and MCHP_DOCKER_DIGEST, for dr
+#
+# Usage:
+#   scripts/docker-import -u <deps-docker.json URL>
+#
+# Example:
+#   scripts/docker-import -u \
+#     https://artifacts-aws.devops.microchip.com/artifactory/ung-generic-dev-local/ci/UNGE/sw-fercc-docker/main/<version>/deps-docker.json
+
+require 'json'
+require 'optparse'
+require 'open3'
+require 'tempfile'
+
+url = nil
+OptionParser.new do |o|
+  o.banner = "Usage: docker-import -u <deps-docker.json URL>"
+  o.on("-u", "--url URL", "URL of the published deps-docker.json") { |u| url = u }
+  o.on("-h", "--help") { puts o; exit }
+end.parse!
+
+abort "error: -u <URL> is required" if url.nil?
+
+top       = File.expand_path("..", __dir__)
+deps_file = File.join(top, ".deps.docker.json")
+pod_file  = File.join(top, ".kubernetespod.yaml")
+env_file  = File.join(top, ".docker.env")
+
+body = nil
+Tempfile.create("deps-docker") do |tmp|
+  _out, err, st = Open3.capture3("curl", "-fsSL", url, "-o", tmp.path)
+  abort "error: download failed (#{err.strip.empty? ? "curl exit #{st.exitstatus}" : err.strip})" unless st.success?
+  body = File.read(tmp.path)
+end
+
+deps = JSON.parse(body) rescue abort("error: #{url} did not return valid JSON")
+abort "error: #{url} is not a JSON array" unless deps.is_a?(Array)
+
+env = deps.find { |e| e.is_a?(Hash) && e["id"] == "build-env" }
+abort "error: no 'build-env' entry in the downloaded deps-docker.json" if env.nil?
+%w[docker-path docker-tag docker-sha].each do |k|
+  abort "error: 'build-env' entry is missing '#{k}'" if env[k].nil? || env[k].to_s.empty?
+end
+
+[pod_file, env_file].each do |f|
+  abort "error: #{f} not found" unless File.exist?(f)
+end
+
+pod = File.read(pod_file)
+image = "#{env['docker-path']}@#{env['docker-sha']}"
+pod_re = /^(\s*image:\s*)#{Regexp.escape(env['docker-path'])}@sha256:[0-9a-f]{64}\s*$/
+abort "error: no #{env['docker-path']}@sha256:... image in .kubernetespod.yaml" unless pod.scan(pod_re).size == 1
+pod = pod.sub(pod_re) { "#{$1}#{image}" }
+
+dot_env = File.read(env_file)
+{
+  "MCHP_DOCKER_NAME"   => env["docker-path"],
+  "MCHP_DOCKER_TAG"    => env["docker-tag"],
+  "MCHP_DOCKER_DIGEST" => env["docker-sha"],
+}.each do |key, value|
+  re = /^#{key}=.*$/
+  abort "error: no #{key}= line in .docker.env" unless dot_env.scan(re).size == 1
+  dot_env = dot_env.sub(re) { "#{key}=#{value}" }
+end
+
+File.write(deps_file, body)
+puts "Updated .deps.docker.json"
+File.write(pod_file, pod)
+puts "Updated .kubernetespod.yaml"
+File.write(env_file, dot_env)
+puts "Updated .docker.env"
+
+puts ""
+puts "Imported build-env #{env['docker-path']}:#{env['docker-tag']}"
+puts "Review the diff and commit."
