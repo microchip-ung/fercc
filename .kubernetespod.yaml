@@ -11,7 +11,7 @@ spec:
       # Image built by sw-fercc-docker.  Update tag + digest after each
       # sw-fercc-docker publish.
       # Dockerfile live here https://bitbucket.microchip.com/projects/UNGE/repos/sw-fercc-docker
-      image: artifacts-aws.devops.microchip.com:7996/ung/sw-fercc-docker/build-env@sha256:db07e86936e47740ef549f74e8afa09b8e58230e0eb52360c42ea0cd55540f48
+      image: artifacts-aws.devops.microchip.com:7996/ung/sw-fercc-docker/build-env@sha256:25145d5bfef86f1d52459e4cd38ab35fcd901857358e2e0a512ea7e45772e2b7
       command:
         - cat
       tty: true

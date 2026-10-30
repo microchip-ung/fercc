@@ -50,12 +50,11 @@ pipeline {
     }
 
     stage('Build') {
-      // Skip on timer-triggered runs: the binary hasn't changed, only the CVE
-      // database may have, so compiling again is wasteful.
-      when { not { triggeredBy 'TimerTrigger' } }
+      // Runs on timer-triggered runs too: the SBOM is taken from the binary,
+      // and the workspace starts out clean.
       steps {
         container('fercc-builder') {
-          sh 'cargo build --release'
+          sh 'cargo auditable build --locked --release'
         }
         script { ciUpload('target/release/fercc') }
       }
@@ -73,7 +72,7 @@ pipeline {
     stage('SBOM') {
       steps {
         container('fercc-builder') {
-          sh 'syft . -o spdx-json=fercc-sbom.spdx.json'
+          sh 'syft target/release/fercc --source-name fercc -o spdx-json=fercc-sbom.spdx.json'
         }
         script { ciUpload('fercc-sbom.spdx.json') }
       }
